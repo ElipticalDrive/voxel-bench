@@ -7,7 +7,7 @@ repeats (`run.repeats`) keep the spread within ±1%. The techniques themselves a
 described in the encyclopedia [Onkographos](https://github.com/ElipticalDrive/onkographos).
 
 The baseline (`baselines/sweep-20261125/`, its README lists what it holds) has measured the
-`showcase` and `terrain-flight` plans in the graph architecture (2846 passes); the other plans
+`showcase`, `terrain-flight` and `far` plans in the graph architecture (4269 passes); the other plans
 run as background work and are folded in as they finish. Figures below from other plans come
 from earlier, separate runs (dated where known).
 

@@ -1,6 +1,6 @@
 # Renderer catalogue
 
-2846 observations from 2 runs, 4 scenarios. Machine: AMD Ryzen 9 9955HX 16-Core Processor + NVIDIA GeForce RTX 5060 Laptop GPU.
+4269 observations from 3 runs, 6 scenarios. Machine: AMD Ryzen 9 9955HX 16-Core Processor + NVIDIA GeForce RTX 5060 Laptop GPU.
 
 How to read: a scenario is a plan (scene, camera path, events) in one pass mode. Speed is throughput (completed frames per second; at several hundred fps and more the host's per-frame overhead compresses differences, so GPU ms is shown too). *rel* is fps relative to the fastest correct renderer of the scenario; correct means a mean PSNR against the reference of at least 35 dB (or not compared). *good at*: within 10% of the best. *stands out*: relative speed at least 1.25× the renderer's own average, i.e. where it is comparatively strong.
 
@@ -10,6 +10,14 @@ Renderers that failed or whose frames scored below 35 dB (by the settled score f
 
 | scenario | renderer | why |
 |---|---|---|
+| far [lit] | gpu: heightmap + columns + heightfield + direct | 15.4 dB like |
+| far [lit] | cpu: heightmap + columns + heightfield + direct | 15.4 dB like |
+| far [lit] | gpu: heightmap + columns + heightfield + pathtrace | 15.4 dB settled |
+| far [lit] | gpu: naive@cpu + rayquery + raycast + direct | failed: [gpu: naive@cpu + rayquery + raycast + direct]: worker error: the device is out of memory (NVIDIA GeForce RTX 5060 Laptop GPU, this renderer seen holding up to 6923 MiB; the world's size and the resolution set most of it: lower the view radius or the resolution, or the storage's pool or slot knobs): wgpu error: Out of Memory |
+| far [lit] | gpu: naive@cpu + rayquery + raycast + pathtrace | failed: [gpu: naive@cpu + rayquery + raycast + pathtrace]: worker error: the device is out of memory (NVIDIA GeForce RTX 5060 Laptop GPU, this renderer seen holding up to 6954 MiB; the world's size and the resolution set most of it: lower the view radius or the resolution, or the storage's pool or slot knobs): wgpu error: Out of Memory |
+| far [unlit] | cpu: heightmap + columns + heightfield + direct | 18.4 dB like |
+| far [unlit] | gpu: heightmap + columns + heightfield + pathtrace | 18.4 dB like |
+| far [unlit] | gpu: naive@cpu + rayquery + raycast + pathtrace | failed: [gpu: naive@cpu + rayquery + raycast + pathtrace]: worker error: the device is out of memory (NVIDIA GeForce RTX 5060 Laptop GPU, this renderer seen holding up to 6954 MiB; the world's size and the resolution set most of it: lower the view radius or the resolution, or the storage's pool or slot knobs): wgpu error: Out of Memory |
 | showcase [lit] | gpu: heightmap + columns + heightfield + direct | 10.9 dB like |
 | showcase [lit] | cpu: heightmap + columns + heightfield + direct | 10.9 dB like |
 | showcase [lit] | gpu: heightmap + columns + heightfield + pathtrace | 10.9 dB settled |
@@ -25,6 +33,8 @@ Renderers that failed or whose frames scored below 35 dB (by the settled score f
 
 | scenario | best | fps | gpu ms | PSNR | runner-up | rel |
 |---|---|---:|---:|---:|---|---:|
+| far [lit] | gpu: bricks + refloor + composite + raycast + direct | 375.0 | 1.14 | 56.7 | gpu: bricks + refloor + beam + composite + raycast + direct | 0.98 |
+| far [unlit] | gpu: bricks + refloor + composite + raycast + pathtrace | 400.5 | 0.88 | 57.7 | gpu: tree64 + refloor + composite + raycast + pathtrace | 0.96 |
 | showcase [lit] | gpu: distance + sphere + composite + raycast + direct | 4434.8 | 0.15 | 58.3 | gpu: distance + sphere + beam + composite + raycast + direct | 0.94 |
 | showcase [unlit] | gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace | 6842.2 | 0.03 | 44.1 | gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 0.88 |
 | terrain-flight [lit] | gpu: bricks + refloor + composite + raycast + direct | 568.7 | 1.16 | 57.8 | gpu: prefix + refloor + composite + raycast + direct | 0.96 |
@@ -36,1185 +46,1185 @@ Sorted by the geometric mean of *rel* over the scenarios where the renderer ran 
 
 | renderer | scenarios | geomean rel | geomean mem | wins | good at | stands out | weak at (rel < 0.25) | incorrect | failed |
 |---|---:|---:|---:|---:|---|---|---|---|---|
-| gpu: distance + sphere + composite + raycast + direct | 2 | 0.91 | 8.21 | 1 | showcase [lit] |  |  |  |  |
-| gpu: prefix + refloor + composite + raycast + direct | 2 | 0.90 | 7.49 | 0 | terrain-flight [lit] |  |  |  |  |
-| gpu: hier + refloor + composite + raycast + direct | 2 | 0.86 | 7.35 | 0 | terrain-flight [lit] |  |  |  |  |
-| gpu: distance + sphere + beam + composite + raycast + direct | 2 | 0.86 | 8.21 | 0 | showcase [lit] |  |  |  |  |
-| gpu: bricks + refloor + composite + raycast + direct | 2 | 0.85 | 7.30 | 1 | terrain-flight [lit] |  |  |  |  |
-| gpu: prefix + refloor + beam + composite + raycast + direct | 2 | 0.83 | 7.49 | 0 |  |  |  |  |  |
-| gpu: distance + refloor + composite + raycast + direct | 2 | 0.83 | 8.21 | 0 |  |  |  |  |  |
-| gpu: hier + refloor + beam + composite + raycast + direct | 2 | 0.82 | 7.36 | 0 |  |  |  |  |  |
-| gpu: prefix + rowrun + composite + raycast + direct | 2 | 0.81 | 7.49 | 0 |  |  |  |  |  |
-| gpu: svo_dag + refloor + composite + raycast + direct | 2 | 0.79 | 5.97 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + direct | 2 | 0.77 | 8.27 | 0 |  |  |  |  |  |
-| gpu: rows + refloor + composite + raycast + direct | 2 | 0.77 | 7.46 | 0 |  |  |  |  |  |
-| gpu: bricks + refloor + beam + composite + raycast + direct | 2 | 0.76 | 7.35 | 0 |  |  |  |  |  |
-| gpu: distance + refloor + beam + composite + raycast + direct | 2 | 0.76 | 8.20 | 0 |  |  |  |  |  |
-| gpu: prefix + rowrun + beam + composite + raycast + direct | 2 | 0.76 | 7.50 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + direct | 2 | 0.76 | 8.40 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + direct | 2 | 0.75 | 8.28 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + direct | 2 | 0.75 | 8.31 | 0 |  |  |  |  |  |
-| gpu: distance + rowrun + composite + raycast + direct | 2 | 0.74 | 8.21 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + direct | 2 | 0.74 | 8.45 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 2 | 0.73 | 7.28 | 0 |  |  |  |  |  |
-| gpu: rows + refloor + beam + composite + raycast + direct | 2 | 0.73 | 7.47 | 0 |  |  |  |  |  |
-| gpu: tree64 + refloor + composite + raycast + direct | 2 | 0.73 | 5.96 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 2 | 0.73 | 7.42 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 2 | 0.72 | 8.41 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + direct | 2 | 0.72 | 8.33 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 2 | 0.72 | 8.45 | 0 |  |  |  |  |  |
-| gpu: rows + rowrun + composite + raycast + direct | 2 | 0.72 | 7.46 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + direct | 2 | 0.71 | 9.12 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + direct | 2 | 0.71 | 8.41 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 2 | 0.71 | 7.36 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 2 | 0.70 | 7.25 | 0 |  |  |  |  |  |
-| gpu: distance + rowrun + beam + composite + raycast + direct | 2 | 0.70 | 8.21 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + direct | 2 | 0.70 | 8.38 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + direct | 2 | 0.70 | 9.06 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + direct | 2 | 0.69 | 9.07 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 2 | 0.69 | 9.32 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 2 | 0.68 | 8.27 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + direct | 2 | 0.68 | 8.42 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + direct | 2 | 0.68 | 9.11 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 2 | 0.68 | 8.33 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + direct | 2 | 0.68 | 8.37 | 0 |  |  |  |  |  |
-| gpu: rows + rowrun + beam + composite + raycast + direct | 2 | 0.67 | 7.47 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 2 | 0.67 | 9.43 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + direct | 2 | 0.67 | 9.05 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + direct | 2 | 0.66 | 9.12 | 0 |  |  |  |  |  |
-| gpu: bricks + rowrun + composite + raycast + direct | 2 | 0.66 | 7.35 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + direct | 2 | 0.66 | 8.59 | 0 |  |  |  |  |  |
-| gpu: distance + sphere + composite + raycast + pathtrace | 4 | 0.65 | 8.31 | 0 |  | showcase [unlit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 2 | 0.65 | 9.48 | 0 |  |  |  |  |  |
-| gpu: svo_dag + refloor + beam + composite + raycast + direct | 2 | 0.64 | 5.97 | 0 |  |  |  |  |  |
-| gpu: clipmap + refloor + composite + raycast + direct | 2 | 0.64 | 7.87 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + direct | 2 | 0.64 | 8.40 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 2 | 0.64 | 9.36 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + direct | 2 | 0.63 | 8.47 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 2 | 0.63 | 6.80 | 0 |  |  |  |  |  |
-| gpu: prefix + refloor + composite + raycast + pathtrace | 4 | 0.63 | 7.61 | 0 | terrain-flight [unlit] | terrain-flight [unlit] (1.4×), showcase [unlit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + direct | 2 | 0.63 | 8.35 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 2 | 0.63 | 8.57 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + direct | 2 | 0.63 | 7.89 | 0 |  |  |  |  |  |
-| gpu: bricks + rowrun + beam + composite + raycast + direct | 2 | 0.63 | 7.36 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 2 | 0.63 | 6.93 | 0 |  |  |  |  |  |
-| gpu: distance + sphere + beam + composite + raycast + pathtrace | 4 | 0.63 | 8.32 | 0 |  | showcase [unlit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + direct | 2 | 0.63 | 8.48 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 2 | 0.62 | 9.48 | 0 |  |  |  |  |  |
-| gpu: hier + refloor + composite + raycast + pathtrace | 4 | 0.62 | 7.48 | 0 | terrain-flight [unlit] | terrain-flight [unlit] (1.5×), showcase [unlit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 2 | 0.62 | 8.90 | 0 |  |  |  |  |  |
-| gpu: tree64 + refloor + beam + composite + raycast + direct | 2 | 0.61 | 6.07 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + raster + direct | 2 | 0.61 | 8.33 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 2 | 0.61 | 9.36 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 2 | 0.61 | 8.53 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + direct | 2 | 0.61 | 9.33 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + direct | 2 | 0.61 | 8.29 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + direct | 2 | 0.61 | 8.44 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 2 | 0.61 | 7.39 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + direct | 2 | 0.60 | 8.45 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + direct | 2 | 0.60 | 8.34 | 0 |  |  |  |  |  |
-| gpu: prefix + refloor + beam + composite + raycast + pathtrace | 4 | 0.60 | 7.61 | 0 |  | terrain-flight [unlit] (1.5×), showcase [unlit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 2 | 0.60 | 7.00 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + direct | 2 | 0.60 | 9.20 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + direct | 2 | 0.60 | 9.19 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 2 | 0.60 | 8.39 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + raster + direct | 2 | 0.60 | 8.22 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 2 | 0.60 | 6.90 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 2 | 0.59 | 7.28 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + raster + direct | 2 | 0.59 | 9.02 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 2 | 0.59 | 8.47 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + direct | 2 | 0.59 | 9.27 | 0 |  |  |  |  |  |
-| gpu: distance + refloor + composite + raycast + pathtrace | 4 | 0.59 | 8.31 | 0 |  | showcase [unlit] (1.4×), terrain-flight [unlit] (1.3×) |  |  |  |
-| gpu: hier + refloor + beam + composite + raycast + pathtrace | 4 | 0.59 | 7.48 | 0 |  | terrain-flight [unlit] (1.4×), showcase [unlit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 2 | 0.59 | 7.42 | 0 |  |  |  |  |  |
-| gpu: hier + rowrun + composite + raycast + direct | 2 | 0.58 | 7.36 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + direct | 2 | 0.58 | 9.34 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + direct | 2 | 0.58 | 9.22 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + raster + direct | 2 | 0.58 | 8.21 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + direct | 2 | 0.58 | 8.49 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + direct | 2 | 0.58 | 8.58 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + raster + direct | 2 | 0.58 | 9.02 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 2 | 0.58 | 7.32 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + raster + direct | 2 | 0.58 | 8.33 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 2 | 0.57 | 8.94 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + direct | 2 | 0.57 | 7.69 | 0 |  |  |  |  |  |
-| gpu: hier + rowrun + beam + composite + raycast + direct | 2 | 0.57 | 7.36 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + direct | 2 | 0.56 | 8.27 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 2 | 0.56 | 9.05 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + raster + direct | 2 | 0.56 | 8.13 | 0 |  |  |  |  |  |
-| gpu: bricks + refloor + composite + raycast + pathtrace | 4 | 0.56 | 7.48 | 1 | terrain-flight [unlit] | terrain-flight [unlit] (1.8×) |  |  |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + direct | 2 | 0.56 | 8.32 | 0 |  |  |  |  |  |
-| gpu: clipmap + refloor + beam + composite + raycast + direct | 2 | 0.56 | 7.89 | 0 |  |  |  |  |  |
-| gpu: distance + refloor + beam + composite + raycast + pathtrace | 4 | 0.56 | 8.39 | 0 |  | showcase [unlit] (1.3×), terrain-flight [unlit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 2 | 0.55 | 8.94 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + direct | 2 | 0.55 | 8.33 | 0 |  |  |  |  |  |
-| gpu: clipmap + rowrun + composite + raycast + direct | 2 | 0.55 | 7.87 | 0 |  |  |  |  |  |
-| gpu: svo_dag + refloor + composite + raycast + pathtrace | 4 | 0.55 | 6.22 | 0 |  | terrain-flight [unlit] (1.4×), showcase [unlit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + raster + direct | 2 | 0.55 | 8.97 | 0 |  |  |  |  |  |
-| gpu: bricks + refloor + beam + composite + raycast + pathtrace | 4 | 0.55 | 7.47 | 0 |  | terrain-flight [unlit] (1.6×), showcase [unlit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 2 | 0.55 | 9.05 | 0 |  |  |  |  |  |
-| gpu: boxes@cpu + rayquery + raycast + direct | 2 | 0.55 | 9.65 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + direct | 2 | 0.55 | 8.29 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + direct | 2 | 0.55 | 8.25 | 0 |  |  |  |  |  |
-| gpu: rows + refloor + composite + raycast + pathtrace | 4 | 0.55 | 7.58 | 0 |  | terrain-flight [unlit] (1.6×), showcase [unlit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + direct | 2 | 0.55 | 8.31 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + direct | 2 | 0.55 | 8.37 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 4 | 0.54 | 8.43 | 0 |  | showcase [unlit] (1.6×), terrain-flight [unlit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 2 | 0.54 | 6.93 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 2 | 0.54 | 9.01 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + direct | 2 | 0.54 | 7.10 | 0 |  |  |  |  |  |
-| gpu: bricks + incremental + composite + raycast + direct | 2 | 0.54 | 7.21 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + direct | 2 | 0.54 | 8.27 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + raster + direct | 2 | 0.54 | 8.96 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + direct | 2 | 0.53 | 8.42 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + direct | 2 | 0.53 | 8.39 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + direct | 2 | 0.53 | 8.45 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + direct | 2 | 0.53 | 6.74 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + direct | 2 | 0.53 | 8.34 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 2 | 0.53 | 7.04 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + direct | 2 | 0.53 | 6.62 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 4 | 0.53 | 8.52 | 0 |  | showcase [unlit] (1.6×), terrain-flight [unlit] (1.3×) |  |  |  |
-| gpu: tree64 + incremental + composite + raycast + direct | 2 | 0.53 | 5.94 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + direct | 2 | 0.53 | 8.30 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + direct | 2 | 0.53 | 8.45 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + direct | 2 | 0.52 | 8.40 | 0 |  |  |  |  |  |
-| gpu: prefix + rowrun + composite + raycast + pathtrace | 4 | 0.52 | 7.73 | 0 |  | terrain-flight [unlit] (1.6×), showcase [unlit] (1.5×) |  |  |  |
-| gpu: tree64 + refloor + composite + raycast + pathtrace | 4 | 0.52 | 6.32 | 0 | terrain-flight [unlit] | terrain-flight [unlit] (1.8×) |  |  |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + direct | 2 | 0.52 | 9.10 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + raster + direct | 2 | 0.52 | 8.22 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 2 | 0.52 | 6.83 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + raster + direct | 2 | 0.51 | 8.32 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + direct | 2 | 0.51 | 8.42 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + direct | 2 | 0.51 | 8.37 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + direct | 2 | 0.51 | 8.35 | 0 |  |  |  |  |  |
-| gpu: hier + incremental + composite + raycast + direct | 2 | 0.51 | 7.36 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 2 | 0.51 | 7.40 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + direct | 2 | 0.51 | 8.42 | 0 |  |  |  |  |  |
-| gpu: clipmap + incremental + composite + raycast + direct | 2 | 0.51 | 7.88 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 2 | 0.51 | 6.92 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 2 | 0.51 | 7.30 | 0 |  |  |  |  |  |
-| gpu: rows + refloor + beam + composite + raycast + pathtrace | 4 | 0.51 | 7.66 | 0 |  | terrain-flight [unlit] (1.5×), showcase [unlit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + direct | 2 | 0.51 | 6.66 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + direct | 2 | 0.51 | 8.37 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + direct | 2 | 0.50 | 8.46 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + direct | 2 | 0.50 | 8.46 | 0 |  |  |  |  |  |
-| gpu: prefix + rowrun + beam + composite + raycast + pathtrace | 4 | 0.50 | 7.73 | 0 |  | terrain-flight [unlit] (1.5×), showcase [unlit] (1.5×) |  |  |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 2 | 0.50 | 9.44 | 0 |  |  |  |  |  |
-| gpu: clipmap + rowrun + beam + composite + raycast + direct | 2 | 0.49 | 7.89 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + direct | 2 | 0.49 | 8.34 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + direct | 2 | 0.49 | 8.69 | 0 |  |  |  |  |  |
-| gpu: hier + incremental + beam + composite + raycast + direct | 2 | 0.49 | 7.37 | 0 |  |  |  |  |  |
-| gpu: bricks + incremental + beam + composite + raycast + direct | 2 | 0.49 | 7.35 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 2 | 0.49 | 9.36 | 0 |  |  |  |  |  |
-| gpu: prefix + incremental + composite + raycast + direct | 2 | 0.49 | 7.50 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + direct | 2 | 0.49 | 8.73 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + direct | 2 | 0.49 | 8.72 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + direct | 2 | 0.49 | 8.47 | 0 |  |  |  |  |  |
-| gpu: svo_dag + rowrun + composite + raycast + direct | 2 | 0.49 | 5.98 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + direct | 2 | 0.49 | 8.33 | 0 |  |  |  |  |  |
-| gpu: distance + rowrun + composite + raycast + pathtrace | 4 | 0.49 | 8.42 | 0 |  | showcase [unlit] (1.5×), terrain-flight [unlit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + direct | 2 | 0.48 | 8.24 | 0 |  |  |  |  |  |
-| gpu: rows + incremental + composite + raycast + direct | 2 | 0.48 | 7.46 | 0 |  |  |  |  |  |
-| gpu: prefix + refloor + quadtree + visbuffer + direct | 2 | 0.48 | 10.13 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: prefix + refloor + quadtree + gbuffer + direct | 2 | 0.48 | 10.15 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: bricks + refloor + quadtree + gbuffer + direct | 2 | 0.48 | 9.91 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + direct | 2 | 0.47 | 8.44 | 0 |  |  |  |  |  |
-| gpu: hier + refloor + quadtree + gbuffer + direct | 2 | 0.47 | 10.01 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + direct | 2 | 0.47 | 8.28 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 2 | 0.47 | 7.37 | 0 |  |  |  |  |  |
-| gpu: hier + refloor + quadtree + visbuffer + direct | 2 | 0.47 | 9.97 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + direct | 2 | 0.47 | 8.59 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 2 | 0.47 | 7.26 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 2 | 0.47 | 7.34 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + direct | 2 | 0.47 | 8.64 | 0 |  |  |  |  |  |
-| gpu: distance + sphere + quadtree + visbuffer + direct | 2 | 0.47 | 10.96 | 0 |  |  |  |  |  |
-| gpu: rows + rowrun + composite + raycast + pathtrace | 4 | 0.47 | 7.69 | 0 |  | terrain-flight [unlit] (1.7×), showcase [unlit] (1.5×) |  |  |  |
-| gpu: bricks + refloor + quadtree + visbuffer + direct | 2 | 0.47 | 9.88 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + direct | 2 | 0.47 | 9.23 | 0 |  |  |  |  |  |
-| gpu: distance + sphere + quadtree + gbuffer + direct | 2 | 0.47 | 10.97 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + direct | 2 | 0.47 | 8.56 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 2 | 0.47 | 7.45 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + direct | 2 | 0.47 | 9.28 | 0 |  |  |  |  |  |
-| gpu: distance + rowrun + beam + composite + raycast + pathtrace | 4 | 0.47 | 8.43 | 0 |  | showcase [unlit] (1.5×), terrain-flight [unlit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + direct | 2 | 0.46 | 8.48 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + direct | 2 | 0.46 | 8.44 | 0 |  |  |  |  |  |
-| gpu: tree64 + incremental + beam + composite + raycast + direct | 2 | 0.46 | 6.08 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 4 | 0.46 | 8.33 | 0 |  | showcase [unlit] (1.4×) |  |  |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + raster + direct | 2 | 0.46 | 8.33 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 4 | 0.46 | 8.42 | 0 |  | showcase [unlit] (1.6×) |  |  |  |
-| gpu: svo_dag + refloor + beam + composite + raycast + pathtrace | 4 | 0.46 | 6.24 | 0 |  | showcase [unlit] (1.5×) |  |  |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + direct | 2 | 0.46 | 8.77 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + direct | 2 | 0.46 | 8.66 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 2 | 0.46 | 6.81 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 2 | 0.46 | 6.90 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + direct | 2 | 0.46 | 8.37 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 2 | 0.45 | 9.43 | 0 |  |  |  |  |  |
-| gpu: rows + incremental + beam + composite + raycast + direct | 2 | 0.45 | 7.47 | 0 |  |  |  |  |  |
-| gpu: rows + refloor + quadtree + visbuffer + direct | 2 | 0.45 | 10.06 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + direct | 2 | 0.45 | 8.99 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + raster + direct | 2 | 0.45 | 9.03 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 2 | 0.45 | 7.38 | 0 |  |  |  |  |  |
-| gpu: prefix + incremental + beam + composite + raycast + direct | 2 | 0.45 | 7.50 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 2 | 0.45 | 7.28 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 2 | 0.45 | 9.49 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + direct | 2 | 0.45 | 8.96 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: clipmap + incremental + beam + composite + raycast + direct | 2 | 0.45 | 7.89 | 0 |  |  |  |  |  |
-| gpu: rows + rowrun + beam + composite + raycast + pathtrace | 4 | 0.45 | 7.69 | 0 |  | terrain-flight [unlit] (1.6×), showcase [unlit] (1.4×) |  |  |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + raster + direct | 2 | 0.45 | 8.22 | 0 |  |  |  |  |  |
-| gpu: tree64 + refloor + beam + composite + raycast + pathtrace | 4 | 0.45 | 6.32 | 0 |  | terrain-flight [unlit] (1.5×) |  |  |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + raster + direct | 2 | 0.45 | 8.24 | 0 |  |  |  |  |  |
-| gpu: distance + refloor + quadtree + gbuffer + direct | 2 | 0.45 | 10.97 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 2 | 0.44 | 9.01 | 0 |  |  |  |  |  |
-| gpu: clipmap + refloor + composite + raycast + pathtrace | 4 | 0.44 | 8.10 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.4×) | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + direct | 2 | 0.44 | 9.07 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + raster + direct | 2 | 0.44 | 8.26 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + direct | 2 | 0.44 | 8.96 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + direct | 2 | 0.44 | 8.95 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: distance + refloor + quadtree + visbuffer + direct | 2 | 0.44 | 10.93 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + direct | 2 | 0.44 | 8.82 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: hier + sphere + composite + raycast + direct | 2 | 0.44 | 7.36 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 2 | 0.44 | 9.04 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 2 | 0.44 | 9.08 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + direct | 2 | 0.44 | 8.82 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 2 | 0.44 | 8.90 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + raster + direct | 2 | 0.43 | 8.14 | 0 |  |  |  |  |  |
-| gpu: distance + incremental + composite + raycast + direct | 2 | 0.43 | 8.38 | 0 |  |  |  |  |  |
-| gpu: prefix + rowrun + quadtree + visbuffer + direct | 2 | 0.43 | 10.12 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + direct | 2 | 0.43 | 9.65 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + direct | 2 | 0.43 | 8.15 | 0 |  |  |  |  |  |
-| gpu: prefix + rowrun + quadtree + gbuffer + direct | 2 | 0.43 | 10.15 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 2 | 0.43 | 7.01 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace | 4 | 0.43 | 8.36 | 1 | showcase [unlit] | showcase [unlit] (2.3×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 2 | 0.43 | 8.79 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + direct | 2 | 0.43 | 9.80 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: naive@cpu + rayquery + raycast + direct | 2 | 0.43 | 13.22 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + direct | 2 | 0.43 | 9.06 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + direct | 2 | 0.43 | 8.93 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 2 | 0.43 | 6.91 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + direct | 2 | 0.43 | 9.65 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: rows + refloor + quadtree + gbuffer + direct | 2 | 0.43 | 10.09 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: rows + rowrun + quadtree + visbuffer + direct | 2 | 0.43 | 10.04 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 2 | 0.43 | 6.84 | 0 |  |  |  |  |  |
-| gpu: rows + rowrun + quadtree + gbuffer + direct | 2 | 0.42 | 10.10 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 2 | 0.42 | 7.35 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 2 | 0.42 | 7.47 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + direct | 2 | 0.42 | 9.52 | 0 |  |  |  |  |  |
-| gpu: hier + sphere + beam + composite + raycast + direct | 2 | 0.42 | 7.36 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: svo_dag + rowrun + beam + composite + raycast + direct | 2 | 0.42 | 6.24 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + direct | 2 | 0.42 | 9.79 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + direct | 2 | 0.42 | 9.39 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + raster + direct | 2 | 0.42 | 8.37 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 2 | 0.42 | 9.44 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + direct | 2 | 0.42 | 8.93 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 2 | 0.42 | 9.33 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 2 | 0.42 | 6.95 | 0 |  |  |  |  |  |
-| gpu: distance + rowrun + quadtree + visbuffer + direct | 2 | 0.42 | 10.95 | 0 |  |  |  |  |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + direct | 2 | 0.42 | 9.91 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 2 | 0.42 | 6.93 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + rayquery + raycast + direct | 2 | 0.42 | 10.51 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: distance + rowrun + quadtree + gbuffer + direct | 2 | 0.42 | 10.97 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 2 | 0.42 | 9.75 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 2 | 0.41 | 8.83 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 2 | 0.41 | 7.03 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + direct | 2 | 0.41 | 8.26 | 0 |  |  |  |  |  |
-| gpu: tree64 + refloor + quadtree + visbuffer + direct | 2 | 0.41 | 8.56 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: bricks + rowrun + composite + raycast + pathtrace | 4 | 0.41 | 7.60 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.6×) | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 2 | 0.41 | 9.44 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + direct | 2 | 0.41 | 9.67 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 2 | 0.41 | 9.62 | 0 |  |  |  |  |  |
-| gpu: distance + incremental + beam + composite + raycast + direct | 2 | 0.41 | 8.36 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 2 | 0.41 | 7.43 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + direct | 2 | 0.41 | 9.93 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + direct | 2 | 0.41 | 8.98 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: tree64 + refloor + quadtree + gbuffer + direct | 2 | 0.41 | 8.61 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + pathtrace | 4 | 0.41 | 8.11 | 0 |  | showcase [unlit] (2.1×), terrain-flight [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 2 | 0.41 | 7.32 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 2 | 0.41 | 8.91 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + direct | 2 | 0.41 | 9.73 | 0 |  | showcase [lit] (1.6×) |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + direct | 2 | 0.41 | 8.70 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + direct | 2 | 0.41 | 9.15 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 2 | 0.41 | 8.66 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + raster + direct | 2 | 0.40 | 9.01 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + raster + direct | 2 | 0.40 | 9.03 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 2 | 0.40 | 9.00 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: boxes@cpu + rayquery + raycast + pathtrace | 4 | 0.40 | 10.00 | 0 |  | terrain-flight [unlit] (1.5×) |  |  |  |
-| gpu: bricks + rowrun + beam + composite + raycast + pathtrace | 4 | 0.40 | 7.62 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.6×) | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 2 | 0.40 | 8.73 | 0 |  |  |  |  |  |
-| gpu: clipmap + refloor + quadtree + visbuffer + direct | 2 | 0.40 | 10.43 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: bricks + sphere + composite + raycast + direct | 2 | 0.40 | 7.34 | 0 |  | terrain-flight [lit] (1.5×) |  |  |  |
-| gpu: svo_dag + refloor + quadtree + visbuffer + direct | 2 | 0.40 | 8.45 | 0 |  |  |  |  |  |
-| gpu: prefix + sphere + composite + raycast + direct | 2 | 0.40 | 7.49 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: clipmap + refloor + beam + composite + raycast + pathtrace | 4 | 0.40 | 8.10 | 0 |  | terrain-flight [unlit] (1.5×), showcase [unlit] (1.4×) |  |  |  |
-| gpu: svo_dag + refloor + quadtree + gbuffer + direct | 2 | 0.40 | 8.53 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 2 | 0.40 | 9.39 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: points@cpu + splat + prefix + refloor + direct | 2 | 0.40 | 9.81 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 2 | 0.39 | 9.52 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + direct | 2 | 0.39 | 6.67 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + bricks + refloor + direct | 2 | 0.39 | 8.93 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 2 | 0.39 | 9.04 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 2 | 0.39 | 8.93 | 0 |  |  |  |  |  |
-| gpu: hier + rowrun + composite + raycast + pathtrace | 4 | 0.39 | 7.60 | 0 |  | showcase [unlit] (1.9×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 2 | 0.39 | 9.49 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + direct | 2 | 0.39 | 6.75 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + distance + sphere + direct | 2 | 0.39 | 10.47 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: points@cpu + splat + prefix + rowrun + direct | 2 | 0.39 | 9.89 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 2 | 0.39 | 9.40 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: hier + incremental + composite + raycast + pathtrace | 4 | 0.39 | 7.61 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + direct | 2 | 0.39 | 8.86 | 0 |  | showcase [lit] (1.5×) |  |  |  |
-| gpu: points@cpu + splat + hier + refloor + direct | 2 | 0.39 | 9.72 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: prefix + sphere + beam + composite + raycast + direct | 2 | 0.38 | 7.49 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: points@cpu + splat + svo_dag + refloor + direct | 2 | 0.38 | 8.43 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: rows + sphere + composite + raycast + direct | 2 | 0.38 | 7.46 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: clipmap + refloor + quadtree + gbuffer + direct | 2 | 0.38 | 10.50 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + direct | 2 | 0.38 | 8.71 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + rows + refloor + direct | 2 | 0.38 | 9.81 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: bricks + incremental + composite + raycast + pathtrace | 4 | 0.38 | 7.59 | 0 |  | terrain-flight [unlit] (2.2×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 2 | 0.38 | 9.51 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: points@cpu + splat + distance + refloor + direct | 2 | 0.38 | 10.48 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + direct | 2 | 0.38 | 8.90 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: bricks + rowrun + quadtree + gbuffer + direct | 2 | 0.38 | 10.01 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: bricks + rowrun + quadtree + visbuffer + direct | 2 | 0.38 | 9.96 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 2 | 0.38 | 9.62 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + raster + direct | 2 | 0.38 | 8.24 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 2 | 0.38 | 7.81 | 0 |  |  |  |  |  |
-| gpu: bricks + sphere + beam + composite + raycast + direct | 2 | 0.38 | 7.35 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 2 | 0.38 | 8.79 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 2 | 0.38 | 7.84 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 2 | 0.38 | 7.71 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 2 | 0.38 | 7.69 | 0 |  |  |  |  |  |
-| gpu: svo_dag + sphere + composite + raycast + direct | 2 | 0.38 | 5.98 | 0 |  |  |  |  |  |
-| gpu: prefix + refloor + quadtree + raster + direct | 2 | 0.37 | 10.02 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + tree64 + refloor + direct | 2 | 0.37 | 8.59 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: hier + incremental + beam + composite + raycast + pathtrace | 4 | 0.37 | 7.62 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: distance + sphere + quadtree + raster + direct | 2 | 0.37 | 10.85 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + rows + rowrun + direct | 2 | 0.37 | 9.80 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 2 | 0.37 | 7.36 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: rows + sphere + beam + composite + raycast + direct | 2 | 0.37 | 7.46 | 0 |  | terrain-flight [lit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + raster + direct | 2 | 0.37 | 8.14 | 0 |  |  |  |  |  |
-| gpu: bricks + incremental + beam + composite + raycast + pathtrace | 4 | 0.37 | 7.62 | 0 |  | terrain-flight [unlit] (2.0×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + direct | 2 | 0.37 | 9.12 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + distance + rowrun + direct | 2 | 0.37 | 10.48 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 2 | 0.37 | 8.91 | 0 |  |  |  |  |  |
-| gpu: hier + rowrun + beam + composite + raycast + pathtrace | 4 | 0.37 | 7.61 | 0 |  | showcase [unlit] (1.9×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 2 | 0.37 | 9.74 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + clipmap + refloor + direct | 2 | 0.37 | 10.20 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 2 | 0.37 | 8.82 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 2 | 0.36 | 7.37 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + bricks + rowrun + direct | 2 | 0.36 | 9.80 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 2 | 0.36 | 7.47 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + direct | 2 | 0.36 | 8.85 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: hier + refloor + quadtree + raster + direct | 2 | 0.36 | 9.87 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 2 | 0.36 | 7.48 | 0 |  | showcase [lit] (1.4×) |  |  |  |
-| gpu: rows + incremental + beam + composite + raycast + pathtrace | 4 | 0.36 | 7.72 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + clipmap + rowrun + direct | 2 | 0.36 | 10.24 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 2 | 0.36 | 8.75 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + direct | 2 | 0.36 | 8.97 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: clipmap + rowrun + composite + raycast + pathtrace | 4 | 0.36 | 8.11 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + direct | 2 | 0.36 | 8.11 | 0 |  |  |  |  |  |
-| gpu: distance + refloor + quadtree + raster + direct | 2 | 0.36 | 10.90 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + rayquery + raycast + pathtrace | 4 | 0.36 | 10.80 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + direct | 2 | 0.36 | 8.88 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: prefix + incremental + composite + raycast + pathtrace | 4 | 0.36 | 7.74 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + rowrun + quadtree + visbuffer + direct | 2 | 0.36 | 10.45 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 2 | 0.36 | 7.25 | 0 |  |  |  |  |  |
-| gpu: rows + incremental + composite + raycast + pathtrace | 4 | 0.36 | 7.70 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + refloor + quadtree + raster + direct | 2 | 0.36 | 9.52 | 0 |  |  |  |  |  |
-| gpu: clipmap + rowrun + quadtree + gbuffer + direct | 2 | 0.35 | 10.51 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: tree64 + incremental + composite + raycast + pathtrace | 4 | 0.35 | 6.35 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + direct | 2 | 0.35 | 9.00 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + direct | 2 | 0.35 | 9.04 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + direct | 2 | 0.35 | 9.15 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: hier + rowrun + quadtree + gbuffer + direct | 2 | 0.35 | 10.17 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + raster + direct | 2 | 0.35 | 8.36 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + raster + direct | 2 | 0.35 | 8.23 | 0 |  |  |  |  |  |
-| gpu: hier + rowrun + quadtree + visbuffer + direct | 2 | 0.35 | 10.12 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + rayquery + raycast + pathtrace | 4 | 0.35 | 12.99 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 2 | 0.35 | 7.34 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + clipmap + incremental + direct | 2 | 0.35 | 10.25 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + direct | 2 | 0.35 | 8.26 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + direct | 2 | 0.35 | 8.94 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 2 | 0.35 | 8.90 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + hier + rowrun + direct | 2 | 0.35 | 9.73 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + raster + direct | 2 | 0.35 | 8.22 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + direct | 2 | 0.35 | 8.83 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: prefix + incremental + beam + composite + raycast + pathtrace | 4 | 0.35 | 7.76 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + direct | 2 | 0.35 | 8.99 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 2 | 0.34 | 8.82 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 2 | 0.34 | 7.37 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + raster + direct | 2 | 0.34 | 8.32 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + direct | 2 | 0.34 | 8.15 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + direct | 2 | 0.34 | 8.23 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 4 | 0.34 | 8.61 | 0 |  | showcase [unlit] (2.0×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 2 | 0.34 | 9.47 | 0 |  |  |  |  |  |
-| gpu: clipmap + incremental + composite + raycast + pathtrace | 4 | 0.34 | 8.12 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 2 | 0.34 | 7.44 | 0 |  |  |  |  |  |
-| gpu: bricks + incremental + quadtree + visbuffer + direct | 2 | 0.34 | 10.16 | 0 |  |  |  |  |  |
-| gpu: clipmap + incremental + quadtree + visbuffer + direct | 2 | 0.34 | 10.45 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + direct | 2 | 0.34 | 8.14 | 0 |  |  |  |  |  |
-| gpu: clipmap + incremental + quadtree + gbuffer + direct | 2 | 0.34 | 10.49 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + raster + direct | 2 | 0.34 | 8.25 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + tree64 + incremental + direct | 2 | 0.34 | 8.63 | 0 |  |  |  |  |  |
-| gpu: bricks + incremental + quadtree + gbuffer + direct | 2 | 0.34 | 10.24 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + direct | 2 | 0.34 | 9.12 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 2 | 0.34 | 8.86 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + direct | 2 | 0.34 | 8.81 | 0 |  |  |  |  |  |
-| gpu: hier + sphere + quadtree + gbuffer + direct | 2 | 0.34 | 10.00 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + direct | 2 | 0.34 | 9.09 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + direct | 2 | 0.34 | 8.94 | 0 |  |  |  |  |  |
-| gpu: svo_dag + incremental + composite + raycast + direct | 2 | 0.33 | 6.21 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + direct | 2 | 0.33 | 8.97 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: hier + incremental + quadtree + visbuffer + direct | 2 | 0.33 | 10.16 | 0 |  |  |  |  |  |
-| gpu: rows + refloor + quadtree + raster + direct | 2 | 0.33 | 10.00 | 0 |  |  |  |  |  |
-| gpu: hier + incremental + quadtree + gbuffer + direct | 2 | 0.33 | 10.18 | 0 |  |  |  |  |  |
-| gpu: tree64 + incremental + beam + composite + raycast + pathtrace | 4 | 0.33 | 6.38 | 0 |  | terrain-flight [unlit] (1.6×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + direct | 2 | 0.33 | 6.63 | 0 |  |  |  |  |  |
-| gpu: svo_dag + sphere + beam + composite + raycast + direct | 2 | 0.33 | 6.18 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 2 | 0.33 | 9.01 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 4 | 0.33 | 8.79 | 0 |  | showcase [unlit] (2.0×) | terrain-flight [lit] |  |  |
-| gpu: tree64 + incremental + quadtree + gbuffer + direct | 2 | 0.33 | 8.83 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + direct | 2 | 0.33 | 7.12 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + direct | 2 | 0.33 | 9.05 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: tree64 + rowrun + composite + raycast + direct | 2 | 0.33 | 6.31 | 0 |  |  |  |  |  |
-| gpu: tree64 + incremental + quadtree + visbuffer + direct | 2 | 0.33 | 8.78 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + direct | 2 | 0.33 | 8.93 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: points@cpu + splat + bricks + incremental + direct | 2 | 0.33 | 9.83 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: rows + incremental + quadtree + visbuffer + direct | 2 | 0.33 | 10.25 | 0 |  |  |  |  |  |
-| gpu: prefix + incremental + quadtree + visbuffer + direct | 2 | 0.33 | 10.32 | 0 |  |  |  |  |  |
-| gpu: rows + incremental + quadtree + gbuffer + direct | 2 | 0.33 | 10.31 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + direct | 2 | 0.33 | 8.69 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 2 | 0.33 | 7.45 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: prefix + incremental + quadtree + gbuffer + direct | 2 | 0.33 | 10.50 | 0 |  |  |  |  |  |
-| gpu: distance + incremental + composite + raycast + pathtrace | 4 | 0.33 | 8.42 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 2 | 0.32 | 7.35 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: clipmap + sphere + composite + raycast + direct | 2 | 0.32 | 7.88 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + direct | 2 | 0.32 | 9.10 | 0 |  |  |  |  |  |
-| gpu: clipmap + rowrun + beam + composite + raycast + pathtrace | 4 | 0.32 | 8.13 | 0 |  | showcase [unlit] (1.6×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + direct | 2 | 0.32 | 9.71 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 2 | 0.32 | 9.51 | 0 |  |  |  |  |  |
-| gpu: hier + sphere + quadtree + visbuffer + direct | 2 | 0.32 | 9.96 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 2 | 0.32 | 9.10 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + prefix + incremental + direct | 2 | 0.32 | 9.97 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 2 | 0.32 | 9.73 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + direct | 2 | 0.32 | 9.82 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: distance + sphere + quadtree + visbuffer + pathtrace | 4 | 0.32 | 10.91 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: points@cpu + splat + hier + sphere + direct | 2 | 0.32 | 9.70 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + hier + incremental + direct | 2 | 0.32 | 9.85 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: distance + sphere + quadtree + gbuffer + pathtrace | 4 | 0.32 | 10.98 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + svo_dag + rowrun + direct | 2 | 0.32 | 8.47 | 0 |  | showcase [lit] (1.3×) |  |  |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + direct | 2 | 0.32 | 6.66 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 2 | 0.32 | 9.46 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 2 | 0.32 | 9.09 | 0 |  |  |  |  |  |
-| gpu: tree64 + refloor + quadtree + visbuffer + pathtrace | 4 | 0.32 | 8.63 | 0 |  | terrain-flight [unlit] (1.8×) | showcase [lit] |  |  |
-| gpu: bricks + sphere + quadtree + gbuffer + direct | 2 | 0.31 | 9.99 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: bricks + sphere + quadtree + visbuffer + direct | 2 | 0.31 | 9.95 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 2 | 0.31 | 9.93 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 2 | 0.31 | 8.79 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + prefix + sphere + direct | 2 | 0.31 | 9.82 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + rows + incremental + direct | 2 | 0.31 | 9.93 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 2 | 0.31 | 9.71 | 0 |  |  |  |  |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + pathtrace | 4 | 0.31 | 9.71 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit] |  |  |
-| gpu: distance + incremental + beam + composite + raycast + pathtrace | 4 | 0.31 | 8.44 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 2 | 0.31 | 10.05 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: tree64 + refloor + quadtree + gbuffer + pathtrace | 4 | 0.31 | 8.69 | 0 |  | terrain-flight [unlit] (1.8×) | showcase [lit] |  |  |
-| gpu: tree64 + rowrun + beam + composite + raycast + direct | 2 | 0.31 | 6.33 | 0 |  |  |  |  |  |
-| gpu: svo_dag + incremental + beam + composite + raycast + direct | 2 | 0.31 | 6.26 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 2 | 0.31 | 9.35 | 0 |  |  |  |  |  |
-| gpu: prefix + sphere + quadtree + visbuffer + direct | 2 | 0.31 | 10.26 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: prefix + refloor + quadtree + gbuffer + pathtrace | 4 | 0.31 | 10.21 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: prefix + refloor + quadtree + visbuffer + pathtrace | 4 | 0.31 | 10.18 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 2 | 0.31 | 7.41 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: svo_dag + rowrun + composite + raycast + pathtrace | 4 | 0.31 | 6.26 | 0 |  | showcase [unlit] (2.1×), terrain-flight [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + sphere + quadtree + gbuffer + direct | 2 | 0.31 | 10.29 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 2 | 0.31 | 9.83 | 0 |  |  |  |  |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + pathtrace | 4 | 0.31 | 9.74 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit] |  |  |
-| gpu: points@cpu + splat + rows + sphere + direct | 2 | 0.31 | 9.79 | 0 |  |  |  |  |  |
-| gpu: hier + refloor + quadtree + visbuffer + pathtrace | 4 | 0.31 | 10.05 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: points@cpu + splat + bricks + refloor + pathtrace | 4 | 0.31 | 9.55 | 0 |  | showcase [unlit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + bricks + sphere + direct | 2 | 0.31 | 9.68 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 2 | 0.31 | 8.82 | 0 |  |  |  |  |  |
-| gpu: tree64 + refloor + quadtree + raster + direct | 2 | 0.30 | 8.58 | 0 |  |  |  |  |  |
-| gpu: rows + sphere + quadtree + visbuffer + direct | 2 | 0.30 | 10.22 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: hier + sphere + composite + raycast + pathtrace | 4 | 0.30 | 7.59 | 0 |  | terrain-flight [unlit] (2.0×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 2 | 0.30 | 9.75 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 2 | 0.30 | 7.53 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + direct | 2 | 0.30 | 9.67 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: rows + sphere + quadtree + gbuffer + direct | 2 | 0.30 | 10.26 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: svo_dag + refloor + quadtree + visbuffer + pathtrace | 4 | 0.30 | 8.53 | 0 |  | terrain-flight [unlit] (1.6×) | showcase [lit] |  |  |
-| gpu: points@cpu + splat + svo_dag + sphere + direct | 2 | 0.30 | 8.45 | 0 |  |  |  |  |  |
-| gpu: hier + refloor + quadtree + gbuffer + pathtrace | 4 | 0.30 | 10.11 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 2 | 0.30 | 7.47 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + direct | 2 | 0.30 | 6.74 | 0 |  |  |  |  |  |
-| gpu: svo_dag + refloor + quadtree + raster + direct | 2 | 0.30 | 8.55 | 0 |  |  |  |  |  |
-| gpu: svo_dag + refloor + quadtree + gbuffer + pathtrace | 4 | 0.30 | 8.58 | 0 |  | terrain-flight [unlit] (1.7×) | showcase [lit] |  |  |
-| gpu: clipmap + incremental + beam + composite + raycast + pathtrace | 4 | 0.30 | 8.15 | 0 |  | terrain-flight [unlit] (1.7×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: distance + refloor + quadtree + visbuffer + pathtrace | 4 | 0.30 | 10.97 | 0 |  |  |  |  |  |
-| gpu: rows + rowrun + quadtree + raster + direct | 2 | 0.30 | 10.02 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 2 | 0.30 | 7.35 | 0 |  |  |  |  |  |
-| gpu: distance + incremental + quadtree + gbuffer + direct | 2 | 0.30 | 11.16 | 0 |  |  |  |  |  |
-| gpu: distance + incremental + quadtree + visbuffer + direct | 2 | 0.30 | 11.09 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + distance + incremental + direct | 2 | 0.30 | 10.58 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: distance + refloor + quadtree + gbuffer + pathtrace | 4 | 0.30 | 11.01 | 0 |  |  |  |  |  |
-| gpu: bricks + refloor + quadtree + visbuffer + pathtrace | 4 | 0.30 | 10.08 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: points@cpu + splat + clipmap + sphere + direct | 2 | 0.30 | 10.20 | 0 |  |  |  |  |  |
-| gpu: clipmap + refloor + quadtree + raster + direct | 2 | 0.30 | 10.38 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + raster + direct | 2 | 0.30 | 9.26 | 0 |  | showcase [lit] (1.9×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + direct | 2 | 0.30 | 8.57 | 0 |  | showcase [lit] (1.9×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 2 | 0.29 | 9.24 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: hier + sphere + beam + composite + raycast + pathtrace | 4 | 0.29 | 7.60 | 0 |  | terrain-flight [unlit] (2.0×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + raster + pathtrace | 2 | 0.29 | 9.23 | 0 |  |  |  |  |  |
-| gpu: clipmap + sphere + beam + composite + raycast + direct | 2 | 0.29 | 8.06 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 2 | 0.29 | 9.30 | 0 |  |  |  |  |  |
-| gpu: clipmap + refloor + quadtree + visbuffer + pathtrace | 4 | 0.29 | 10.41 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 2 | 0.29 | 9.41 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 2 | 0.29 | 7.35 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + tree64 + sphere + direct | 2 | 0.29 | 8.61 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + svo_dag + incremental + direct | 2 | 0.29 | 8.49 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + raster + direct | 2 | 0.29 | 9.26 | 0 |  | showcase [lit] (1.9×) | terrain-flight [lit] |  |  |
-| gpu: rows + refloor + quadtree + visbuffer + pathtrace | 4 | 0.29 | 10.17 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 2 | 0.29 | 9.93 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: clipmap + refloor + quadtree + gbuffer + pathtrace | 4 | 0.29 | 10.47 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit] |  |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 2 | 0.29 | 9.09 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 2 | 0.29 | 7.46 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 2 | 0.29 | 8.98 | 0 |  |  |  |  |  |
-| gpu: tree64 + sphere + composite + raycast + direct | 2 | 0.29 | 6.30 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 2 | 0.29 | 9.36 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 2 | 0.29 | 8.93 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + raster + direct | 2 | 0.29 | 8.44 | 0 |  | showcase [lit] (1.8×) | terrain-flight [lit] |  |  |
-| gpu: bricks + refloor + quadtree + gbuffer + pathtrace | 4 | 0.29 | 10.17 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: points@cpu + splat + distance + sphere + pathtrace | 2 | 0.29 | 10.81 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + sphere + pathtrace | 2 | 0.28 | 13.24 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct | 2 | 0.28 | 8.43 | 0 |  | showcase [lit] (1.8×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + raster + pathtrace | 2 | 0.28 | 9.26 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + direct | 2 | 0.28 | 6.99 | 0 |  | showcase [lit] (1.9×) | terrain-flight [lit] |  |  |
-| gpu: rows + refloor + quadtree + gbuffer + pathtrace | 4 | 0.28 | 10.23 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 2 | 0.28 | 10.05 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 2 | 0.28 | 9.22 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + raster + direct | 2 | 0.28 | 8.54 | 0 |  | showcase [lit] (1.8×) | terrain-flight [lit] |  |  |
-| gpu: clipmap + sphere + quadtree + visbuffer + direct | 2 | 0.28 | 10.59 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: svo_dag + rowrun + beam + composite + raycast + pathtrace | 4 | 0.28 | 6.37 | 0 |  | showcase [unlit] (2.1×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + refloor + pathtrace | 2 | 0.28 | 12.58 | 0 |  |  |  |  |  |
-| gpu: prefix + rowrun + quadtree + raster + direct | 2 | 0.28 | 10.16 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + pathtrace | 2 | 0.28 | 8.51 | 0 |  |  |  |  |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + direct | 2 | 0.27 | 6.63 | 0 |  |  |  |  |  |
-| gpu: points@cpu + splat + prefix + refloor + pathtrace | 2 | 0.27 | 10.18 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: prefix + sphere + composite + raycast + pathtrace | 4 | 0.27 | 7.71 | 0 |  | terrain-flight [unlit] (2.2×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + refloor + pathtrace | 2 | 0.27 | 12.50 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + tree64 + rowrun + direct | 2 | 0.27 | 8.62 | 0 |  |  |  |  |  |
-| gpu: clipmap + sphere + quadtree + gbuffer + direct | 2 | 0.27 | 10.63 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit] |  |  |
-| gpu: rows + incremental + quadtree + raster + direct | 2 | 0.27 | 10.13 | 0 |  |  | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + direct | 2 | 0.27 | 6.97 | 0 |  | showcase [lit] (1.8×) | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + distance + refloor + pathtrace | 2 | 0.27 | 10.81 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: svo_dag + sphere + quadtree + gbuffer + direct | 2 | 0.27 | 8.71 | 0 |  |  | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + direct | 2 | 0.27 | 9.00 | 0 |  | showcase [lit] (1.7×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + direct | 2 | 0.27 | 8.55 | 0 |  | showcase [lit] (1.7×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + direct | 2 | 0.27 | 8.60 | 0 |  | showcase [lit] (1.8×) | terrain-flight [lit] |  |  |
-| gpu: bricks + sphere + composite + raycast + pathtrace | 4 | 0.27 | 7.57 | 0 |  | terrain-flight [unlit] (2.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + sphere + beam + composite + raycast + pathtrace | 4 | 0.27 | 7.73 | 0 |  | terrain-flight [unlit] (2.1×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 2 | 0.27 | 7.72 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: svo_dag + sphere + quadtree + visbuffer + direct | 2 | 0.27 | 8.69 | 0 |  |  | showcase [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + raster + pathtrace | 2 | 0.27 | 9.23 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + hier + refloor + pathtrace | 2 | 0.27 | 10.05 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 2 | 0.27 | 7.86 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 2 | 0.26 | 7.78 | 0 |  |  |  |  |  |
-| gpu: rows + sphere + composite + raycast + pathtrace | 4 | 0.26 | 7.69 | 0 |  | terrain-flight [unlit] (2.2×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + raster + pathtrace | 2 | 0.26 | 8.39 | 0 |  |  |  |  |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 2 | 0.26 | 8.76 | 0 |  |  | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 2 | 0.26 | 8.71 | 0 |  |  | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 2 | 0.26 | 7.61 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: distance + rowrun + quadtree + raster + direct | 2 | 0.26 | 11.00 | 0 |  |  |  |  |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 2 | 0.26 | 7.72 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + refloor + pathtrace | 2 | 0.26 | 11.17 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: bricks + sphere + beam + composite + raycast + pathtrace | 4 | 0.26 | 7.59 | 0 |  | terrain-flight [unlit] (2.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 2 | 0.26 | 7.61 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 2 | 0.26 | 9.21 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + beam + composite + raycast + direct | 2 | 0.26 | 6.34 | 0 |  |  | showcase [lit] |  |  |
-| gpu: distance + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.26 | 11.05 | 0 |  |  | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + raster + pathtrace | 2 | 0.26 | 8.60 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + pathtrace | 4 | 0.26 | 8.41 | 0 |  | showcase [unlit] (2.9×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + direct | 2 | 0.26 | 9.28 | 0 |  | showcase [lit] (1.8×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + refloor + pathtrace | 2 | 0.26 | 11.32 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: hier + incremental + quadtree + raster + direct | 2 | 0.26 | 10.08 | 0 |  |  | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 2 | 0.26 | 9.33 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + direct | 2 | 0.26 | 7.11 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: rows + sphere + beam + composite + raycast + pathtrace | 4 | 0.26 | 7.69 | 0 |  | terrain-flight [unlit] (2.1×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.26 | 10.24 | 0 |  |  | showcase [lit] |  |  |
-| gpu: prefix + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.26 | 10.28 | 0 |  |  | showcase [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + refloor + pathtrace | 2 | 0.26 | 12.67 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + refloor + pathtrace | 2 | 0.26 | 13.26 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + refloor + pathtrace | 2 | 0.26 | 12.38 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: distance + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.26 | 11.09 | 0 |  |  | showcase [lit] |  |  |
-| gpu: bricks + incremental + quadtree + raster + direct | 2 | 0.26 | 10.07 | 0 |  |  | showcase [lit] |  |  |
-| gpu: points@cpu + splat + tree64 + refloor + pathtrace | 2 | 0.26 | 8.97 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 2 | 0.25 | 10.01 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + rowrun + pathtrace | 2 | 0.25 | 12.71 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: rows + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.25 | 10.31 | 0 |  |  | showcase [lit] |  |  |
-| gpu: svo_dag + sphere + composite + raycast + pathtrace | 4 | 0.25 | 6.24 | 0 |  | terrain-flight [unlit] (2.0×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 2 | 0.25 | 7.54 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + refloor + pathtrace | 2 | 0.25 | 12.95 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 2 | 0.25 | 7.44 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + raster + pathtrace | 2 | 0.25 | 9.27 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: rows + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.25 | 10.26 | 0 |  |  | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 2 | 0.25 | 8.71 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + quadtree + visbuffer + direct | 2 | 0.25 | 8.83 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: points@cpu + splat + rows + refloor + pathtrace | 2 | 0.25 | 10.15 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + quadtree + gbuffer + direct | 2 | 0.25 | 8.85 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 2 | 0.25 | 9.82 | 0 |  |  | showcase [lit] |  |  |
-| gpu: points@cpu + splat + svo_dag + refloor + pathtrace | 2 | 0.25 | 8.81 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 2 | 0.25 | 9.38 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 2 | 0.25 | 9.47 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 2 | 0.25 | 9.93 | 0 |  |  | showcase [lit] |  |  |
-| gpu: svo_dag + incremental + quadtree + visbuffer + direct | 2 | 0.25 | 8.81 | 0 |  |  | showcase [lit] |  |  |
-| gpu: clipmap + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.25 | 10.48 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 2 | 0.25 | 8.96 | 0 |  |  | showcase [lit] |  |  |
-| gpu: svo_dag + incremental + quadtree + gbuffer + direct | 2 | 0.25 | 8.86 | 0 |  |  | showcase [lit] |  |  |
-| gpu: clipmap + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.25 | 10.53 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 2 | 0.25 | 8.76 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 2 | 0.25 | 9.00 | 0 |  |  | showcase [lit] |  |  |
-| gpu: tree64 + incremental + quadtree + gbuffer + pathtrace | 4 | 0.24 | 8.78 | 0 |  | terrain-flight [unlit] (1.8×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: tree64 + incremental + quadtree + visbuffer + pathtrace | 4 | 0.24 | 8.77 | 0 |  | terrain-flight [unlit] (1.8×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + raster + direct | 2 | 0.24 | 8.45 | 0 |  | showcase [lit] (1.7×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + raster + pathtrace | 2 | 0.24 | 8.47 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + raster + direct | 2 | 0.24 | 8.58 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: prefix + incremental + quadtree + raster + direct | 2 | 0.24 | 10.20 | 0 |  |  | showcase [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + rowrun + pathtrace | 2 | 0.24 | 13.37 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + direct | 2 | 0.24 | 8.47 | 0 |  | showcase [lit] (1.7×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + raster + pathtrace | 2 | 0.24 | 8.49 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + rowrun + quadtree + visbuffer + direct | 2 | 0.24 | 8.83 | 0 |  |  | showcase [lit] |  |  |
-| gpu: distance + incremental + quadtree + raster + direct | 2 | 0.24 | 10.97 | 0 |  |  | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 2 | 0.24 | 10.05 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: svo_dag + rowrun + quadtree + gbuffer + direct | 2 | 0.24 | 8.90 | 0 |  |  | showcase [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 2 | 0.24 | 6.90 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + prefix + rowrun + pathtrace | 2 | 0.24 | 10.32 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 2 | 0.24 | 8.83 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: distance + sphere + quadtree + raster + pathtrace | 4 | 0.24 | 11.19 | 0 |  | terrain-flight [unlit] (1.3×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 2 | 0.24 | 8.91 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + incremental + quadtree + visbuffer + pathtrace | 4 | 0.24 | 10.50 | 0 |  | terrain-flight [unlit] (2.0×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 2 | 0.24 | 8.71 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 2 | 0.24 | 9.02 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 2 | 0.24 | 9.50 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 2 | 0.23 | 8.71 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 2 | 0.23 | 8.87 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 2 | 0.23 | 8.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 2 | 0.23 | 8.87 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + incremental + quadtree + gbuffer + pathtrace | 4 | 0.23 | 10.52 | 0 |  | terrain-flight [unlit] (2.0×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + incremental + composite + raycast + pathtrace | 4 | 0.23 | 6.27 | 0 |  | terrain-flight [unlit] (1.9×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 2 | 0.23 | 9.39 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + direct | 2 | 0.23 | 8.58 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + rowrun + pathtrace | 2 | 0.23 | 12.66 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + raster + direct | 2 | 0.23 | 9.29 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 2 | 0.23 | 8.90 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 2 | 0.23 | 8.74 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 2 | 0.23 | 9.94 | 0 |  |  | showcase [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 2 | 0.23 | 9.83 | 0 |  |  | showcase [lit] |  |  |
-| gpu: svo_dag + sphere + beam + composite + raycast + pathtrace | 4 | 0.23 | 6.27 | 0 |  | terrain-flight [unlit] (1.7×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + rowrun + composite + raycast + pathtrace | 4 | 0.23 | 6.39 | 0 |  | showcase [unlit] (2.1×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 2 | 0.23 | 6.88 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + distance + rowrun + pathtrace | 2 | 0.23 | 10.87 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + pathtrace | 4 | 0.23 | 9.80 | 0 |  | terrain-flight [unlit] (2.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 2 | 0.23 | 9.11 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 2 | 0.23 | 9.24 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 2 | 0.23 | 9.00 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 2 | 0.23 | 9.01 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + raster + pathtrace | 2 | 0.23 | 8.57 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 2 | 0.23 | 9.60 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 2 | 0.23 | 8.90 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 2 | 0.22 | 8.87 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 2 | 0.22 | 7.00 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 2 | 0.22 | 9.29 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: clipmap + sphere + composite + raycast + pathtrace | 4 | 0.22 | 8.11 | 0 |  | terrain-flight [unlit] (2.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 2 | 0.22 | 9.07 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 2 | 0.22 | 8.92 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + refloor + quadtree + raster + pathtrace | 4 | 0.22 | 10.48 | 0 |  | terrain-flight [unlit] (1.4×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + direct | 2 | 0.22 | 9.03 | 0 |  | showcase [lit] (1.7×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 2 | 0.22 | 9.18 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 2 | 0.22 | 9.73 | 0 |  |  | terrain-flight [lit] |  |  |
-| gpu: tree64 + refloor + quadtree + raster + pathtrace | 4 | 0.22 | 8.94 | 0 |  | terrain-flight [unlit] (2.2×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 2 | 0.22 | 7.37 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + direct | 2 | 0.22 | 9.01 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: svo_dag + incremental + beam + composite + raycast + pathtrace | 4 | 0.22 | 6.29 | 0 |  | terrain-flight [unlit] (1.7×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + clipmap + refloor + pathtrace | 2 | 0.22 | 10.57 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 2 | 0.22 | 9.40 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 2 | 0.22 | 8.68 | 0 |  |  | showcase [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + direct | 2 | 0.22 | 6.99 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + rows + rowrun + pathtrace | 2 | 0.22 | 10.18 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 2 | 0.22 | 8.73 | 0 |  |  | showcase [lit] |  |  |
-| gpu: distance + refloor + quadtree + raster + pathtrace | 4 | 0.22 | 11.27 | 0 |  | terrain-flight [unlit] (1.4×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + refloor + quadtree + raster + pathtrace | 4 | 0.22 | 10.37 | 0 |  | terrain-flight [unlit] (1.4×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + refloor + quadtree + raster + pathtrace | 4 | 0.22 | 8.78 | 0 |  | terrain-flight [unlit] (2.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 2 | 0.22 | 9.51 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + rowrun + beam + composite + raycast + pathtrace | 4 | 0.22 | 6.49 | 0 |  | showcase [unlit] (2.2×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + incremental + pathtrace | 2 | 0.21 | 12.43 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + incremental + pathtrace | 2 | 0.21 | 12.72 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: rows + incremental + quadtree + visbuffer + pathtrace | 4 | 0.21 | 10.33 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + rowrun + pathtrace | 2 | 0.21 | 12.92 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + incremental + quadtree + visbuffer + pathtrace | 4 | 0.21 | 10.22 | 0 |  |  | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: clipmap + refloor + quadtree + raster + pathtrace | 4 | 0.21 | 10.66 | 0 |  | terrain-flight [unlit] (2.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + incremental + quadtree + gbuffer + pathtrace | 4 | 0.21 | 10.29 | 0 |  |  | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + incremental + pathtrace | 2 | 0.21 | 11.10 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + sphere + quadtree + raster + direct | 2 | 0.21 | 10.06 | 0 |  |  | showcase [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 2 | 0.21 | 8.81 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: rows + incremental + quadtree + gbuffer + pathtrace | 4 | 0.21 | 10.35 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 2 | 0.21 | 8.95 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.21 | 10.23 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + incremental + pathtrace | 2 | 0.21 | 12.74 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.21 | 10.27 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 2 | 0.21 | 8.93 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + incremental + pathtrace | 2 | 0.21 | 13.01 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + incremental + quadtree + raster + direct | 2 | 0.21 | 10.55 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + direct | 2 | 0.21 | 8.45 | 0 |  | showcase [lit] (1.7×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + incremental + pathtrace | 2 | 0.21 | 12.58 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + rowrun + pathtrace | 2 | 0.21 | 12.62 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + incremental + quadtree + raster + direct | 2 | 0.21 | 8.82 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + incremental + quadtree + visbuffer + pathtrace | 4 | 0.21 | 10.18 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: rows + refloor + quadtree + raster + pathtrace | 4 | 0.21 | 10.48 | 0 |  | showcase [unlit] (1.5×), terrain-flight [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + incremental + quadtree + gbuffer + pathtrace | 4 | 0.21 | 10.23 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: clipmap + sphere + beam + composite + raycast + pathtrace | 4 | 0.21 | 8.12 | 0 |  | terrain-flight [unlit] (2.0×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + raster + direct | 2 | 0.21 | 8.45 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: prefix + incremental + quadtree + visbuffer + pathtrace | 4 | 0.20 | 10.39 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + direct | 2 | 0.20 | 6.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 2 | 0.20 | 8.83 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + incremental + quadtree + gbuffer + pathtrace | 4 | 0.20 | 10.47 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 2 | 0.20 | 8.88 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 2 | 0.20 | 7.82 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 2 | 0.20 | 9.54 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + rowrun + quadtree + raster + direct | 2 | 0.20 | 10.57 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 2 | 0.20 | 9.49 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + composite + raycast + pathtrace | 4 | 0.20 | 6.35 | 0 |  | terrain-flight [unlit] (2.2×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + tree64 + incremental + pathtrace | 2 | 0.20 | 9.06 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 2 | 0.20 | 7.84 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 2 | 0.20 | 7.73 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 2 | 0.20 | 7.92 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: rows + sphere + quadtree + raster + direct | 2 | 0.20 | 10.18 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 2 | 0.20 | 8.67 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + sphere + quadtree + visbuffer + pathtrace | 4 | 0.20 | 8.75 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 2 | 0.20 | 8.72 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 2 | 0.20 | 8.79 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + direct | 2 | 0.20 | 8.57 | 0 |  | showcase [lit] (1.4×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + direct | 2 | 0.20 | 6.99 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 2 | 0.20 | 8.85 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + direct | 2 | 0.20 | 8.45 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 2 | 0.20 | 8.97 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 2 | 0.20 | 9.86 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + direct | 2 | 0.20 | 8.44 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 2 | 0.20 | 9.74 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 2 | 0.20 | 9.27 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + sphere + quadtree + raster + direct | 2 | 0.19 | 10.06 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + sphere + quadtree + raster + direct | 2 | 0.19 | 10.22 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + raster + direct | 2 | 0.19 | 8.54 | 0 |  | showcase [lit] (1.3×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 2 | 0.19 | 9.08 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + sphere + quadtree + gbuffer + pathtrace | 4 | 0.19 | 10.27 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: hier + sphere + quadtree + visbuffer + pathtrace | 4 | 0.19 | 10.23 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + pathtrace | 2 | 0.19 | 8.48 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 2 | 0.19 | 7.45 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + sphere + quadtree + gbuffer + pathtrace | 4 | 0.19 | 8.82 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: clipmap + sphere + quadtree + visbuffer + pathtrace | 4 | 0.19 | 10.50 | 0 |  | terrain-flight [unlit] (2.2×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: clipmap + sphere + quadtree + gbuffer + pathtrace | 4 | 0.19 | 10.52 | 0 |  | terrain-flight [unlit] (2.2×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 2 | 0.19 | 9.36 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 2 | 0.19 | 9.37 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + refloor + quadtree + raster + pathtrace | 4 | 0.19 | 10.13 | 0 |  | showcase [unlit] (1.6×), terrain-flight [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + incremental + pathtrace | 2 | 0.19 | 13.29 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 2 | 0.19 | 7.33 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.19 | 10.33 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: tree64 + rowrun + quadtree + gbuffer + direct | 2 | 0.19 | 9.20 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + rowrun + quadtree + visbuffer + direct | 2 | 0.19 | 9.21 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.19 | 10.31 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 2 | 0.19 | 8.79 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 2 | 0.19 | 8.91 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 2 | 0.19 | 8.54 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + bricks + rowrun + pathtrace | 2 | 0.19 | 10.18 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 2 | 0.19 | 9.21 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: distance + incremental + quadtree + visbuffer + pathtrace | 4 | 0.19 | 11.14 | 0 |  | showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 2 | 0.19 | 8.94 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 2 | 0.19 | 9.05 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: distance + incremental + quadtree + gbuffer + pathtrace | 4 | 0.19 | 11.22 | 0 |  | showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 2 | 0.19 | 9.33 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 2 | 0.19 | 9.68 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + quadtree + visbuffer + pathtrace | 4 | 0.19 | 8.90 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + hier + incremental + pathtrace | 2 | 0.19 | 10.17 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + pathtrace | 2 | 0.19 | 9.24 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + clipmap + rowrun + pathtrace | 2 | 0.19 | 10.63 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + beam + composite + raycast + pathtrace | 4 | 0.19 | 6.45 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + rowrun + pathtrace | 2 | 0.19 | 12.54 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 2 | 0.19 | 7.78 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + direct | 2 | 0.19 | 6.66 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 2 | 0.19 | 7.88 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + quadtree + gbuffer + pathtrace | 4 | 0.19 | 8.97 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 2 | 0.18 | 9.81 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + raster + pathtrace | 2 | 0.18 | 9.51 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + direct | 2 | 0.18 | 9.01 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + sphere + quadtree + gbuffer + pathtrace | 4 | 0.18 | 10.43 | 0 |  | showcase [unlit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks + sphere + quadtree + visbuffer + pathtrace | 4 | 0.18 | 10.22 | 0 |  | showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks + sphere + quadtree + gbuffer + pathtrace | 4 | 0.18 | 10.26 | 0 |  | showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: prefix + sphere + quadtree + visbuffer + pathtrace | 4 | 0.18 | 10.39 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 2 | 0.18 | 7.30 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + direct | 2 | 0.18 | 7.14 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 2 | 0.18 | 9.18 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: rows + sphere + quadtree + gbuffer + pathtrace | 4 | 0.18 | 10.39 | 0 |  | showcase [unlit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 2 | 0.18 | 9.30 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: rows + sphere + quadtree + visbuffer + pathtrace | 4 | 0.18 | 10.37 | 0 |  | showcase [unlit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 2 | 0.18 | 9.23 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 2 | 0.18 | 9.41 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 2 | 0.18 | 9.37 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + rows + incremental + pathtrace | 2 | 0.18 | 10.23 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + direct | 2 | 0.18 | 7.10 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + direct | 2 | 0.18 | 6.99 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 2 | 0.18 | 7.40 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + incremental + quadtree + gbuffer + pathtrace | 4 | 0.18 | 8.86 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 2 | 0.18 | 9.21 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + rowrun + quadtree + raster + direct | 2 | 0.18 | 10.14 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 2 | 0.18 | 9.49 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 2 | 0.18 | 9.31 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + bricks + incremental + pathtrace | 2 | 0.18 | 10.15 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: rows + rowrun + quadtree + raster + pathtrace | 4 | 0.18 | 10.21 | 0 |  | showcase [unlit] (1.7×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + incremental + quadtree + visbuffer + pathtrace | 4 | 0.18 | 8.79 | 0 |  | terrain-flight [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + sphere + pathtrace | 2 | 0.18 | 12.51 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + hier + rowrun + pathtrace | 2 | 0.18 | 10.13 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + sphere + quadtree + raster + direct | 2 | 0.18 | 8.77 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + rowrun + quadtree + raster + direct | 2 | 0.18 | 10.16 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 2 | 0.18 | 8.60 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + clipmap + incremental + pathtrace | 2 | 0.17 | 10.65 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + raster + pathtrace | 2 | 0.17 | 8.55 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 2 | 0.17 | 9.72 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + prefix + incremental + pathtrace | 2 | 0.17 | 10.33 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + direct | 2 | 0.17 | 7.00 | 0 |  | showcase [lit] (1.5×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 2 | 0.17 | 9.82 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + rowrun + quadtree + raster + pathtrace | 4 | 0.17 | 10.24 | 0 |  | showcase [unlit] (1.7×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + raster + pathtrace | 2 | 0.17 | 9.27 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: distance + rowrun + quadtree + raster + pathtrace | 4 | 0.17 | 10.98 | 0 |  | showcase [unlit] (1.7×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + rowrun + pathtrace | 2 | 0.17 | 11.30 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.17 | 8.84 | 0 |  | terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + sphere + pathtrace | 2 | 0.17 | 12.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 2 | 0.17 | 7.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + incremental + quadtree + raster + pathtrace | 4 | 0.17 | 8.88 | 0 |  | terrain-flight [unlit] (2.6×), showcase [unlit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 2 | 0.17 | 7.86 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.17 | 8.81 | 0 |  | terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 2 | 0.17 | 9.12 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 2 | 0.17 | 7.80 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + sphere + pathtrace | 2 | 0.17 | 12.62 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + sphere + quadtree + raster + direct | 2 | 0.17 | 10.60 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + sphere + pathtrace | 2 | 0.17 | 12.66 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + pathtrace | 2 | 0.17 | 8.80 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 2 | 0.17 | 9.24 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + hier + sphere + pathtrace | 2 | 0.17 | 10.08 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + incremental + pathtrace | 2 | 0.17 | 11.31 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + raster + pathtrace | 2 | 0.17 | 9.51 | 0 |  | showcase [lit] (1.6×) | terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 2 | 0.17 | 7.69 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 2 | 0.16 | 7.41 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + incremental + quadtree + raster + pathtrace | 4 | 0.16 | 10.66 | 0 |  | terrain-flight [unlit] (2.9×), showcase [unlit] (1.5×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 2 | 0.16 | 9.86 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 2 | 0.16 | 9.75 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 2 | 0.16 | 7.51 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 2 | 0.16 | 10.01 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 2 | 0.16 | 10.12 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + svo_dag + rowrun + pathtrace | 2 | 0.16 | 8.92 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: clipmap + rowrun + quadtree + raster + pathtrace | 4 | 0.16 | 10.37 | 0 |  | terrain-flight [unlit] (3.0×), showcase [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + sphere + pathtrace | 2 | 0.16 | 11.23 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + quadtree + raster + direct | 2 | 0.16 | 8.86 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 2 | 0.16 | 7.89 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 2 | 0.16 | 9.45 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 2 | 0.16 | 7.99 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + distance + incremental + pathtrace | 2 | 0.16 | 10.93 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 2 | 0.16 | 9.34 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + raster + pathtrace | 2 | 0.16 | 8.69 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 2 | 0.16 | 9.27 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + prefix + sphere + pathtrace | 2 | 0.16 | 10.20 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 2 | 0.16 | 9.38 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + raster + pathtrace | 2 | 0.15 | 8.52 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 2 | 0.15 | 7.51 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 2 | 0.15 | 7.41 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 2 | 0.15 | 7.19 | 0 |  | showcase [lit] (1.7×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 2 | 0.15 | 6.93 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + sphere + pathtrace | 2 | 0.15 | 12.86 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + bricks + sphere + pathtrace | 2 | 0.15 | 10.08 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 2 | 0.15 | 9.22 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + sphere + pathtrace | 2 | 0.15 | 11.26 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + raster + pathtrace | 2 | 0.15 | 8.43 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + svo_dag + sphere + pathtrace | 2 | 0.15 | 8.86 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 2 | 0.15 | 9.10 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 2 | 0.15 | 9.33 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: rows + incremental + quadtree + raster + pathtrace | 4 | 0.15 | 10.48 | 0 |  | showcase [unlit] (1.9×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: points@cpu + splat + rows + sphere + pathtrace | 2 | 0.15 | 10.18 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 2 | 0.15 | 9.22 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 2 | 0.15 | 7.66 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 2 | 0.15 | 7.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + raster + pathtrace | 2 | 0.15 | 8.79 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + pathtrace | 2 | 0.15 | 8.41 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + incremental + quadtree + raster + pathtrace | 4 | 0.15 | 10.37 | 0 |  | showcase [unlit] (1.8×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 2 | 0.15 | 7.23 | 0 |  | showcase [lit] (1.8×) | terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + pathtrace | 2 | 0.15 | 8.57 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + incremental + quadtree + raster + pathtrace | 4 | 0.14 | 10.36 | 0 |  | showcase [unlit] (1.9×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 2 | 0.14 | 7.90 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + incremental + quadtree + raster + direct | 2 | 0.14 | 8.87 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + incremental + quadtree + raster + pathtrace | 4 | 0.14 | 10.51 | 0 |  | showcase [unlit] (1.9×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 2 | 0.14 | 7.80 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 2 | 0.14 | 7.55 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + tree64 + sphere + pathtrace | 2 | 0.14 | 9.04 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 2 | 0.14 | 7.45 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + rowrun + quadtree + visbuffer + pathtrace | 4 | 0.14 | 8.96 | 0 |  | terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: tree64 + rowrun + quadtree + gbuffer + pathtrace | 4 | 0.14 | 8.99 | 0 |  | terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + raster + pathtrace | 2 | 0.14 | 8.57 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 2 | 0.14 | 8.96 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 2 | 0.14 | 6.98 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 2 | 0.14 | 7.68 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 2 | 0.14 | 7.75 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + raster + pathtrace | 2 | 0.14 | 8.45 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + raster + pathtrace | 2 | 0.14 | 9.27 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: distance + incremental + quadtree + raster + pathtrace | 4 | 0.14 | 11.30 | 0 |  | showcase [unlit] (2.0×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: points@cpu + splat + svo_dag + incremental + pathtrace | 2 | 0.13 | 8.97 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 2 | 0.13 | 9.24 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + raster + pathtrace | 2 | 0.13 | 8.60 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + direct | 2 | 0.13 | 7.00 | 0 |  | showcase [lit] (1.8×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 2 | 0.13 | 7.74 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + clipmap + sphere + pathtrace | 2 | 0.13 | 10.60 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 2 | 0.13 | 7.85 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + rowrun + pathtrace | 2 | 0.13 | 11.14 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + sphere + quadtree + raster + pathtrace | 4 | 0.13 | 8.81 | 0 |  | terrain-flight [unlit] (2.9×), showcase [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: hier + sphere + quadtree + raster + pathtrace | 4 | 0.13 | 10.41 | 0 |  | showcase [unlit] (2.0×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: clipmap + sphere + quadtree + raster + pathtrace | 4 | 0.13 | 10.66 | 0 |  | terrain-flight [unlit] (3.2×), showcase [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 2 | 0.13 | 9.74 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 2 | 0.13 | 9.63 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + raster + pathtrace | 2 | 0.13 | 8.37 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + raster + pathtrace | 2 | 0.13 | 8.47 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 2 | 0.13 | 8.94 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks + rowrun + quadtree + raster + pathtrace | 4 | 0.13 | 10.10 | 0 |  | showcase [unlit] (2.2×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 2 | 0.13 | 8.82 | 0 |  | showcase [lit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + direct | 2 | 0.13 | 6.99 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier + rowrun + quadtree + raster + pathtrace | 4 | 0.12 | 10.15 | 0 |  | showcase [unlit] (2.2×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + pathtrace | 2 | 0.12 | 9.51 | 0 |  | showcase [lit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + sphere + quadtree + raster + pathtrace | 4 | 0.12 | 9.01 | 0 |  | terrain-flight [unlit] (2.9×), showcase [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 2 | 0.12 | 9.37 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: points@cpu + splat + tree64 + rowrun + pathtrace | 2 | 0.12 | 9.11 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix + sphere + quadtree + raster + pathtrace | 4 | 0.12 | 10.54 | 0 |  | showcase [unlit] (2.1×), terrain-flight [unlit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 2 | 0.12 | 7.80 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 2 | 0.12 | 7.68 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: rows + sphere + quadtree + raster + pathtrace | 4 | 0.12 | 10.51 | 0 |  | showcase [unlit] (2.1×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: svo_dag + incremental + quadtree + raster + pathtrace | 4 | 0.12 | 8.83 | 0 |  | terrain-flight [unlit] (2.8×), showcase [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: bricks + sphere + quadtree + raster + pathtrace | 4 | 0.12 | 10.38 | 0 |  | showcase [unlit] (2.2×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + pathtrace | 2 | 0.12 | 8.76 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + raster + pathtrace | 2 | 0.12 | 9.27 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + pathtrace | 2 | 0.12 | 8.40 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + pathtrace | 2 | 0.12 | 8.51 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 2 | 0.12 | 8.39 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + raster + pathtrace | 2 | 0.11 | 8.48 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 2 | 0.11 | 9.34 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + pathtrace | 2 | 0.11 | 8.41 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + raster + pathtrace | 2 | 0.11 | 8.47 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + raster + pathtrace | 2 | 0.10 | 8.46 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 2 | 0.10 | 6.93 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 2 | 0.10 | 7.21 | 0 |  | showcase [lit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + raster + pathtrace | 2 | 0.10 | 8.80 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + raster + pathtrace | 2 | 0.10 | 8.60 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + raster + pathtrace | 2 | 0.10 | 8.71 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + raster + pathtrace | 2 | 0.10 | 8.57 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 2 | 0.10 | 6.93 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 2 | 0.10 | 8.45 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + pathtrace | 2 | 0.10 | 8.79 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + rowrun + quadtree + raster + pathtrace | 4 | 0.10 | 8.64 | 0 |  | terrain-flight [unlit] (3.0×), showcase [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + raster + pathtrace | 2 | 0.10 | 8.45 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 2 | 0.09 | 6.92 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + pathtrace | 2 | 0.09 | 8.69 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 2 | 0.09 | 8.98 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 2 | 0.09 | 9.23 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + rowrun + quadtree + raster + direct | 2 | 0.09 | 8.87 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: svo_dag + rowrun + quadtree + raster + direct | 2 | 0.09 | 8.74 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + raster + pathtrace | 2 | 0.09 | 9.51 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: tree64 + rowrun + quadtree + raster + pathtrace | 4 | 0.09 | 8.84 | 0 |  | terrain-flight [unlit] (2.7×), showcase [unlit] (1.9×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 2 | 0.09 | 7.34 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 2 | 0.09 | 9.23 | 0 |  | showcase [lit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 2 | 0.08 | 6.98 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 2 | 0.08 | 7.39 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + raster + pathtrace | 2 | 0.08 | 8.66 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 2 | 0.08 | 9.38 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + pathtrace | 2 | 0.08 | 8.68 | 0 |  | showcase [lit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 2 | 0.08 | 8.67 | 0 |  | showcase [lit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + pathtrace | 2 | 0.08 | 8.80 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + raster + pathtrace | 2 | 0.07 | 8.76 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + pathtrace | 2 | 0.07 | 8.64 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 2 | 0.07 | 7.24 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 2 | 0.07 | 6.90 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 2 | 0.07 | 7.27 | 0 |  | showcase [lit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 2 | 0.06 | 7.20 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 2 | 0.06 | 6.93 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 2 | 0.06 | 9.26 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 2 | 0.06 | 7.35 | 0 |  | showcase [lit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 2 | 0.05 | 6.99 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 2 | 0.05 | 7.23 | 0 |  | showcase [lit] (1.9×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 2 | 0.05 | 7.22 | 0 |  | showcase [lit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.19 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.27 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 12.55 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 12.82 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 12.52 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + refloor + direct | 2 | 0.04 | 13.51 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + incremental + direct | 2 | 0.04 | 13.25 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 14.07 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + incremental + direct | 2 | 0.04 | 11.97 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + rowrun + direct | 2 | 0.04 | 11.71 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + rowrun + direct | 2 | 0.04 | 13.74 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + rowrun + direct | 2 | 0.04 | 13.22 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + sphere + direct | 2 | 0.04 | 13.82 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + incremental + direct | 2 | 0.04 | 13.15 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 14.04 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + rowrun + direct | 2 | 0.04 | 12.86 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + incremental + direct | 2 | 0.04 | 12.02 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + refloor + direct | 2 | 0.04 | 11.71 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 14.09 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.14 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 12.64 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + sphere + direct | 2 | 0.04 | 13.10 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + rowrun + direct | 2 | 0.04 | 13.15 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.70 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + refloor + direct | 2 | 0.04 | 13.01 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + incremental + direct | 2 | 0.04 | 13.06 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + sphere + direct | 2 | 0.04 | 12.06 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.16 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + bricks + refloor + direct | 4 | 0.04 | 2.13 | 0 |  | terrain-flight [unlit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + sphere + direct | 2 | 0.04 | 12.97 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.49 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.95 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + refloor + direct | 2 | 0.04 | 13.18 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.85 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + rowrun + direct | 2 | 0.04 | 11.88 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + incremental + direct | 2 | 0.04 | 13.75 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + sphere + direct | 2 | 0.04 | 13.61 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + refloor + direct | 2 | 0.04 | 12.96 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + incremental + direct | 2 | 0.04 | 13.77 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + refloor + direct | 2 | 0.04 | 12.08 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + rowrun + direct | 2 | 0.04 | 13.37 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + sphere + direct | 2 | 0.04 | 12.08 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + refloor + direct | 2 | 0.04 | 13.62 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: hier + refloor + raycast + direct | 4 | 0.04 | 1.27 | 0 |  | terrain-flight [unlit] (1.5×), terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.32 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.40 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.50 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 12.63 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.52 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 12.96 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 12.59 | 0 |  | showcase [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.73 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.04 | 13.35 | 0 |  | showcase [lit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + sphere + direct | 2 | 0.04 | 12.88 | 0 |  | showcase [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.76 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.98 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.89 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: prefix + refloor + raycast + direct | 4 | 0.04 | 1.27 | 0 |  | terrain-flight [unlit] (1.5×), terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.98 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 13.11 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.90 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 13.46 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.87 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 13.43 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 13.42 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: hier + incremental + raycast + direct | 4 | 0.04 | 1.27 | 0 |  | terrain-flight [unlit] (1.7×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.94 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.95 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.57 | 0 |  | showcase [lit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 13.18 | 0 |  | showcase [lit] (1.6×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 13.16 | 0 |  | showcase [lit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: greedy + faces + raster + hier + refloor + direct | 2 | 0.04 | 2.17 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.85 | 0 |  | showcase [lit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.89 | 0 |  | showcase [lit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.91 | 0 |  | showcase [lit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: greedy + faces + raster + prefix + refloor + direct | 2 | 0.04 | 2.58 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + hier + incremental + direct | 2 | 0.04 | 2.15 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 13.51 | 0 |  | showcase [lit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: bricks + refloor + raycast + direct | 4 | 0.04 | 1.23 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.04 | 12.85 | 0 |  | showcase [lit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: bits + refloor + raycast + direct | 4 | 0.04 | 1.26 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: u8 + refloor + raycast + direct | 4 | 0.03 | 1.05 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: morton + refloor + raycast + direct | 4 | 0.03 | 1.45 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: greedy + faces + raster + bricks + incremental + direct | 2 | 0.03 | 2.16 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: brickmajor + refloor + raycast + direct | 4 | 0.03 | 1.46 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: greedy + faces + raster + prefix + incremental + direct | 2 | 0.03 | 2.56 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + brickmajor + incremental + direct | 2 | 0.03 | 2.74 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + u8 + refloor + direct | 2 | 0.03 | 2.42 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + u8 + incremental + direct | 2 | 0.03 | 2.44 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + morton + refloor + direct | 2 | 0.03 | 2.72 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: palette + refloor + raycast + direct | 4 | 0.03 | 1.00 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: greedy + faces + raster + morton + incremental + direct | 2 | 0.03 | 2.70 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: prefix + incremental + raycast + direct | 4 | 0.03 | 1.28 | 0 |  | terrain-flight [unlit] (1.8×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: greedy + faces + raster + brickmajor + refloor + direct | 2 | 0.03 | 2.71 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + bits + incremental + direct | 2 | 0.03 | 2.16 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + bricks + refloor + direct | 4 | 0.03 | 2.67 | 0 |  | showcase [unlit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: greedy + faces + raster + palette + incremental + direct | 2 | 0.03 | 2.22 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + bits + refloor + direct | 2 | 0.03 | 2.14 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: greedy + faces + raster + palette + refloor + direct | 2 | 0.03 | 2.23 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.03 | 13.65 | 0 |  | showcase [lit] (1.8×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: bits + incremental + raycast + direct | 4 | 0.03 | 1.27 | 0 |  | terrain-flight [unlit] (1.7×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.03 | 13.69 | 0 |  | showcase [lit] (1.8×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: bricks + incremental + raycast + direct | 4 | 0.03 | 1.23 | 0 |  | terrain-flight [unlit] (1.7×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: brickmajor + incremental + raycast + direct | 4 | 0.03 | 1.46 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: morton + incremental + raycast + direct | 4 | 0.03 | 1.45 | 0 |  | terrain-flight [unlit] (1.6×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: u8 + incremental + raycast + direct | 4 | 0.03 | 1.05 | 0 |  | terrain-flight [unlit] (1.7×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: palette + incremental + raycast + direct | 4 | 0.03 | 1.00 | 0 |  | terrain-flight [unlit] (1.7×), terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.03 | 13.45 | 0 |  | showcase [lit] (2.0×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: naive + faces + raster + hier + refloor + direct | 2 | 0.03 | 2.67 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.03 | 13.58 | 0 |  | showcase [lit] (2.0×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: naive + faces + raster + prefix + refloor + direct | 2 | 0.03 | 3.06 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + hier + incremental + direct | 2 | 0.03 | 2.67 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + prefix + incremental + direct | 2 | 0.03 | 3.06 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + bricks + incremental + direct | 2 | 0.03 | 2.70 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + brickmajor + incremental + direct | 2 | 0.03 | 3.22 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + u8 + incremental + direct | 2 | 0.03 | 2.92 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + morton + refloor + direct | 2 | 0.03 | 3.21 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + u8 + refloor + direct | 2 | 0.03 | 2.93 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + bits + incremental + direct | 2 | 0.03 | 2.68 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + brickmajor + refloor + direct | 2 | 0.03 | 3.22 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + morton + incremental + direct | 2 | 0.03 | 3.23 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + bits + refloor + direct | 2 | 0.03 | 2.69 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + palette + refloor + direct | 2 | 0.03 | 2.74 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| cpu: naive + faces + raster + palette + incremental + direct | 2 | 0.03 | 2.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 10.56 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 10.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.41 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 10.82 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.25 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.85 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.09 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 10.38 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.15 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 10.20 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.28 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.21 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.30 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.76 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.07 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 10.63 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.18 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.94 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 12.01 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 12.20 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.48 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.25 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 12.09 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 2 | 0.01 | 11.06 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.61 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.67 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.42 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.77 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.65 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.67 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.83 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.44 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.60 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.78 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.59 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.53 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.23 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.13 | 0 |  |  | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.53 | 0 |  |  | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.09 | 0 |  |  | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.77 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 10.77 | 0 |  |  | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.46 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.28 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.23 | 0 |  | terrain-flight [lit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.50 | 0 |  | terrain-flight [lit] (1.4×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.54 | 0 |  | terrain-flight [lit] (1.5×), terrain-flight [unlit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 4 | 0.01 | 11.77 | 0 |  | terrain-flight [lit] (1.5×), terrain-flight [unlit] (1.3×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
-| cpu: heightmap + columns + heightfield + direct | 4 | - | - | 0 |  |  |  | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |
-| gpu: heightmap + columns + heightfield + direct | 2 | - | - | 0 |  |  |  | showcase [lit], terrain-flight [lit] |  |
-| gpu: heightmap + columns + heightfield + pathtrace | 4 | - | - | 0 |  |  |  | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |
+| gpu: bricks + refloor + composite + raycast + direct | 3 | 0.89 | 6.55 | 2 | far [lit], terrain-flight [lit] |  |  |  |  |
+| gpu: prefix + refloor + composite + raycast + direct | 3 | 0.89 | 6.70 | 0 | terrain-flight [lit] |  |  |  |  |
+| gpu: hier + refloor + composite + raycast + direct | 3 | 0.85 | 6.59 | 0 | terrain-flight [lit] |  |  |  |  |
+| gpu: bricks + refloor + beam + composite + raycast + direct | 3 | 0.83 | 6.58 | 0 | far [lit] |  |  |  |  |
+| gpu: prefix + refloor + beam + composite + raycast + direct | 3 | 0.83 | 6.70 | 0 |  |  |  |  |  |
+| gpu: hier + refloor + beam + composite + raycast + direct | 3 | 0.82 | 6.59 | 0 |  |  |  |  |  |
+| gpu: distance + sphere + composite + raycast + direct | 3 | 0.81 | 7.38 | 1 | showcase [lit] |  |  |  |  |
+| gpu: prefix + rowrun + composite + raycast + direct | 3 | 0.80 | 6.70 | 0 |  |  |  |  |  |
+| gpu: tree64 + refloor + composite + raycast + direct | 3 | 0.80 | 4.68 | 0 | far [lit] |  |  |  |  |
+| gpu: svo_dag + refloor + composite + raycast + direct | 3 | 0.78 | 4.49 | 0 |  |  |  |  |  |
+| gpu: rows + refloor + composite + raycast + direct | 3 | 0.77 | 6.67 | 0 |  |  |  |  |  |
+| gpu: distance + sphere + beam + composite + raycast + direct | 3 | 0.77 | 7.38 | 0 | showcase [lit] |  |  |  |  |
+| gpu: prefix + rowrun + beam + composite + raycast + direct | 3 | 0.76 | 6.70 | 0 |  |  |  |  |  |
+| gpu: distance + refloor + composite + raycast + direct | 3 | 0.76 | 7.38 | 0 |  |  |  |  |  |
+| gpu: rows + refloor + beam + composite + raycast + direct | 3 | 0.74 | 6.68 | 0 |  |  |  |  |  |
+| gpu: rows + rowrun + composite + raycast + direct | 3 | 0.73 | 6.67 | 0 |  |  |  |  |  |
+| gpu: bricks + rowrun + composite + raycast + direct | 3 | 0.72 | 6.58 | 0 |  |  |  |  |  |
+| gpu: distance + refloor + beam + composite + raycast + direct | 3 | 0.70 | 7.38 | 0 |  |  |  |  |  |
+| gpu: bricks + rowrun + beam + composite + raycast + direct | 3 | 0.69 | 6.58 | 0 |  |  |  |  |  |
+| gpu: clipmap + refloor + composite + raycast + direct | 3 | 0.69 | 6.77 | 0 |  |  |  |  |  |
+| gpu: distance + rowrun + composite + raycast + direct | 3 | 0.69 | 7.38 | 0 |  |  |  |  |  |
+| gpu: rows + rowrun + beam + composite + raycast + direct | 3 | 0.69 | 6.68 | 0 |  |  |  |  |  |
+| gpu: tree64 + refloor + beam + composite + raycast + direct | 3 | 0.68 | 4.72 | 0 |  |  |  |  |  |
+| gpu: prefix + refloor + composite + raycast + pathtrace | 6 | 0.66 | 6.76 | 0 | terrain-flight [unlit] | terrain-flight [unlit] (1.4×), showcase [unlit] (1.3×), far [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + direct | 3 | 0.66 | 7.29 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: distance + rowrun + beam + composite + raycast + direct | 3 | 0.65 | 7.39 | 0 |  |  |  |  |  |
+| gpu: svo_dag + refloor + beam + composite + raycast + direct | 3 | 0.65 | 4.49 | 0 |  |  |  |  |  |
+| gpu: hier + refloor + composite + raycast + pathtrace | 6 | 0.64 | 6.65 | 0 | terrain-flight [unlit] | terrain-flight [unlit] (1.4×), showcase [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + direct | 3 | 0.64 | 7.33 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + direct | 3 | 0.63 | 7.41 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: bricks + refloor + composite + raycast + pathtrace | 6 | 0.63 | 6.64 | 2 | far [unlit], terrain-flight [unlit] | far [unlit] (1.6×), terrain-flight [unlit] (1.6×) |  |  |  |
+| gpu: prefix + refloor + beam + composite + raycast + pathtrace | 6 | 0.63 | 6.76 | 0 |  | terrain-flight [unlit] (1.4×), far [unlit] (1.3×), showcase [unlit] (1.3×) |  |  |  |
+| gpu: distance + sphere + composite + raycast + pathtrace | 6 | 0.63 | 7.43 | 0 |  | showcase [unlit] (1.4×), terrain-flight [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + direct | 3 | 0.62 | 7.30 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + direct | 3 | 0.62 | 7.44 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 3 | 0.62 | 5.72 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 3 | 0.62 | 5.66 | 0 |  |  |  |  |  |
+| gpu: bricks + refloor + beam + composite + raycast + pathtrace | 6 | 0.61 | 6.64 | 0 | far [unlit] | far [unlit] (1.6×), terrain-flight [unlit] (1.5×) |  |  |  |
+| gpu: hier + rowrun + composite + raycast + direct | 3 | 0.61 | 6.59 | 0 |  |  |  |  |  |
+| gpu: hier + refloor + beam + composite + raycast + pathtrace | 6 | 0.61 | 6.65 | 0 |  | terrain-flight [unlit] (1.4×), far [unlit] (1.3×), showcase [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 3 | 0.61 | 7.41 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 3 | 0.61 | 7.44 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + direct | 3 | 0.61 | 7.34 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: tree64 + incremental + composite + raycast + direct | 3 | 0.61 | 4.69 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: clipmap + rowrun + composite + raycast + direct | 3 | 0.60 | 6.77 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 3 | 0.60 | 5.61 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 3 | 0.60 | 7.30 | 0 |  |  |  |  |  |
+| gpu: distance + sphere + beam + composite + raycast + pathtrace | 6 | 0.60 | 7.44 | 0 |  | showcase [unlit] (1.4×), terrain-flight [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 3 | 0.60 | 7.96 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 3 | 0.60 | 5.74 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: clipmap + refloor + beam + composite + raycast + direct | 3 | 0.60 | 6.78 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + direct | 3 | 0.60 | 7.41 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 3 | 0.60 | 7.34 | 0 |  |  |  |  |  |
+| gpu: tree64 + refloor + composite + raycast + pathtrace | 6 | 0.59 | 4.90 | 0 | far [unlit], terrain-flight [unlit] | far [unlit] (1.6×), terrain-flight [unlit] (1.6×) |  |  |  |
+| gpu: hier + rowrun + beam + composite + raycast + direct | 3 | 0.59 | 6.59 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + direct | 3 | 0.59 | 7.38 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 3 | 0.59 | 8.03 | 0 |  |  |  |  |  |
+| gpu: bricks + incremental + composite + raycast + direct | 3 | 0.59 | 6.50 | 0 |  |  |  |  |  |
+| gpu: rows + refloor + composite + raycast + pathtrace | 6 | 0.58 | 6.73 | 0 |  | terrain-flight [unlit] (1.5×), far [unlit] (1.3×), showcase [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + direct | 3 | 0.58 | 7.41 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + direct | 3 | 0.58 | 7.38 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 3 | 0.58 | 8.06 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + direct | 3 | 0.57 | 8.10 | 0 |  | showcase [lit] (1.6×) |  |  |  |
+| gpu: distance + refloor + composite + raycast + pathtrace | 6 | 0.57 | 7.44 | 0 |  | showcase [unlit] (1.4×), terrain-flight [unlit] (1.3×) |  |  |  |
+| gpu: svo_dag + refloor + composite + raycast + pathtrace | 6 | 0.57 | 4.63 | 0 |  | terrain-flight [unlit] (1.4×), showcase [unlit] (1.4×), far [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 3 | 0.57 | 7.98 | 0 |  |  |  |  |  |
+| gpu: clipmap + incremental + composite + raycast + direct | 3 | 0.57 | 6.77 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + direct | 3 | 0.56 | 8.05 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + direct | 3 | 0.56 | 8.06 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 3 | 0.55 | 8.06 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 3 | 0.55 | 5.84 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + direct | 3 | 0.55 | 8.09 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 3 | 0.55 | 7.98 | 0 |  |  |  |  |  |
+| gpu: boxes@cpu + rayquery + raycast + direct | 3 | 0.55 | 8.48 | 0 |  |  |  |  |  |
+| gpu: prefix + rowrun + composite + raycast + pathtrace | 6 | 0.55 | 6.83 | 0 |  | terrain-flight [unlit] (1.5×), far [unlit] (1.4×), showcase [unlit] (1.4×) |  |  |  |
+| gpu: rows + refloor + beam + composite + raycast + pathtrace | 6 | 0.55 | 6.78 | 0 |  | terrain-flight [unlit] (1.4×), far [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + direct | 3 | 0.54 | 8.05 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 3 | 0.54 | 5.70 | 0 |  |  |  |  |  |
+| gpu: distance + refloor + beam + composite + raycast + pathtrace | 6 | 0.54 | 7.50 | 0 |  | showcase [unlit] (1.4×), terrain-flight [unlit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + direct | 3 | 0.54 | 8.10 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + direct | 3 | 0.54 | 7.31 | 0 |  |  |  |  |  |
+| gpu: bricks + refloor + quadtree + gbuffer + direct | 3 | 0.54 | 8.26 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: bricks + incremental + beam + composite + raycast + direct | 3 | 0.54 | 6.58 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + direct | 3 | 0.54 | 7.35 | 0 |  |  |  |  |  |
+| gpu: clipmap + rowrun + beam + composite + raycast + direct | 3 | 0.54 | 6.78 | 0 |  |  |  |  |  |
+| gpu: bricks + refloor + quadtree + visbuffer + direct | 3 | 0.54 | 8.24 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: hier + incremental + composite + raycast + direct | 3 | 0.53 | 6.59 | 0 |  |  |  |  |  |
+| gpu: tree64 + incremental + beam + composite + raycast + direct | 3 | 0.53 | 4.86 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: prefix + rowrun + beam + composite + raycast + pathtrace | 6 | 0.53 | 6.84 | 0 |  | terrain-flight [unlit] (1.4×), far [unlit] (1.4×), showcase [unlit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + raster + direct | 3 | 0.53 | 7.26 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + direct | 3 | 0.52 | 7.33 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + raster + direct | 3 | 0.52 | 7.36 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + direct | 3 | 0.52 | 7.48 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: prefix + refloor + quadtree + gbuffer + direct | 3 | 0.52 | 8.44 | 0 |  |  |  |  |  |
+| gpu: prefix + refloor + quadtree + visbuffer + direct | 3 | 0.52 | 8.42 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + direct | 3 | 0.52 | 7.03 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 3 | 0.52 | 5.73 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: hier + refloor + quadtree + visbuffer + direct | 3 | 0.52 | 8.29 | 0 |  |  |  |  |  |
+| gpu: prefix + incremental + composite + raycast + direct | 3 | 0.51 | 6.70 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 3 | 0.51 | 5.66 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: tree64 + refloor + beam + composite + raycast + pathtrace | 6 | 0.51 | 4.87 | 0 |  | far [unlit] (1.6×), terrain-flight [unlit] (1.3×) |  |  |  |
+| gpu: hier + refloor + quadtree + gbuffer + direct | 3 | 0.51 | 8.33 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + direct | 3 | 0.51 | 7.33 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + direct | 3 | 0.51 | 7.41 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + direct | 3 | 0.51 | 7.30 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 3 | 0.51 | 7.47 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: hier + incremental + beam + composite + raycast + direct | 3 | 0.51 | 6.60 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + direct | 3 | 0.51 | 7.30 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 3 | 0.51 | 7.50 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + direct | 3 | 0.51 | 7.38 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 3 | 0.51 | 5.46 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + direct | 3 | 0.51 | 7.30 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + raster + direct | 3 | 0.50 | 7.26 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + direct | 3 | 0.50 | 7.34 | 0 |  |  |  |  |  |
+| gpu: svo_dag + rowrun + composite + raycast + direct | 3 | 0.50 | 4.50 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 3 | 0.50 | 5.35 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + direct | 3 | 0.50 | 7.31 | 0 |  |  |  |  |  |
+| gpu: rows + rowrun + composite + raycast + pathtrace | 6 | 0.50 | 6.82 | 0 |  | terrain-flight [unlit] (1.5×), far [unlit] (1.5×), showcase [unlit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + direct | 3 | 0.50 | 7.33 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 3 | 0.50 | 5.15 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 3 | 0.50 | 7.33 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: hier + sphere + composite + raycast + direct | 3 | 0.50 | 6.59 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 3 | 0.50 | 5.22 | 0 |  | showcase [lit] (1.6×) |  |  |  |
+| gpu: rows + incremental + composite + raycast + direct | 3 | 0.50 | 6.67 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 3 | 0.50 | 7.45 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 6 | 0.50 | 7.38 | 0 |  | showcase [unlit] (1.8×), terrain-flight [unlit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 3 | 0.50 | 7.38 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: clipmap + refloor + composite + raycast + pathtrace | 6 | 0.50 | 6.90 | 0 |  | far [unlit] (1.7×), terrain-flight [unlit] (1.6×) | showcase [lit] |  |  |
+| gpu: clipmap + incremental + beam + composite + raycast + direct | 3 | 0.50 | 6.78 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + raster + direct | 3 | 0.49 | 7.34 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + direct | 3 | 0.49 | 7.38 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + direct | 3 | 0.49 | 7.40 | 0 |  |  |  |  |  |
+| gpu: bricks + sphere + composite + raycast + direct | 3 | 0.49 | 6.57 | 0 |  | far [lit] (1.5×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + direct | 3 | 0.49 | 7.44 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 6 | 0.49 | 7.44 | 0 |  | showcase [unlit] (1.7×), terrain-flight [unlit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + direct | 3 | 0.49 | 7.38 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + raster + direct | 3 | 0.49 | 8.02 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: svo_dag + refloor + beam + composite + raycast + pathtrace | 6 | 0.49 | 4.64 | 0 |  | showcase [unlit] (1.5×), far [unlit] (1.3×) |  |  |  |
+| gpu: rows + refloor + quadtree + visbuffer + direct | 3 | 0.49 | 8.37 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + direct | 3 | 0.48 | 5.40 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: distance + rowrun + composite + raycast + pathtrace | 6 | 0.48 | 7.52 | 0 |  | showcase [unlit] (1.5×), terrain-flight [unlit] (1.4×) |  |  |  |
+| gpu: rows + rowrun + beam + composite + raycast + pathtrace | 6 | 0.48 | 6.82 | 0 |  | terrain-flight [unlit] (1.5×), far [unlit] (1.4×), showcase [unlit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 3 | 0.48 | 7.53 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: distance + sphere + quadtree + gbuffer + direct | 3 | 0.48 | 9.20 | 0 |  |  |  |  |  |
+| gpu: hier + sphere + beam + composite + raycast + direct | 3 | 0.48 | 6.59 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: distance + sphere + quadtree + visbuffer + direct | 3 | 0.48 | 9.18 | 0 |  |  |  |  |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + direct | 3 | 0.48 | 8.26 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + raster + direct | 3 | 0.48 | 8.02 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: prefix + incremental + beam + composite + raycast + direct | 3 | 0.48 | 6.70 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 3 | 0.48 | 7.60 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + direct | 3 | 0.48 | 7.41 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + direct | 3 | 0.48 | 6.86 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + direct | 3 | 0.48 | 8.18 | 0 |  | showcase [lit] (1.6×) |  |  |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + direct | 3 | 0.48 | 7.46 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 3 | 0.48 | 8.03 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + direct | 3 | 0.47 | 7.38 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + direct | 3 | 0.47 | 7.41 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + direct | 3 | 0.47 | 7.35 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + direct | 3 | 0.47 | 8.10 | 0 |  | showcase [lit] (1.6×) |  |  |  |
+| gpu: tree64 + refloor + quadtree + gbuffer + direct | 3 | 0.47 | 6.31 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + direct | 3 | 0.47 | 8.29 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + direct | 3 | 0.47 | 7.31 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: tree64 + refloor + quadtree + visbuffer + direct | 3 | 0.47 | 6.31 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + direct | 3 | 0.47 | 7.44 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: prefix + rowrun + quadtree + visbuffer + direct | 3 | 0.47 | 8.42 | 0 |  |  |  |  |  |
+| gpu: rows + refloor + quadtree + gbuffer + direct | 3 | 0.47 | 8.40 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 3 | 0.47 | 7.99 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + direct | 3 | 0.47 | 8.09 | 0 |  | showcase [lit] (1.6×) |  |  |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + direct | 3 | 0.47 | 7.83 | 0 |  |  |  |  |  |
+| gpu: rows + incremental + beam + composite + raycast + direct | 3 | 0.47 | 6.68 | 0 |  |  |  |  |  |
+| gpu: prefix + rowrun + quadtree + gbuffer + direct | 3 | 0.47 | 8.45 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + direct | 3 | 0.47 | 7.42 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 3 | 0.47 | 7.53 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 3 | 0.47 | 5.40 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 3 | 0.47 | 7.60 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 3 | 0.47 | 5.76 | 0 |  |  |  |  |  |
+| gpu: bricks + sphere + beam + composite + raycast + direct | 3 | 0.47 | 6.58 | 0 |  | far [lit] (1.5×) |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 3 | 0.47 | 7.57 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + direct | 3 | 0.47 | 5.54 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 3 | 0.47 | 5.64 | 0 |  |  |  |  |  |
+| gpu: bricks + rowrun + composite + raycast + pathtrace | 6 | 0.47 | 6.75 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.7×), showcase [unlit] (1.4×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + direct | 3 | 0.47 | 8.15 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: rows + rowrun + quadtree + gbuffer + direct | 3 | 0.46 | 8.40 | 0 |  |  |  |  |  |
+| gpu: prefix + sphere + composite + raycast + direct | 3 | 0.46 | 6.70 | 0 |  | far [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + raster + direct | 3 | 0.46 | 7.12 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + direct | 3 | 0.46 | 8.19 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: distance + rowrun + beam + composite + raycast + pathtrace | 6 | 0.46 | 7.53 | 0 |  | showcase [unlit] (1.5×), terrain-flight [unlit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 3 | 0.46 | 5.97 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 3 | 0.46 | 5.69 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + direct | 3 | 0.46 | 8.11 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + direct | 3 | 0.46 | 7.31 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 3 | 0.46 | 5.44 | 0 |  |  |  |  |  |
+| gpu: rows + rowrun + quadtree + visbuffer + direct | 3 | 0.46 | 8.36 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + direct | 3 | 0.46 | 7.22 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 3 | 0.46 | 5.72 | 0 |  |  |  |  |  |
+| gpu: distance + refloor + quadtree + gbuffer + direct | 3 | 0.46 | 9.20 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + raster + direct | 3 | 0.46 | 7.34 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: distance + refloor + quadtree + visbuffer + direct | 3 | 0.46 | 9.16 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + direct | 3 | 0.46 | 7.41 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 3 | 0.46 | 5.66 | 0 |  |  |  |  |  |
+| gpu: bricks + rowrun + beam + composite + raycast + pathtrace | 6 | 0.45 | 6.75 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.6×), showcase [unlit] (1.4×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + direct | 3 | 0.45 | 7.35 | 0 |  |  |  |  |  |
+| gpu: clipmap + refloor + quadtree + visbuffer + direct | 3 | 0.45 | 8.42 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + direct | 3 | 0.45 | 7.38 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: rows + sphere + composite + raycast + direct | 3 | 0.45 | 6.67 | 0 |  | far [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + direct | 3 | 0.44 | 5.18 | 0 |  |  |  |  |  |
+| gpu: prefix + sphere + beam + composite + raycast + direct | 3 | 0.44 | 6.70 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: clipmap + refloor + quadtree + gbuffer + direct | 3 | 0.44 | 8.46 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + raster + direct | 3 | 0.44 | 7.91 | 0 |  | showcase [lit] (1.5×) |  |  |  |
+| gpu: svo_dag + rowrun + beam + composite + raycast + direct | 3 | 0.44 | 4.63 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + raster + direct | 3 | 0.44 | 7.20 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 3 | 0.44 | 5.17 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: distance + incremental + composite + raycast + direct | 3 | 0.44 | 7.53 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + direct | 3 | 0.44 | 5.00 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: clipmap + refloor + beam + composite + raycast + pathtrace | 6 | 0.44 | 6.92 | 0 |  | far [unlit] (1.6×), terrain-flight [unlit] (1.4×), showcase [unlit] (1.3×) |  |  |  |
+| gpu: bricks + rowrun + quadtree + gbuffer + direct | 3 | 0.44 | 8.33 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 3 | 0.44 | 5.66 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + direct | 3 | 0.43 | 7.30 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 3 | 0.43 | 5.76 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 3 | 0.43 | 5.22 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: bricks + rowrun + quadtree + visbuffer + direct | 3 | 0.43 | 8.30 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: svo_dag + refloor + quadtree + visbuffer + direct | 3 | 0.43 | 6.01 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + raster + direct | 3 | 0.43 | 7.91 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + direct | 3 | 0.43 | 7.37 | 0 |  |  |  |  |  |
+| gpu: svo_dag + refloor + quadtree + gbuffer + direct | 3 | 0.43 | 6.05 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + direct | 3 | 0.43 | 7.28 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: rows + sphere + beam + composite + raycast + direct | 3 | 0.43 | 6.67 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: distance + rowrun + quadtree + visbuffer + direct | 3 | 0.43 | 9.21 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + direct | 3 | 0.43 | 7.30 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + direct | 3 | 0.43 | 7.36 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + direct | 3 | 0.43 | 7.34 | 0 |  |  |  |  |  |
+| gpu: svo_dag + sphere + composite + raycast + direct | 3 | 0.43 | 4.50 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + direct | 3 | 0.43 | 7.38 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: distance + rowrun + quadtree + gbuffer + direct | 3 | 0.43 | 9.23 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + rayquery + raycast + direct | 3 | 0.43 | 13.22 | 0 |  | showcase [lit] (1.4×) |  |  | far [lit] |
+| gpu: bricks + incremental + composite + raycast + pathtrace | 6 | 0.43 | 6.74 | 0 |  | far [unlit] (2.1×), terrain-flight [unlit] (1.9×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + direct | 3 | 0.42 | 7.21 | 0 |  |  |  |  |  |
+| gpu: hier + rowrun + composite + raycast + pathtrace | 6 | 0.42 | 6.75 | 0 |  | showcase [unlit] (1.8×), far [unlit] (1.5×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + raster + direct | 3 | 0.42 | 7.35 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + direct | 3 | 0.42 | 7.48 | 0 |  |  |  |  |  |
+| gpu: hier + incremental + composite + raycast + pathtrace | 6 | 0.42 | 6.76 | 0 |  | terrain-flight [unlit] (1.7×), far [unlit] (1.7×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + direct | 3 | 0.41 | 7.24 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + direct | 3 | 0.41 | 7.56 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: tree64 + incremental + composite + raycast + pathtrace | 6 | 0.41 | 5.07 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + direct | 3 | 0.41 | 7.37 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + direct | 3 | 0.41 | 7.52 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + raster + direct | 3 | 0.41 | 7.26 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + direct | 3 | 0.41 | 7.41 | 0 |  |  |  |  |  |
+| gpu: distance + incremental + beam + composite + raycast + direct | 3 | 0.41 | 7.52 | 0 |  |  |  |  |  |
+| gpu: bricks + incremental + beam + composite + raycast + pathtrace | 6 | 0.41 | 6.76 | 0 |  | far [unlit] (2.0×), terrain-flight [unlit] (1.8×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + direct | 3 | 0.41 | 7.45 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + direct | 3 | 0.41 | 8.19 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + direct | 3 | 0.41 | 7.38 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 6 | 0.41 | 7.26 | 0 |  | showcase [unlit] (1.6×), terrain-flight [unlit] (1.3×) |  |  |  |
+| gpu: clipmap + rowrun + quadtree + visbuffer + direct | 3 | 0.41 | 8.44 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + direct | 3 | 0.41 | 8.19 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 6 | 0.41 | 7.31 | 0 |  | showcase [unlit] (1.8×), terrain-flight [unlit] (1.3×) |  |  |  |
+| gpu: boxes@cpu + rayquery + raycast + pathtrace | 6 | 0.41 | 8.70 | 0 |  | terrain-flight [unlit] (1.5×) |  |  |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + raster + direct | 3 | 0.41 | 7.27 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 3 | 0.40 | 7.66 | 0 |  |  |  |  |  |
+| gpu: clipmap + rowrun + quadtree + gbuffer + direct | 3 | 0.40 | 8.47 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 3 | 0.40 | 8.30 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + direct | 3 | 0.40 | 7.50 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + raster + direct | 3 | 0.40 | 8.03 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: clipmap + rowrun + composite + raycast + pathtrace | 6 | 0.40 | 6.93 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.6×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 3 | 0.40 | 7.58 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 3 | 0.40 | 8.34 | 0 |  |  |  |  |  |
+| gpu: hier + incremental + beam + composite + raycast + pathtrace | 6 | 0.40 | 6.77 | 0 |  | terrain-flight [unlit] (1.7×), far [unlit] (1.6×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + refloor + quadtree + raster + direct | 3 | 0.40 | 8.40 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 3 | 0.40 | 7.50 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 3 | 0.40 | 5.44 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 3 | 0.40 | 5.16 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 3 | 0.40 | 5.21 | 0 |  |  |  |  |  |
+| gpu: bricks + refloor + quadtree + raster + direct | 3 | 0.40 | 8.03 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 3 | 0.40 | 7.69 | 0 |  |  |  |  |  |
+| gpu: hier + rowrun + beam + composite + raycast + pathtrace | 6 | 0.40 | 6.76 | 0 |  | showcase [unlit] (1.8×), far [unlit] (1.5×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 3 | 0.40 | 5.35 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 3 | 0.40 | 5.42 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 3 | 0.39 | 5.43 | 0 |  |  |  |  |  |
+| gpu: hier + rowrun + quadtree + visbuffer + direct | 3 | 0.39 | 8.38 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + direct | 3 | 0.39 | 7.51 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: clipmap + incremental + quadtree + visbuffer + direct | 3 | 0.39 | 8.44 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + direct | 3 | 0.39 | 7.58 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: hier + rowrun + quadtree + gbuffer + direct | 3 | 0.39 | 8.42 | 0 |  |  |  |  |  |
+| gpu: rows + incremental + beam + composite + raycast + pathtrace | 6 | 0.39 | 6.85 | 0 |  | terrain-flight [unlit] (1.7×), far [unlit] (1.7×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier + refloor + quadtree + raster + direct | 3 | 0.39 | 8.28 | 0 |  |  |  |  |  |
+| gpu: clipmap + sphere + composite + raycast + direct | 3 | 0.39 | 6.78 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 3 | 0.39 | 7.55 | 0 |  |  |  |  |  |
+| gpu: prefix + incremental + composite + raycast + pathtrace | 6 | 0.39 | 6.87 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.8×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + incremental + beam + composite + raycast + pathtrace | 6 | 0.39 | 4.91 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + incremental + quadtree + gbuffer + direct | 3 | 0.39 | 8.46 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: clipmap + incremental + composite + raycast + pathtrace | 6 | 0.39 | 6.94 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×), showcase [unlit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + composite + raycast + direct | 3 | 0.39 | 5.00 | 0 |  | far [lit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 3 | 0.39 | 7.60 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + raster + direct | 3 | 0.39 | 7.22 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + raster + direct | 3 | 0.39 | 7.38 | 0 |  |  |  |  |  |
+| gpu: distance + sphere + quadtree + raster + direct | 3 | 0.38 | 9.15 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace | 6 | 0.38 | 7.33 | 1 | showcase [unlit] | showcase [unlit] (2.6×), terrain-flight [unlit] (1.8×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + direct | 3 | 0.38 | 7.92 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + direct | 3 | 0.38 | 7.13 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + raster + direct | 3 | 0.38 | 7.12 | 0 |  |  |  |  |  |
+| gpu: svo_dag + sphere + beam + composite + raycast + direct | 3 | 0.38 | 4.60 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: hier + sphere + quadtree + gbuffer + direct | 3 | 0.38 | 8.33 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: tree64 + incremental + quadtree + gbuffer + direct | 3 | 0.38 | 6.45 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: bricks + incremental + quadtree + visbuffer + direct | 3 | 0.38 | 8.40 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: rows + incremental + composite + raycast + pathtrace | 6 | 0.38 | 6.84 | 0 |  | terrain-flight [unlit] (1.8×), far [unlit] (1.7×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + direct | 3 | 0.38 | 7.86 | 0 |  |  |  |  |  |
+| gpu: bricks + incremental + quadtree + gbuffer + direct | 3 | 0.38 | 8.46 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: tree64 + incremental + quadtree + visbuffer + direct | 3 | 0.38 | 6.40 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: svo_dag + incremental + composite + raycast + direct | 3 | 0.38 | 4.62 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: bricks + sphere + quadtree + visbuffer + direct | 3 | 0.38 | 8.29 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: prefix + incremental + beam + composite + raycast + pathtrace | 6 | 0.38 | 6.89 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.7×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + sphere + quadtree + gbuffer + direct | 3 | 0.38 | 8.32 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 3 | 0.38 | 5.98 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 3 | 0.38 | 5.18 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 3 | 0.38 | 8.31 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + direct | 3 | 0.37 | 7.38 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: tree64 + refloor + quadtree + visbuffer + pathtrace | 6 | 0.37 | 6.40 | 0 |  | far [unlit] (1.7×), terrain-flight [unlit] (1.5×) | showcase [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 3 | 0.37 | 6.07 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + direct | 3 | 0.37 | 5.42 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + direct | 3 | 0.37 | 7.84 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 3 | 0.37 | 5.24 | 0 |  |  |  |  |  |
+| gpu: hier + sphere + quadtree + visbuffer + direct | 3 | 0.37 | 8.30 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: tree64 + refloor + quadtree + gbuffer + pathtrace | 6 | 0.37 | 6.46 | 0 |  | far [unlit] (1.7×), terrain-flight [unlit] (1.5×) | showcase [lit] |  |  |
+| gpu: prefix + refloor + quadtree + visbuffer + pathtrace | 6 | 0.37 | 8.44 | 0 |  | far [unlit] (1.6×), far [lit] (1.3×) |  |  |  |
+| gpu: bricks + refloor + quadtree + visbuffer + pathtrace | 6 | 0.37 | 8.33 | 0 |  | far [unlit] (1.8×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: prefix + refloor + quadtree + gbuffer + pathtrace | 6 | 0.37 | 8.48 | 0 |  | far [unlit] (1.6×), far [lit] (1.3×) |  |  |  |
+| gpu: tree64 + sphere + composite + raycast + direct | 3 | 0.37 | 4.87 | 0 |  | far [lit] (1.6×) | showcase [lit] |  |  |
+| gpu: hier + incremental + quadtree + visbuffer + direct | 3 | 0.37 | 8.45 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + direct | 3 | 0.37 | 7.23 | 0 |  |  |  |  |  |
+| gpu: distance + refloor + quadtree + raster + direct | 3 | 0.37 | 9.18 | 0 |  |  |  |  |  |
+| gpu: hier + refloor + quadtree + visbuffer + pathtrace | 6 | 0.37 | 8.34 | 0 |  | far [unlit] (1.6×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + direct | 3 | 0.37 | 7.34 | 0 |  |  |  |  |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + pathtrace | 6 | 0.37 | 8.13 | 0 |  | terrain-flight [unlit] (1.6×), far [unlit] (1.5×), far [lit] (1.3×) | showcase [lit], showcase [unlit] |  |  |
+| gpu: hier + incremental + quadtree + gbuffer + direct | 3 | 0.36 | 8.47 | 0 |  |  |  |  |  |
+| gpu: rows + refloor + quadtree + raster + direct | 3 | 0.36 | 8.37 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + raster + direct | 3 | 0.36 | 7.27 | 0 |  |  |  |  |  |
+| gpu: prefix + incremental + quadtree + visbuffer + direct | 3 | 0.36 | 8.58 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + direct | 3 | 0.36 | 5.28 | 0 |  |  |  |  |  |
+| gpu: bricks + refloor + quadtree + gbuffer + pathtrace | 6 | 0.36 | 8.39 | 0 |  | far [unlit] (1.9×), far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 3 | 0.36 | 8.34 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + direct | 3 | 0.36 | 7.35 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + raster + direct | 3 | 0.36 | 8.03 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: hier + refloor + quadtree + gbuffer + pathtrace | 6 | 0.36 | 8.39 | 0 |  | far [unlit] (1.6×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: tree64 + rowrun + beam + composite + raycast + direct | 3 | 0.36 | 4.86 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: clipmap + rowrun + beam + composite + raycast + pathtrace | 6 | 0.36 | 6.94 | 0 |  | far [unlit] (1.7×), showcase [unlit] (1.4×), terrain-flight [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + direct | 3 | 0.36 | 7.27 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 3 | 0.36 | 5.96 | 0 |  |  |  |  |  |
+| gpu: prefix + incremental + quadtree + gbuffer + direct | 3 | 0.36 | 8.69 | 0 |  |  |  |  |  |
+| gpu: rows + incremental + quadtree + gbuffer + direct | 3 | 0.36 | 8.56 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 3 | 0.36 | 7.67 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 3 | 0.36 | 6.03 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + direct | 3 | 0.36 | 8.29 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: distance + sphere + quadtree + visbuffer + pathtrace | 6 | 0.36 | 9.15 | 0 |  | far [unlit] (1.3×) |  |  |  |
+| gpu: prefix + sphere + quadtree + visbuffer + direct | 3 | 0.36 | 8.52 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: rows + incremental + quadtree + visbuffer + direct | 3 | 0.36 | 8.53 | 0 |  |  |  |  |  |
+| gpu: prefix + sphere + quadtree + gbuffer + direct | 3 | 0.36 | 8.52 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 3 | 0.36 | 8.45 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + direct | 3 | 0.36 | 8.21 | 0 |  | showcase [lit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + pathtrace | 6 | 0.36 | 7.10 | 0 |  | showcase [unlit] (2.4×), terrain-flight [unlit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: distance + sphere + quadtree + gbuffer + pathtrace | 6 | 0.36 | 9.20 | 0 |  | far [unlit] (1.4×) |  |  |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 3 | 0.35 | 7.62 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 3 | 0.35 | 7.72 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 3 | 0.35 | 8.38 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: hier + sphere + composite + raycast + pathtrace | 6 | 0.35 | 6.74 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.8×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + beam + composite + raycast + direct | 3 | 0.35 | 6.88 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 3 | 0.35 | 7.65 | 0 |  |  |  |  |  |
+| gpu: rows + sphere + quadtree + visbuffer + direct | 3 | 0.35 | 8.50 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: naive@cpu + rayquery + raycast + pathtrace | 6 | 0.35 | 12.99 | 0 |  | showcase [lit] (1.3×) |  |  | far [lit], far [unlit] |
+| gpu: svo_dag + incremental + beam + composite + raycast + direct | 3 | 0.35 | 4.64 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + raster + direct | 3 | 0.35 | 7.28 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + raster + direct | 3 | 0.35 | 7.26 | 0 |  |  |  |  |  |
+| gpu: rows + sphere + quadtree + gbuffer + direct | 3 | 0.35 | 8.53 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + pathtrace | 6 | 0.35 | 8.16 | 0 |  | terrain-flight [unlit] (1.7×), far [lit] (1.3×), far [unlit] (1.3×) | showcase [lit], showcase [unlit] |  |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + direct | 3 | 0.35 | 8.12 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + raster + direct | 3 | 0.35 | 7.93 | 0 |  |  |  |  |  |
+| gpu: rows + refloor + quadtree + visbuffer + pathtrace | 6 | 0.35 | 8.44 | 0 |  | far [unlit] (1.6×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: tree64 + refloor + quadtree + raster + direct | 3 | 0.34 | 6.27 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + direct | 3 | 0.34 | 7.67 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: hier + sphere + beam + composite + raycast + pathtrace | 6 | 0.34 | 6.75 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + raster + direct | 3 | 0.34 | 7.12 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 3 | 0.34 | 7.59 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + raster + direct | 3 | 0.34 | 7.37 | 0 |  |  |  |  |  |
+| gpu: clipmap + refloor + quadtree + visbuffer + pathtrace | 6 | 0.34 | 8.42 | 0 |  | far [unlit] (1.7×), terrain-flight [unlit] (1.7×) | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + direct | 3 | 0.34 | 7.74 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + direct | 3 | 0.34 | 7.66 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: svo_dag + refloor + quadtree + visbuffer + pathtrace | 6 | 0.34 | 6.05 | 0 |  | terrain-flight [unlit] (1.5×), far [unlit] (1.5×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + direct | 3 | 0.34 | 7.11 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + direct | 3 | 0.34 | 7.69 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 3 | 0.34 | 7.68 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + direct | 3 | 0.34 | 7.57 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: distance + incremental + composite + raycast + pathtrace | 6 | 0.34 | 7.53 | 0 |  | terrain-flight [unlit] (1.8×), showcase [unlit] (1.6×), far [unlit] (1.6×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + refloor + quadtree + gbuffer + pathtrace | 6 | 0.34 | 6.08 | 0 |  | far [unlit] (1.5×), terrain-flight [unlit] (1.5×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 3 | 0.34 | 7.66 | 0 |  |  |  |  |  |
+| gpu: clipmap + refloor + quadtree + gbuffer + pathtrace | 6 | 0.34 | 8.45 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit] |  |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 3 | 0.34 | 7.71 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: rows + refloor + quadtree + gbuffer + pathtrace | 6 | 0.34 | 8.48 | 0 |  | far [unlit] (1.7×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + direct | 3 | 0.34 | 7.57 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 3 | 0.34 | 7.75 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: distance + refloor + quadtree + visbuffer + pathtrace | 6 | 0.34 | 9.18 | 0 |  | far [unlit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + direct | 3 | 0.34 | 7.12 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 3 | 0.34 | 7.71 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + raster + direct | 3 | 0.34 | 7.34 | 0 |  |  |  |  |  |
+| gpu: clipmap + incremental + beam + composite + raycast + pathtrace | 6 | 0.34 | 6.96 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.5×), showcase [unlit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: distance + refloor + quadtree + gbuffer + pathtrace | 6 | 0.33 | 9.21 | 0 |  | far [unlit] (1.4×) |  |  |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + direct | 3 | 0.33 | 7.13 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + direct | 3 | 0.33 | 8.39 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 3 | 0.33 | 8.38 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + direct | 3 | 0.33 | 7.73 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + direct | 3 | 0.33 | 7.68 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: tree64 + sphere + beam + composite + raycast + direct | 3 | 0.33 | 4.90 | 0 |  | far [lit] (1.6×) | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 3 | 0.33 | 5.56 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + direct | 3 | 0.33 | 8.45 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: rows + rowrun + quadtree + raster + direct | 3 | 0.33 | 8.39 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + direct | 3 | 0.33 | 7.23 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + direct | 3 | 0.33 | 8.39 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: distance + incremental + beam + composite + raycast + pathtrace | 6 | 0.33 | 7.54 | 0 |  | terrain-flight [unlit] (1.7×), far [unlit] (1.6×), showcase [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + direct | 3 | 0.33 | 7.69 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 3 | 0.33 | 8.02 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: bricks + sphere + composite + raycast + pathtrace | 6 | 0.33 | 6.73 | 0 |  | far [unlit] (2.3×), terrain-flight [unlit] (1.9×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + quadtree + visbuffer + direct | 3 | 0.33 | 8.51 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + direct | 3 | 0.33 | 8.46 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 3 | 0.33 | 5.67 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 3 | 0.33 | 8.40 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 3 | 0.33 | 7.95 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + raster + direct | 3 | 0.32 | 7.20 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 3 | 0.32 | 8.33 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + direct | 3 | 0.32 | 7.83 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 3 | 0.32 | 5.72 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 3 | 0.32 | 5.79 | 0 |  | showcase [lit] (2.1×) | far [lit] |  |  |
+| gpu: clipmap + refloor + quadtree + raster + direct | 3 | 0.32 | 8.43 | 0 |  |  |  |  |  |
+| gpu: svo_dag + refloor + quadtree + raster + direct | 3 | 0.32 | 6.05 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 3 | 0.32 | 7.68 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 3 | 0.32 | 5.72 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 3 | 0.32 | 5.42 | 0 |  | showcase [lit] (1.3×) |  |  |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + direct | 3 | 0.32 | 7.73 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 3 | 0.32 | 7.64 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: prefix + sphere + composite + raycast + pathtrace | 6 | 0.32 | 6.85 | 0 |  | far [unlit] (2.0×), terrain-flight [unlit] (1.8×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 3 | 0.32 | 5.72 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + direct | 3 | 0.32 | 8.39 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 3 | 0.32 | 7.70 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: bricks + sphere + beam + composite + raycast + pathtrace | 6 | 0.32 | 6.74 | 0 |  | far [unlit] (2.3×), terrain-flight [unlit] (1.8×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + quadtree + gbuffer + direct | 3 | 0.32 | 8.54 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: prefix + rowrun + quadtree + raster + direct | 3 | 0.32 | 8.48 | 0 |  | far [lit] (1.3×) |  |  |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + direct | 3 | 0.32 | 8.44 | 0 |  | showcase [lit] (2.0×) | far [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + direct | 3 | 0.32 | 5.55 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 3 | 0.32 | 8.26 | 0 |  |  |  |  |  |
+| gpu: svo_dag + rowrun + composite + raycast + pathtrace | 6 | 0.32 | 4.69 | 0 |  | showcase [unlit] (2.1×), far [unlit] (1.5×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 3 | 0.32 | 5.48 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + direct | 3 | 0.32 | 7.34 | 0 |  | terrain-flight [lit] (1.3×) |  |  |  |
+| gpu: prefix + sphere + beam + composite + raycast + pathtrace | 6 | 0.31 | 6.86 | 0 |  | far [unlit] (2.0×), terrain-flight [unlit] (1.8×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 3 | 0.31 | 7.99 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: distance + incremental + quadtree + gbuffer + direct | 3 | 0.31 | 9.34 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 3 | 0.31 | 7.66 | 0 |  |  |  |  |  |
+| gpu: rows + sphere + composite + raycast + pathtrace | 6 | 0.31 | 6.82 | 0 |  | far [unlit] (2.0×), terrain-flight [unlit] (1.8×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 3 | 0.31 | 8.33 | 0 |  |  |  |  |  |
+| gpu: prefix + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.31 | 8.49 | 0 |  | far [unlit] (1.8×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: distance + incremental + quadtree + visbuffer + direct | 3 | 0.31 | 9.30 | 0 |  |  |  |  |  |
+| gpu: prefix + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.31 | 8.52 | 0 |  | far [unlit] (1.8×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 3 | 0.31 | 8.07 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 3 | 0.31 | 7.74 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + rayquery + raycast + direct | 3 | 0.31 | 10.19 | 0 |  | showcase [lit] (1.7×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + direct | 3 | 0.31 | 7.58 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + direct | 3 | 0.31 | 5.01 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 3 | 0.31 | 8.35 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + direct | 3 | 0.31 | 5.20 | 0 |  |  |  |  |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 3 | 0.31 | 7.68 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 3 | 0.31 | 8.00 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: rows + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.31 | 8.53 | 0 |  | far [unlit] (1.8×) | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + direct | 3 | 0.31 | 7.64 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 3 | 0.31 | 8.07 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: svo_dag + sphere + quadtree + gbuffer + direct | 3 | 0.30 | 6.15 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: svo_dag + sphere + quadtree + visbuffer + direct | 3 | 0.30 | 6.13 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: rows + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.30 | 8.49 | 0 |  | far [unlit] (1.7×), far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + direct | 3 | 0.30 | 5.37 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 3 | 0.30 | 7.75 | 0 |  |  |  |  |  |
+| gpu: rows + sphere + beam + composite + raycast + pathtrace | 6 | 0.30 | 6.83 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.8×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 3 | 0.30 | 5.96 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 3 | 0.30 | 7.75 | 0 |  |  |  |  |  |
+| gpu: distance + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.30 | 9.24 | 0 |  | far [unlit] (1.5×) | showcase [lit] |  |  |
+| gpu: tree64 + sphere + quadtree + visbuffer + direct | 3 | 0.30 | 6.57 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: points@cpu + splat + bricks + refloor + direct | 3 | 0.30 | 8.33 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: tree64 + sphere + quadtree + gbuffer + direct | 3 | 0.30 | 6.47 | 0 |  | far [lit] (1.4×) | showcase [lit] |  |  |
+| gpu: points@cpu + splat + prefix + refloor + direct | 3 | 0.30 | 8.93 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 3 | 0.30 | 5.73 | 0 |  | showcase [lit] (1.7×) | far [lit] |  |  |
+| gpu: svo_dag + sphere + composite + raycast + pathtrace | 6 | 0.29 | 4.68 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 3 | 0.29 | 8.44 | 0 |  |  | far [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 3 | 0.29 | 5.74 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: rows + incremental + quadtree + raster + direct | 3 | 0.29 | 8.46 | 0 |  |  | showcase [lit] |  |  |
+| gpu: distance + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.29 | 9.27 | 0 |  | far [unlit] (1.5×) | showcase [lit] |  |  |
+| gpu: distance + rowrun + quadtree + raster + direct | 3 | 0.29 | 9.24 | 0 |  |  |  |  |  |
+| gpu: points@cpu + splat + prefix + rowrun + direct | 3 | 0.29 | 8.97 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 3 | 0.29 | 5.79 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + hier + refloor + direct | 3 | 0.29 | 8.81 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: points@cpu + splat + tree64 + refloor + direct | 3 | 0.29 | 7.48 | 0 |  | showcase [lit] (1.7×) | far [lit] |  |  |
+| gpu: svo_dag + rowrun + beam + composite + raycast + pathtrace | 6 | 0.29 | 4.75 | 0 |  | showcase [unlit] (2.0×), far [unlit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + incremental + quadtree + gbuffer + pathtrace | 6 | 0.29 | 6.45 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.5×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: tree64 + incremental + quadtree + visbuffer + pathtrace | 6 | 0.29 | 6.51 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.5×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + direct | 3 | 0.29 | 7.60 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + refloor + direct | 3 | 0.29 | 7.35 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + direct | 3 | 0.29 | 7.65 | 0 |  | showcase [lit] (1.6×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + direct | 3 | 0.29 | 7.56 | 0 |  | showcase [lit] (1.6×) | far [lit] |  |  |
+| gpu: clipmap + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.29 | 8.47 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + rows + refloor + direct | 3 | 0.29 | 8.91 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + direct | 3 | 0.29 | 7.68 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.29 | 8.51 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + distance + sphere + direct | 3 | 0.29 | 9.68 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + direct | 3 | 0.28 | 7.59 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + rows + rowrun + direct | 3 | 0.28 | 8.91 | 0 |  | showcase [lit] (1.7×) | far [lit] |  |  |
+| gpu: points@cpu + splat + bricks + rowrun + direct | 3 | 0.28 | 8.86 | 0 |  | showcase [lit] (1.6×) | far [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + refloor + direct | 3 | 0.28 | 9.54 | 0 |  | showcase [lit] (1.7×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + direct | 3 | 0.28 | 7.69 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 3 | 0.28 | 7.76 | 0 |  |  |  |  |  |
+| gpu: hier + incremental + quadtree + raster + direct | 3 | 0.28 | 8.40 | 0 |  |  | showcase [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 3 | 0.28 | 7.83 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + direct | 3 | 0.28 | 7.57 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: points@cpu + splat + distance + refloor + direct | 3 | 0.28 | 9.68 | 0 |  | showcase [lit] (1.9×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + direct | 3 | 0.28 | 7.79 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + direct | 3 | 0.28 | 7.64 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + direct | 3 | 0.28 | 7.75 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + direct | 3 | 0.28 | 7.71 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 3 | 0.28 | 6.07 | 0 |  |  |  |  |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + direct | 3 | 0.28 | 7.68 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 3 | 0.28 | 7.58 | 0 |  |  | showcase [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + rowrun + direct | 3 | 0.28 | 9.56 | 0 |  | showcase [lit] (1.6×) | far [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 3 | 0.28 | 6.00 | 0 |  |  |  |  |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 3 | 0.28 | 8.47 | 0 |  |  | far [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 3 | 0.28 | 7.65 | 0 |  |  | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 6 | 0.28 | 7.44 | 0 |  | showcase [unlit] (2.5×) | far [lit], far [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 3 | 0.28 | 7.73 | 0 |  |  |  |  |  |
+| gpu: bricks + incremental + quadtree + raster + direct | 3 | 0.28 | 8.42 | 0 |  |  | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + direct | 3 | 0.28 | 7.74 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + direct | 3 | 0.28 | 7.70 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + direct | 3 | 0.28 | 7.69 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 3 | 0.28 | 7.69 | 0 |  |  |  |  |  |
+| gpu: points@cpu + splat + distance + rowrun + direct | 3 | 0.28 | 9.68 | 0 |  | showcase [lit] (1.8×) | far [lit] |  |  |
+| gpu: svo_dag + incremental + quadtree + visbuffer + direct | 3 | 0.28 | 6.24 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: svo_dag + incremental + quadtree + gbuffer + direct | 3 | 0.28 | 6.28 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: clipmap + incremental + quadtree + visbuffer + pathtrace | 6 | 0.28 | 8.49 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + pathtrace | 6 | 0.28 | 10.35 | 0 |  | showcase [lit] (1.6×), showcase [unlit] (1.4×) | far [lit], far [unlit] |  |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + direct | 3 | 0.27 | 7.81 | 0 |  | showcase [lit] (1.8×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + incremental + direct | 3 | 0.27 | 9.56 | 0 |  | showcase [lit] (1.6×) | far [lit] |  |  |
+| gpu: clipmap + incremental + quadtree + gbuffer + pathtrace | 6 | 0.27 | 8.51 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×) | showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 6 | 0.27 | 7.54 | 0 |  | showcase [unlit] (2.5×) | far [lit], far [unlit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + hier + rowrun + direct | 3 | 0.27 | 8.81 | 0 |  | showcase [lit] (1.6×) | far [lit] |  |  |
+| gpu: svo_dag + rowrun + quadtree + visbuffer + direct | 3 | 0.27 | 6.25 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: svo_dag + rowrun + quadtree + gbuffer + direct | 3 | 0.27 | 6.29 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: points@cpu + splat + tree64 + incremental + direct | 3 | 0.27 | 7.55 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 3 | 0.27 | 5.78 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 3 | 0.27 | 5.72 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 3 | 0.27 | 8.03 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: svo_dag + sphere + beam + composite + raycast + pathtrace | 6 | 0.27 | 4.70 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.5×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.27 | 8.44 | 0 |  | far [unlit] (2.1×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: clipmap + sphere + composite + raycast + pathtrace | 6 | 0.27 | 6.93 | 0 |  | far [unlit] (2.3×), terrain-flight [unlit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.27 | 8.47 | 0 |  | far [unlit] (2.1×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + direct | 3 | 0.27 | 5.01 | 0 |  |  | far [lit] |  |  |
+| gpu: svo_dag + incremental + composite + raycast + pathtrace | 6 | 0.27 | 4.70 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×), showcase [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 3 | 0.26 | 7.96 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + direct | 3 | 0.26 | 8.41 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + incremental + quadtree + raster + direct | 3 | 0.26 | 8.52 | 0 |  |  | showcase [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 3 | 0.26 | 8.32 | 0 |  |  | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + direct | 3 | 0.26 | 8.46 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + raster + pathtrace | 3 | 0.26 | 8.09 | 0 |  |  | far [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 3 | 0.26 | 8.40 | 0 |  |  | showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 3 | 0.26 | 8.57 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: hier + incremental + quadtree + gbuffer + pathtrace | 6 | 0.26 | 8.51 | 0 |  | far [unlit] (2.0×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 3 | 0.26 | 8.64 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: hier + incremental + quadtree + visbuffer + pathtrace | 6 | 0.26 | 8.46 | 0 |  | far [unlit] (2.0×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 3 | 0.26 | 5.93 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 3 | 0.26 | 5.76 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: rows + incremental + quadtree + visbuffer + pathtrace | 6 | 0.26 | 8.55 | 0 |  | far [unlit] (2.0×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: points@cpu + splat + bricks + incremental + direct | 3 | 0.26 | 8.88 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 3 | 0.26 | 5.75 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 3 | 0.26 | 5.82 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 3 | 0.26 | 7.58 | 0 |  |  | terrain-flight [lit] |  |  |
+| gpu: bricks + incremental + quadtree + visbuffer + pathtrace | 6 | 0.26 | 8.44 | 0 |  | far [unlit] (2.3×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: distance + sphere + quadtree + raster + pathtrace | 6 | 0.26 | 9.33 | 0 |  | far [unlit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 3 | 0.26 | 5.83 | 0 |  |  | terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + hier + sphere + direct | 3 | 0.26 | 8.79 | 0 |  | showcase [lit] (1.5×) | far [lit] |  |  |
+| gpu: rows + incremental + quadtree + gbuffer + pathtrace | 6 | 0.26 | 8.57 | 0 |  | far [unlit] (2.0×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 3 | 0.26 | 5.80 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + rowrun + direct | 3 | 0.26 | 7.37 | 0 |  | showcase [lit] (1.6×) | far [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 3 | 0.25 | 5.83 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + prefix + incremental + direct | 3 | 0.25 | 9.02 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + direct | 3 | 0.25 | 5.56 | 0 |  |  | terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + raster + pathtrace | 3 | 0.25 | 8.19 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + incremental + quadtree + gbuffer + pathtrace | 6 | 0.25 | 8.47 | 0 |  | far [unlit] (2.2×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 3 | 0.25 | 5.61 | 0 |  |  | terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + pathtrace | 3 | 0.25 | 7.40 | 0 |  |  | far [lit] |  |  |
+| gpu: distance + incremental + quadtree + raster + direct | 3 | 0.25 | 9.27 | 0 |  |  | showcase [lit] |  |  |
+| gpu: tree64 + rowrun + composite + raycast + pathtrace | 6 | 0.25 | 4.95 | 0 |  | far [unlit] (2.0×), showcase [unlit] (1.9×), terrain-flight [unlit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 3 | 0.25 | 7.62 | 0 |  |  | terrain-flight [lit] |  |  |
+| gpu: svo_dag + incremental + beam + composite + raycast + pathtrace | 6 | 0.25 | 4.72 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.5×), showcase [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + prefix + sphere + direct | 3 | 0.25 | 8.93 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: points@cpu + splat + hier + incremental + direct | 3 | 0.25 | 8.89 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 3 | 0.25 | 7.58 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + bricks + sphere + direct | 3 | 0.25 | 8.79 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + pathtrace | 6 | 0.25 | 8.23 | 0 |  | far [unlit] (2.5×), terrain-flight [unlit] (2.5×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 3 | 0.25 | 7.69 | 0 |  |  | showcase [lit] |  |  |
+| gpu: tree64 + sphere + composite + raycast + pathtrace | 6 | 0.25 | 4.93 | 0 |  | far [unlit] (2.5×), terrain-flight [unlit] (1.8×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 3 | 0.25 | 7.86 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + refloor + quadtree + raster + pathtrace | 6 | 0.25 | 8.65 | 0 |  | far [unlit] (2.4×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 3 | 0.25 | 7.62 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + incremental + quadtree + visbuffer + pathtrace | 6 | 0.25 | 8.59 | 0 |  | far [unlit] (2.1×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: points@cpu + splat + rows + sphere + direct | 3 | 0.25 | 8.90 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 3 | 0.25 | 8.33 | 0 |  |  | showcase [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 3 | 0.25 | 8.40 | 0 |  |  | showcase [lit] |  |  |
+| gpu: prefix + incremental + quadtree + gbuffer + pathtrace | 6 | 0.25 | 8.64 | 0 |  | far [unlit] (2.1×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: points@cpu + splat + rows + incremental + direct | 3 | 0.25 | 8.99 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + raster + pathtrace | 3 | 0.25 | 7.30 | 0 |  |  | far [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 3 | 0.25 | 7.58 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 3 | 0.25 | 7.75 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 3 | 0.25 | 7.93 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 3 | 0.25 | 7.67 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 3 | 0.24 | 8.57 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + bricks + refloor + pathtrace | 6 | 0.24 | 8.69 | 0 |  | showcase [unlit] (1.9×) | far [lit], far [unlit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + beam + composite + raycast + pathtrace | 6 | 0.24 | 6.94 | 0 |  | far [unlit] (2.2×), terrain-flight [unlit] (1.7×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 3 | 0.24 | 7.61 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + sphere + direct | 3 | 0.24 | 7.36 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: tree64 + refloor + quadtree + raster + pathtrace | 6 | 0.24 | 6.58 | 0 |  | far [unlit] (2.6×), terrain-flight [unlit] (2.0×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier + refloor + quadtree + raster + pathtrace | 6 | 0.24 | 8.55 | 0 |  | far [unlit] (2.4×), terrain-flight [unlit] (1.3×), showcase [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + tree64 + sphere + direct | 3 | 0.24 | 7.52 | 0 |  | showcase [lit] (1.3×) | far [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + sphere + direct | 3 | 0.24 | 9.54 | 0 |  | showcase [lit] (1.3×) | far [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 3 | 0.24 | 7.70 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier + sphere + quadtree + gbuffer + pathtrace | 6 | 0.24 | 8.50 | 0 |  | far [unlit] (2.0×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 3 | 0.24 | 7.73 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier + sphere + quadtree + visbuffer + pathtrace | 6 | 0.24 | 8.47 | 0 |  | far [unlit] (2.0×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 3 | 0.24 | 7.72 | 0 |  |  | far [lit], showcase [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 3 | 0.24 | 7.85 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 3 | 0.24 | 7.73 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + raster + pathtrace | 3 | 0.24 | 8.09 | 0 |  |  | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + raster + pathtrace | 3 | 0.24 | 7.54 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + rowrun + quadtree + raster + direct | 3 | 0.24 | 8.53 | 0 |  | far [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 3 | 0.24 | 8.63 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: hier + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.24 | 8.53 | 0 |  | far [unlit] (2.0×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + direct | 3 | 0.24 | 5.24 | 0 |  | far [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + beam + composite + raycast + pathtrace | 6 | 0.24 | 5.05 | 0 |  | showcase [unlit] (2.0×), far [unlit] (1.9×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 3 | 0.24 | 7.56 | 0 |  |  | showcase [lit] |  |  |
+| gpu: hier + sphere + quadtree + raster + direct | 3 | 0.24 | 8.42 | 0 |  | far [lit] (1.3×) | showcase [lit] |  |  |
+| gpu: hier + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.24 | 8.51 | 0 |  | far [unlit] (2.0×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 3 | 0.24 | 7.60 | 0 |  |  | showcase [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + incremental + direct | 3 | 0.24 | 7.42 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 3 | 0.24 | 7.89 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 3 | 0.24 | 7.82 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: distance + refloor + quadtree + raster + pathtrace | 6 | 0.24 | 9.38 | 0 |  | far [unlit] (2.0×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + sphere + quadtree + visbuffer + pathtrace | 6 | 0.23 | 8.46 | 0 |  | far [unlit] (2.4×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks + sphere + quadtree + gbuffer + pathtrace | 6 | 0.23 | 8.49 | 0 |  | far [unlit] (2.4×) | showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks + rowrun + quadtree + raster + direct | 3 | 0.23 | 8.42 | 0 |  | far [lit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + distance + incremental + direct | 3 | 0.23 | 9.75 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + incremental + quadtree + raster + direct | 3 | 0.23 | 6.74 | 0 |  | far [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + tree64 + rowrun + direct | 3 | 0.23 | 7.54 | 0 |  |  | far [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + direct | 3 | 0.23 | 5.58 | 0 |  | far [lit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + sphere + beam + composite + raycast + pathtrace | 6 | 0.23 | 5.04 | 0 |  | far [unlit] (2.5×), terrain-flight [unlit] (1.5×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 3 | 0.23 | 7.66 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 3 | 0.23 | 7.73 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + raster + pathtrace | 3 | 0.23 | 7.44 | 0 |  |  | far [lit], terrain-flight [lit] |  |  |
+| gpu: rows + refloor + quadtree + raster + pathtrace | 6 | 0.23 | 8.64 | 0 |  | far [unlit] (2.4×), showcase [unlit] (1.3×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + incremental + quadtree + raster + direct | 3 | 0.23 | 8.57 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + distance + sphere + pathtrace | 3 | 0.23 | 9.91 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + sphere + quadtree + gbuffer + pathtrace | 6 | 0.23 | 8.62 | 0 |  | far [unlit] (2.1×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 3 | 0.23 | 5.91 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 3 | 0.23 | 7.87 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + refloor + quadtree + raster + pathtrace | 6 | 0.23 | 6.24 | 0 |  | far [unlit] (2.2×), terrain-flight [unlit] (2.2×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + raster + pathtrace | 3 | 0.23 | 8.20 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + raster + pathtrace | 3 | 0.23 | 7.38 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 3 | 0.23 | 6.14 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + sphere + quadtree + visbuffer + pathtrace | 6 | 0.23 | 6.21 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.6×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: prefix + sphere + quadtree + visbuffer + pathtrace | 6 | 0.23 | 8.59 | 0 |  | far [unlit] (2.1×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 3 | 0.23 | 7.64 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + refloor + quadtree + raster + pathtrace | 6 | 0.23 | 8.40 | 0 |  | far [unlit] (3.0×), showcase [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: clipmap + refloor + quadtree + raster + pathtrace | 6 | 0.23 | 8.58 | 0 |  | far [unlit] (2.6×), terrain-flight [unlit] (2.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + quadtree + gbuffer + pathtrace | 6 | 0.23 | 8.52 | 0 |  | far [unlit] (2.1×), terrain-flight [unlit] (1.8×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + quadtree + visbuffer + pathtrace | 6 | 0.23 | 8.50 | 0 |  | far [unlit] (2.1×), terrain-flight [unlit] (1.8×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 3 | 0.23 | 5.96 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 3 | 0.23 | 7.73 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 3 | 0.23 | 5.58 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: rows + sphere + quadtree + visbuffer + pathtrace | 6 | 0.23 | 8.57 | 0 |  | far [unlit] (2.1×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 3 | 0.23 | 7.67 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 3 | 0.23 | 7.83 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + prefix + refloor + pathtrace | 3 | 0.23 | 9.18 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: rows + sphere + quadtree + gbuffer + pathtrace | 6 | 0.23 | 8.59 | 0 |  | far [unlit] (2.1×) | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: hier + rowrun + quadtree + raster + direct | 3 | 0.23 | 8.44 | 0 |  | far [lit] (1.7×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 3 | 0.23 | 7.66 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + quadtree + gbuffer + direct | 3 | 0.23 | 6.71 | 0 |  | far [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + quadtree + visbuffer + direct | 3 | 0.23 | 6.68 | 0 |  | far [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 3 | 0.23 | 5.89 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 3 | 0.23 | 7.94 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + sphere + quadtree + gbuffer + pathtrace | 6 | 0.23 | 6.26 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.6×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + sphere + pathtrace | 3 | 0.23 | 13.07 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + refloor + pathtrace | 3 | 0.23 | 12.32 | 0 |  | showcase [lit] (1.4×) | far [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 3 | 0.22 | 7.81 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + direct | 3 | 0.22 | 5.59 | 0 |  | far [lit] (1.5×) | terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 3 | 0.22 | 7.74 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 3 | 0.22 | 7.90 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 3 | 0.22 | 7.56 | 0 |  | far [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 3 | 0.22 | 7.72 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 3 | 0.22 | 7.68 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 3 | 0.22 | 7.73 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + refloor + pathtrace | 3 | 0.22 | 12.21 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 3 | 0.22 | 7.80 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: distance + incremental + quadtree + visbuffer + pathtrace | 6 | 0.22 | 9.34 | 0 |  | far [unlit] (1.8×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: points@cpu + splat + hier + refloor + pathtrace | 3 | 0.22 | 9.03 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: distance + incremental + quadtree + gbuffer + pathtrace | 6 | 0.22 | 9.40 | 0 |  | far [unlit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: rows + sphere + quadtree + raster + direct | 3 | 0.22 | 8.52 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + sphere + quadtree + visbuffer + pathtrace | 6 | 0.22 | 6.78 | 0 |  | far [unlit] (2.1×), terrain-flight [unlit] (1.7×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 3 | 0.22 | 8.62 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 3 | 0.22 | 7.60 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + sphere + quadtree + gbuffer + pathtrace | 6 | 0.22 | 6.84 | 0 |  | far [unlit] (2.1×), terrain-flight [unlit] (1.7×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 3 | 0.22 | 7.60 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + distance + refloor + pathtrace | 3 | 0.22 | 9.91 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + sphere + quadtree + raster + direct | 3 | 0.22 | 8.43 | 0 |  | far [lit] (1.3×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + tree64 + refloor + pathtrace | 3 | 0.22 | 7.79 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + refloor + pathtrace | 3 | 0.22 | 10.77 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 3 | 0.22 | 7.68 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + direct | 3 | 0.22 | 5.02 | 0 |  | far [lit] (1.4×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 3 | 0.22 | 7.65 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 3 | 0.22 | 7.93 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 3 | 0.22 | 8.00 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 3 | 0.22 | 7.69 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + sphere + quadtree + raster + direct | 3 | 0.22 | 8.55 | 0 |  |  | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + raster + pathtrace | 3 | 0.22 | 7.51 | 0 |  |  | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + refloor + pathtrace | 3 | 0.21 | 12.10 | 0 |  |  | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + refloor + pathtrace | 3 | 0.21 | 10.81 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + refloor + pathtrace | 3 | 0.21 | 12.35 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 3 | 0.21 | 5.18 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + rows + refloor + pathtrace | 3 | 0.21 | 9.14 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + rowrun + pathtrace | 3 | 0.21 | 12.40 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 3 | 0.21 | 8.64 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 3 | 0.21 | 5.54 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + refloor + pathtrace | 3 | 0.21 | 12.70 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + refloor + pathtrace | 3 | 0.21 | 7.63 | 0 |  | showcase [lit] (1.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + direct | 3 | 0.21 | 7.44 | 0 |  | showcase [lit] (2.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + raster + direct | 3 | 0.21 | 8.11 | 0 |  | showcase [lit] (2.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + refloor + pathtrace | 3 | 0.21 | 13.04 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 3 | 0.21 | 5.98 | 0 |  |  | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + raster + direct | 3 | 0.21 | 8.11 | 0 |  | showcase [lit] (2.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 3 | 0.21 | 8.38 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + raster + direct | 3 | 0.21 | 7.33 | 0 |  | showcase [lit] (2.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 3 | 0.21 | 6.10 | 0 |  |  | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 3 | 0.21 | 8.34 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 3 | 0.21 | 7.67 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 3 | 0.20 | 7.66 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 3 | 0.20 | 7.59 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct | 3 | 0.20 | 7.33 | 0 |  | showcase [lit] (2.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + incremental + quadtree + gbuffer + pathtrace | 6 | 0.20 | 6.29 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.6×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + pathtrace | 6 | 0.20 | 7.30 | 0 |  | showcase [unlit] (3.8×), terrain-flight [unlit] (1.4×) | far [lit], far [unlit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 3 | 0.20 | 7.74 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + prefix + rowrun + pathtrace | 3 | 0.20 | 9.26 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 3 | 0.20 | 7.88 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + incremental + quadtree + visbuffer + pathtrace | 6 | 0.20 | 6.25 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.7×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + direct | 3 | 0.20 | 5.48 | 0 |  | showcase [lit] (2.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 3 | 0.20 | 7.52 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + raster + direct | 3 | 0.20 | 7.41 | 0 |  | showcase [lit] (2.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 3 | 0.20 | 7.91 | 0 |  | showcase [lit] (1.3×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 3 | 0.20 | 6.07 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 3 | 0.20 | 6.01 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 3 | 0.20 | 8.14 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 3 | 0.20 | 7.70 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + rowrun + pathtrace | 3 | 0.20 | 13.11 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 3 | 0.20 | 7.77 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 3 | 0.20 | 5.71 | 0 |  | showcase [lit] (1.6×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 3 | 0.20 | 8.21 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: rows + rowrun + quadtree + raster + pathtrace | 6 | 0.20 | 8.49 | 0 |  | far [unlit] (2.7×), showcase [unlit] (1.5×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + direct | 3 | 0.20 | 5.48 | 0 |  | showcase [lit] (2.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + rowrun + pathtrace | 3 | 0.20 | 12.37 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + direct | 3 | 0.20 | 7.71 | 0 |  | showcase [lit] (2.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + direct | 3 | 0.20 | 7.42 | 0 |  | showcase [lit] (2.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + direct | 3 | 0.20 | 7.45 | 0 |  | showcase [lit] (2.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + distance + rowrun + pathtrace | 3 | 0.19 | 9.95 | 0 |  | showcase [lit] (1.4×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + sphere + quadtree + raster + direct | 3 | 0.19 | 6.28 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + rowrun + quadtree + raster + pathtrace | 6 | 0.19 | 8.51 | 0 |  | far [unlit] (2.9×), showcase [unlit] (1.5×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.19 | 6.29 | 0 |  | far [unlit] (1.7×), terrain-flight [unlit] (1.5×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 3 | 0.19 | 5.54 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 3 | 0.19 | 8.52 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + refloor + pathtrace | 3 | 0.19 | 9.79 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 3 | 0.19 | 8.45 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 3 | 0.19 | 5.48 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + direct | 3 | 0.19 | 8.12 | 0 |  | showcase [lit] (2.5×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + rows + rowrun + pathtrace | 3 | 0.19 | 9.16 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.19 | 6.26 | 0 |  | far [unlit] (1.8×), terrain-flight [unlit] (1.5×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + pathtrace | 3 | 0.19 | 7.38 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 3 | 0.19 | 5.45 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + incremental + pathtrace | 3 | 0.19 | 10.71 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 3 | 0.19 | 6.00 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 3 | 0.19 | 6.06 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 3 | 0.19 | 5.51 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + incremental + pathtrace | 3 | 0.19 | 12.16 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + incremental + pathtrace | 3 | 0.19 | 12.41 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 3 | 0.19 | 7.42 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + rowrun + pathtrace | 3 | 0.19 | 12.69 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + incremental + pathtrace | 3 | 0.19 | 12.26 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 3 | 0.18 | 8.35 | 0 |  | far [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 3 | 0.18 | 8.28 | 0 |  | far [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: distance + rowrun + quadtree + raster + pathtrace | 6 | 0.18 | 9.22 | 0 |  | far [unlit] (2.4×), showcase [unlit] (1.5×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 3 | 0.18 | 6.00 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + raster + direct | 3 | 0.18 | 7.34 | 0 |  | showcase [lit] (2.2×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + raster + direct | 3 | 0.18 | 7.44 | 0 |  | showcase [lit] (2.2×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 3 | 0.18 | 5.97 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + incremental + pathtrace | 3 | 0.18 | 12.74 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + incremental + pathtrace | 3 | 0.18 | 12.39 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + rowrun + pathtrace | 3 | 0.18 | 12.27 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + incremental + quadtree + raster + pathtrace | 6 | 0.18 | 6.54 | 0 |  | far [unlit] (2.9×), terrain-flight [unlit] (2.4×), showcase [unlit] (1.3×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + direct | 3 | 0.18 | 7.35 | 0 |  | showcase [lit] (2.2×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + tree64 + incremental + pathtrace | 3 | 0.18 | 7.82 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 3 | 0.18 | 8.01 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + quadtree + raster + direct | 3 | 0.18 | 8.61 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 3 | 0.18 | 7.87 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 3 | 0.18 | 7.94 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + pathtrace | 3 | 0.18 | 8.10 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + direct | 3 | 0.18 | 7.44 | 0 |  | showcase [lit] (2.1×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + raster + direct | 3 | 0.18 | 8.13 | 0 |  | showcase [lit] (2.1×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + sphere + quadtree + raster + direct | 3 | 0.18 | 6.58 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 3 | 0.18 | 6.03 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 3 | 0.18 | 6.12 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 3 | 0.18 | 5.72 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + bricks + rowrun + pathtrace | 3 | 0.17 | 9.12 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 3 | 0.17 | 5.66 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 3 | 0.17 | 7.86 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + direct | 3 | 0.17 | 7.73 | 0 |  | showcase [lit] (2.1×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 3 | 0.17 | 7.80 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 3 | 0.17 | 8.19 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + incremental + quadtree + raster + pathtrace | 6 | 0.17 | 8.58 | 0 |  | far [unlit] (3.0×), terrain-flight [unlit] (2.8×), showcase [unlit] (1.4×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 3 | 0.17 | 7.81 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + direct | 3 | 0.17 | 5.46 | 0 |  | showcase [lit] (2.0×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 3 | 0.17 | 7.93 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + direct | 3 | 0.17 | 7.72 | 0 |  | showcase [lit] (2.0×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 3 | 0.17 | 8.27 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + rowrun + quadtree + raster + pathtrace | 6 | 0.17 | 8.43 | 0 |  | far [unlit] (3.1×), terrain-flight [unlit] (2.8×), showcase [unlit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + rowrun + pathtrace | 3 | 0.17 | 9.83 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: rows + incremental + quadtree + raster + pathtrace | 6 | 0.17 | 8.64 | 0 |  | far [unlit] (3.0×), showcase [unlit] (1.7×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + raster + pathtrace | 3 | 0.17 | 7.50 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + incremental + pathtrace | 3 | 0.17 | 13.02 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 3 | 0.17 | 7.85 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 3 | 0.17 | 7.79 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + incremental + quadtree + raster + pathtrace | 6 | 0.17 | 8.54 | 0 |  | far [unlit] (3.5×), showcase [unlit] (1.7×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + direct | 3 | 0.17 | 7.34 | 0 |  | showcase [lit] (2.1×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + hier + incremental + pathtrace | 3 | 0.17 | 9.12 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier + incremental + quadtree + raster + pathtrace | 6 | 0.17 | 8.55 | 0 |  | far [unlit] (3.2×), showcase [unlit] (1.6×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 3 | 0.17 | 7.92 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 3 | 0.17 | 7.99 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + rowrun + pathtrace | 3 | 0.17 | 12.25 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 3 | 0.16 | 7.93 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 3 | 0.16 | 5.58 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 3 | 0.16 | 7.54 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + raster + direct | 3 | 0.16 | 7.33 | 0 |  | showcase [lit] (1.8×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 3 | 0.16 | 5.52 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 3 | 0.16 | 7.85 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 3 | 0.16 | 7.89 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 3 | 0.16 | 8.21 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 3 | 0.16 | 8.00 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + rows + incremental + pathtrace | 3 | 0.16 | 9.20 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 3 | 0.16 | 8.28 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 3 | 0.16 | 6.17 | 0 |  | far [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + bricks + incremental + pathtrace | 3 | 0.16 | 9.11 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + hier + rowrun + pathtrace | 3 | 0.16 | 9.09 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + incremental + pathtrace | 3 | 0.16 | 9.84 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix + incremental + quadtree + raster + pathtrace | 6 | 0.16 | 8.67 | 0 |  | far [unlit] (3.2×), showcase [unlit] (1.7×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + sphere + pathtrace | 3 | 0.16 | 12.19 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 3 | 0.16 | 6.02 | 0 |  | far [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + direct | 3 | 0.16 | 7.34 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + quadtree + gbuffer + pathtrace | 6 | 0.16 | 6.61 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.5×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 3 | 0.16 | 7.76 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 3 | 0.16 | 7.85 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + quadtree + visbuffer + pathtrace | 6 | 0.16 | 6.59 | 0 |  | far [unlit] (1.9×), terrain-flight [unlit] (1.5×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: points@cpu + splat + prefix + incremental + pathtrace | 3 | 0.16 | 9.28 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + direct | 3 | 0.16 | 7.44 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + direct | 3 | 0.16 | 7.33 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + raster + pathtrace | 3 | 0.16 | 8.20 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + direct | 3 | 0.16 | 5.48 | 0 |  | showcase [lit] (1.8×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + raster + direct | 3 | 0.16 | 7.41 | 0 |  | showcase [lit] (1.7×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + raster + pathtrace | 3 | 0.16 | 7.40 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + hier + sphere + pathtrace | 3 | 0.16 | 9.05 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + sphere + pathtrace | 3 | 0.16 | 12.26 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + incremental + quadtree + raster + direct | 3 | 0.15 | 6.36 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + sphere + pathtrace | 3 | 0.15 | 12.36 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 3 | 0.15 | 5.71 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 3 | 0.15 | 6.00 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + sphere + pathtrace | 3 | 0.15 | 12.35 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + raster + pathtrace | 3 | 0.15 | 7.33 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 3 | 0.15 | 5.93 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 3 | 0.15 | 5.36 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + incremental + pathtrace | 3 | 0.15 | 10.78 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 3 | 0.15 | 5.61 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + rowrun + pathtrace | 3 | 0.15 | 10.81 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + direct | 3 | 0.15 | 7.71 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 3 | 0.15 | 7.87 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 3 | 0.15 | 7.94 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + pathtrace | 3 | 0.15 | 7.31 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 3 | 0.15 | 8.63 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 3 | 0.15 | 8.70 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 3 | 0.15 | 7.87 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + rowrun + pathtrace | 3 | 0.15 | 7.70 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + pathtrace | 3 | 0.15 | 7.44 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + direct | 3 | 0.15 | 5.56 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier + sphere + quadtree + raster + pathtrace | 6 | 0.15 | 8.57 | 0 |  | far [unlit] (3.4×), showcase [unlit] (1.8×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: points@cpu + splat + bricks + sphere + pathtrace | 3 | 0.15 | 9.06 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 3 | 0.15 | 7.76 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 3 | 0.15 | 7.94 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + prefix + sphere + pathtrace | 3 | 0.15 | 9.19 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: distance + incremental + quadtree + raster + pathtrace | 6 | 0.15 | 9.42 | 0 |  | far [unlit] (2.8×), showcase [unlit] (1.8×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 3 | 0.15 | 7.87 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks + rowrun + quadtree + raster + pathtrace | 6 | 0.15 | 8.40 | 0 |  | far [unlit] (3.9×), showcase [unlit] (1.9×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + sphere + pathtrace | 3 | 0.15 | 10.77 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + distance + incremental + pathtrace | 3 | 0.15 | 9.99 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + rows + sphere + pathtrace | 3 | 0.14 | 9.17 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 3 | 0.14 | 5.92 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + sphere + pathtrace | 3 | 0.14 | 7.66 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 3 | 0.14 | 5.98 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + sphere + pathtrace | 3 | 0.14 | 12.66 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + raster + pathtrace | 3 | 0.14 | 8.28 | 0 |  | showcase [lit] (2.1×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + direct | 3 | 0.14 | 5.49 | 0 |  | showcase [lit] (1.9×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + sphere + pathtrace | 3 | 0.14 | 10.84 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier + rowrun + quadtree + raster + pathtrace | 6 | 0.14 | 8.43 | 0 |  | far [unlit] (3.4×), showcase [unlit] (1.9×), terrain-flight [unlit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks + sphere + quadtree + raster + pathtrace | 6 | 0.14 | 8.55 | 0 |  | far [unlit] (4.0×), showcase [unlit] (1.9×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 3 | 0.14 | 7.52 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: clipmap + sphere + quadtree + raster + pathtrace | 6 | 0.14 | 8.58 | 0 |  | far [unlit] (3.4×), terrain-flight [unlit] (3.1×), showcase [unlit] (1.7×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + sphere + quadtree + raster + pathtrace | 6 | 0.14 | 6.25 | 0 |  | far [unlit] (3.0×), terrain-flight [unlit] (2.7×), showcase [unlit] (1.6×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: prefix + sphere + quadtree + raster + pathtrace | 6 | 0.14 | 8.68 | 0 |  | far [unlit] (3.6×), showcase [unlit] (1.8×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: points@cpu + splat + tree64 + sphere + pathtrace | 3 | 0.14 | 7.81 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + raster + pathtrace | 3 | 0.14 | 8.11 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: rows + sphere + quadtree + raster + pathtrace | 6 | 0.14 | 8.65 | 0 |  | far [unlit] (3.5×), showcase [unlit] (1.9×), terrain-flight [unlit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + raster + pathtrace | 3 | 0.14 | 7.52 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 3 | 0.13 | 6.00 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 3 | 0.13 | 6.00 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + raster + pathtrace | 3 | 0.13 | 7.42 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 3 | 0.13 | 5.53 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + sphere + quadtree + raster + pathtrace | 6 | 0.13 | 6.60 | 0 |  | far [unlit] (3.6×), terrain-flight [unlit] (2.8×), showcase [unlit] (1.6×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + pathtrace | 3 | 0.13 | 7.60 | 0 |  | showcase [lit] (2.0×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + clipmap + sphere + pathtrace | 3 | 0.13 | 9.82 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + svo_dag + incremental + pathtrace | 3 | 0.13 | 7.73 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + raster + pathtrace | 3 | 0.13 | 7.29 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 3 | 0.13 | 5.96 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + raster + pathtrace | 3 | 0.13 | 8.29 | 0 |  | showcase [lit] (2.0×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 3 | 0.13 | 6.04 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + raster + pathtrace | 3 | 0.13 | 7.54 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 3 | 0.13 | 8.15 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 3 | 0.13 | 8.22 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + rowrun + quadtree + raster + direct | 3 | 0.13 | 6.24 | 0 |  | far [lit] (2.1×) | showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + raster + pathtrace | 3 | 0.13 | 7.51 | 0 |  | showcase [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 3 | 0.13 | 7.52 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + raster + pathtrace | 3 | 0.13 | 7.43 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + incremental + quadtree + raster + pathtrace | 6 | 0.13 | 6.27 | 0 |  | far [unlit] (3.0×), terrain-flight [unlit] (2.7×), showcase [unlit] (1.8×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + rowrun + pathtrace | 3 | 0.12 | 10.74 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + quadtree + raster + direct | 3 | 0.12 | 6.70 | 0 |  | far [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: points@cpu + splat + tree64 + rowrun + pathtrace | 3 | 0.12 | 7.83 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + direct | 3 | 0.12 | 5.49 | 0 |  | showcase [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 3 | 0.12 | 5.64 | 0 |  | showcase [lit] (2.2×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + raster + pathtrace | 3 | 0.12 | 7.58 | 0 |  | showcase [lit] (1.8×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 3 | 0.12 | 6.05 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 3 | 0.12 | 6.12 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + direct | 3 | 0.12 | 5.72 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 3 | 0.12 | 8.01 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + pathtrace | 3 | 0.12 | 7.31 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 3 | 0.12 | 5.62 | 0 |  | showcase [lit] (2.2×) | far [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + pathtrace | 3 | 0.12 | 7.40 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + raster + pathtrace | 3 | 0.12 | 7.38 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 3 | 0.12 | 7.30 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + raster + pathtrace | 3 | 0.12 | 8.20 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + pathtrace | 3 | 0.11 | 7.31 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 3 | 0.11 | 7.87 | 0 |  | showcase [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + raster + pathtrace | 3 | 0.11 | 7.43 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 3 | 0.10 | 8.00 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 3 | 0.10 | 7.61 | 0 |  | showcase [lit] (2.1×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: svo_dag + rowrun + quadtree + raster + pathtrace | 6 | 0.10 | 6.18 | 0 |  | far [unlit] (3.3×), terrain-flight [unlit] (2.8×), showcase [unlit] (1.8×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 3 | 0.10 | 5.20 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + pathtrace | 3 | 0.10 | 7.57 | 0 |  | showcase [lit] (1.7×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + pathtrace | 3 | 0.10 | 8.28 | 0 |  | showcase [lit] (2.1×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 3 | 0.10 | 5.61 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 3 | 0.10 | 5.19 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + raster + pathtrace | 3 | 0.10 | 7.43 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 3 | 0.10 | 7.53 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: tree64 + rowrun + quadtree + raster + pathtrace | 6 | 0.09 | 6.60 | 0 |  | far [unlit] (3.3×), terrain-flight [unlit] (2.6×), showcase [unlit] (1.8×) | far [lit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + raster + pathtrace | 3 | 0.09 | 7.52 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + raster + pathtrace | 3 | 0.09 | 7.54 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 3 | 0.09 | 7.42 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + raster + pathtrace | 3 | 0.09 | 7.42 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + raster + pathtrace | 3 | 0.09 | 7.59 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 3 | 0.09 | 5.63 | 0 |  | showcase [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + raster + pathtrace | 3 | 0.08 | 7.51 | 0 |  | showcase [lit] (1.7×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + pathtrace | 3 | 0.08 | 7.60 | 0 |  | showcase [lit] (1.7×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 3 | 0.08 | 5.68 | 0 |  | showcase [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + pathtrace | 3 | 0.08 | 7.50 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 3 | 0.08 | 5.72 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 3 | 0.08 | 5.57 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 3 | 0.08 | 7.87 | 0 |  | showcase [lit] (1.7×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 3 | 0.08 | 8.02 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + raster + pathtrace | 3 | 0.08 | 8.29 | 0 |  | showcase [lit] (1.7×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 3 | 0.07 | 7.87 | 0 |  | showcase [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + raster + pathtrace | 3 | 0.07 | 7.49 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 3 | 0.07 | 5.18 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + pathtrace | 3 | 0.07 | 7.50 | 0 |  | showcase [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 3 | 0.07 | 5.34 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 3 | 0.07 | 7.49 | 0 |  | showcase [lit] (1.9×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + pathtrace | 3 | 0.06 | 7.60 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + raster + pathtrace | 3 | 0.06 | 7.56 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + pathtrace | 3 | 0.06 | 7.48 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 3 | 0.06 | 5.64 | 0 |  | showcase [lit] (1.8×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 3 | 0.06 | 5.64 | 0 |  | showcase [lit] (1.8×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 3 | 0.05 | 5.83 | 0 |  | showcase [lit] (1.8×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: hier + refloor + raycast + direct | 6 | 0.05 | 1.26 | 0 |  | far [unlit] (1.8×), far [lit] (1.5×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 3 | 0.05 | 7.89 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 3 | 0.05 | 5.71 | 0 |  | showcase [lit] (1.8×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 3 | 0.05 | 5.57 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: prefix + refloor + raycast + direct | 6 | 0.05 | 1.39 | 0 |  | far [unlit] (1.8×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: hier + incremental + raycast + direct | 6 | 0.05 | 1.27 | 0 |  | far [unlit] (1.9×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: bricks + refloor + raycast + direct | 6 | 0.05 | 1.21 | 0 |  | far [unlit] (1.9×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: prefix + incremental + raycast + direct | 6 | 0.05 | 1.40 | 0 |  | far [unlit] (2.0×), far [lit] (1.8×), terrain-flight [unlit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: bits + refloor + raycast + direct | 6 | 0.05 | 1.26 | 0 |  | far [unlit] (1.9×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: u8 + refloor + raycast + direct | 6 | 0.05 | 1.04 | 0 |  | far [unlit] (1.9×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: brickmajor + refloor + raycast + direct | 6 | 0.05 | 1.57 | 0 |  | far [unlit] (1.8×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: morton + refloor + raycast + direct | 6 | 0.04 | 1.58 | 0 |  | far [unlit] (1.8×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: palette + refloor + raycast + direct | 6 | 0.04 | 1.00 | 0 |  | far [unlit] (1.8×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: bricks + incremental + raycast + direct | 6 | 0.04 | 1.22 | 0 |  | far [unlit] (1.9×), far [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: greedy + faces + raster + bricks + refloor + direct | 6 | 0.04 | 2.08 | 0 |  | terrain-flight [unlit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: bits + incremental + raycast + direct | 6 | 0.04 | 1.27 | 0 |  | far [unlit] (1.9×), far [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: brickmajor + incremental + raycast + direct | 6 | 0.04 | 1.58 | 0 |  | far [unlit] (1.9×), far [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: u8 + incremental + raycast + direct | 6 | 0.04 | 1.05 | 0 |  | far [unlit] (1.9×), far [lit] (1.6×), terrain-flight [unlit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: morton + incremental + raycast + direct | 6 | 0.04 | 1.58 | 0 |  | far [unlit] (1.9×), far [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 3 | 0.04 | 5.62 | 0 |  | showcase [lit] (2.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: palette + incremental + raycast + direct | 6 | 0.04 | 1.01 | 0 |  | far [unlit] (1.9×), far [lit] (1.7×), terrain-flight [unlit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.67 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.73 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.31 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 3 | 0.04 | 5.81 | 0 |  | showcase [lit] (2.0×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.42 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + refloor + direct | 3 | 0.04 | 10.67 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.68 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + incremental + direct | 3 | 0.04 | 8.38 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + incremental + direct | 3 | 0.04 | 10.72 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.24 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + rowrun + direct | 3 | 0.04 | 8.29 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.67 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + incremental + direct | 3 | 0.04 | 10.68 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + rowrun + direct | 3 | 0.04 | 10.46 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + refloor + direct | 3 | 0.04 | 8.28 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + sphere + direct | 3 | 0.04 | 11.34 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + sphere + direct | 3 | 0.04 | 10.62 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.18 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + rowrun + direct | 3 | 0.04 | 11.26 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + incremental + direct | 3 | 0.04 | 8.89 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.41 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + rowrun + direct | 3 | 0.04 | 10.73 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + rowrun + direct | 3 | 0.04 | 10.64 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + sphere + direct | 3 | 0.04 | 8.47 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + refloor + direct | 3 | 0.04 | 10.59 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.69 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + sphere + direct | 3 | 0.04 | 10.55 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.35 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.34 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.48 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + incremental + direct | 3 | 0.04 | 10.80 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + incremental + direct | 3 | 0.04 | 10.57 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + refloor + direct | 3 | 0.04 | 10.66 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.09 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.62 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + rowrun + direct | 3 | 0.04 | 10.64 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + refloor + direct | 3 | 0.04 | 10.51 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + sphere + direct | 3 | 0.04 | 10.77 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + incremental + direct | 3 | 0.04 | 11.32 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + rowrun + direct | 3 | 0.04 | 8.73 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + refloor + direct | 3 | 0.04 | 8.77 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + refloor + direct | 3 | 0.04 | 11.24 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + sphere + direct | 3 | 0.04 | 8.89 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + hier + refloor + direct | 3 | 0.04 | 2.14 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.08 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.77 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + prefix + refloor + direct | 3 | 0.04 | 2.71 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.76 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.81 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + hier + incremental + direct | 3 | 0.04 | 2.14 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.38 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.87 | 0 |  | showcase [lit] (1.5×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 11.21 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.78 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.04 | 10.35 | 0 |  | showcase [lit] (1.6×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + sphere + direct | 3 | 0.04 | 10.50 | 0 |  | showcase [lit] (1.4×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + bricks + incremental + direct | 3 | 0.04 | 2.12 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + prefix + incremental + direct | 3 | 0.04 | 2.73 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + u8 + refloor + direct | 3 | 0.04 | 2.48 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + u8 + incremental + direct | 3 | 0.04 | 2.51 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + brickmajor + incremental + direct | 3 | 0.04 | 2.87 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + bits + incremental + direct | 3 | 0.04 | 2.15 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + morton + refloor + direct | 3 | 0.04 | 2.87 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + morton + incremental + direct | 3 | 0.04 | 2.87 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.38 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: greedy + faces + raster + brickmajor + refloor + direct | 3 | 0.04 | 2.85 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + bits + refloor + direct | 3 | 0.04 | 2.15 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: greedy + faces + raster + palette + incremental + direct | 3 | 0.04 | 2.22 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.51 | 0 |  | showcase [lit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.55 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: greedy + faces + raster + palette + refloor + direct | 3 | 0.04 | 2.22 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.90 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 11.25 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.46 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.55 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.57 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 11.20 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 11.31 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.75 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.29 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.89 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.87 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.58 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.04 | 10.45 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 10.50 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 10.56 | 0 |  | showcase [lit] (1.7×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 11.33 | 0 |  | showcase [lit] (1.8×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 10.52 | 0 |  | showcase [lit] (1.8×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 11.40 | 0 |  | showcase [lit] (1.8×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 11.47 | 0 |  | showcase [lit] (1.8×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 11.30 | 0 |  | showcase [lit] (1.9×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: naive + faces + raster + bricks + refloor + direct | 6 | 0.03 | 2.84 | 0 |  | showcase [unlit] (1.6×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.03 | 11.35 | 0 |  | showcase [lit] (2.0×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: naive + faces + raster + hier + refloor + direct | 3 | 0.03 | 2.92 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + prefix + refloor + direct | 3 | 0.03 | 3.44 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + hier + incremental + direct | 3 | 0.03 | 2.92 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + prefix + incremental + direct | 3 | 0.03 | 3.40 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + bricks + incremental + direct | 3 | 0.03 | 2.93 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + u8 + incremental + direct | 3 | 0.03 | 3.21 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + brickmajor + incremental + direct | 3 | 0.03 | 3.57 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + u8 + refloor + direct | 3 | 0.03 | 3.22 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + bits + incremental + direct | 3 | 0.03 | 2.89 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + morton + refloor + direct | 3 | 0.03 | 3.56 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + brickmajor + refloor + direct | 3 | 0.03 | 3.58 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + morton + incremental + direct | 3 | 0.03 | 3.58 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + bits + refloor + direct | 3 | 0.03 | 2.90 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + palette + refloor + direct | 3 | 0.03 | 2.96 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| cpu: naive + faces + raster + palette + incremental + direct | 3 | 0.03 | 2.97 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.08 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.22 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.65 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.98 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.21 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 8.92 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 10.36 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.42 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.65 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.95 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.54 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 8.86 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 10.31 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.53 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.59 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.16 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 10.40 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.89 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.74 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.83 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 10.49 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 9.63 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 10.37 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 3 | 0.01 | 10.49 | 0 |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.16 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.10 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 8.95 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.06 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.16 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.20 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.06 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 10.07 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.27 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.64 | 0 |  |  | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.14 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 10.08 | 0 |  |  | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.14 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.04 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.61 | 0 |  |  | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.92 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.43 | 0 |  |  | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.15 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.99 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.84 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 9.87 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 10.08 | 0 |  | terrain-flight [lit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 10.09 | 0 |  | terrain-flight [lit] (1.4×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 6 | 0.01 | 10.20 | 0 |  | terrain-flight [lit] (1.4×), terrain-flight [unlit] (1.3×) | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |  |
+| cpu: heightmap + columns + heightfield + direct | 6 | - | - | 0 |  |  |  | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |
+| gpu: heightmap + columns + heightfield + direct | 3 | - | - | 0 |  |  |  | far [lit], showcase [lit], terrain-flight [lit] |  |
+| gpu: heightmap + columns + heightfield + pathtrace | 6 | - | - | 0 |  |  |  | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |  |
 
 ## Memory
 
@@ -1222,6 +1232,8 @@ The footprint is the peak RSS plus the GPU memory (measured by the device's allo
 
 | scenario | leanest | MB | fastest's MB | frontier (fps, MB) |
 |---|---|---:|---:|---|
+| far [lit] | cpu: palette + incremental + raycast + direct | 525 | 2770 | gpu: bricks + refloor + composite + raycast + direct (375, 2770); gpu: bricks + refloor + beam + composite + raycast + direct (367, 2766); gpu: tree64 + refloor + composite + raycast + direct (362, 1517); gpu: tree64 + refloor + beam + composite + raycast + direct (314, 1499); gpu: svo_dag + refloor + composite + raycast + direct (283, 1336); gpu: svo_dag + rowrun + composite + raycast + direct (201, 1336); cpu: hier + refloor + raycast + direct (32, 670); cpu: hier + incremental + raycast + direct (30, 670); cpu: bricks + refloor + raycast + direct (28, 635); cpu: u8 + refloor + raycast + direct (27, 534); cpu: palette + incremental + raycast + direct (26, 525) |
+| far [unlit] | cpu: palette + refloor + raycast + direct | 541 | 2799 | gpu: bricks + refloor + composite + raycast + pathtrace (401, 2799); gpu: tree64 + refloor + composite + raycast + pathtrace (385, 1587); gpu: tree64 + refloor + beam + composite + raycast + pathtrace (332, 1534); gpu: svo_dag + refloor + composite + raycast + pathtrace (295, 1367); cpu: hier + refloor + raycast + direct (39, 670); cpu: bricks + refloor + raycast + direct (35, 635); cpu: bricks + incremental + raycast + direct (34, 635); cpu: u8 + refloor + raycast + direct (34, 552); cpu: palette + refloor + raycast + direct (32, 541) |
 | showcase [lit] | cpu: prefix + refloor + raycast + direct | 26 | 320 | gpu: distance + sphere + composite + raycast + direct (4435, 320); gpu: distance + sphere + beam + composite + raycast + direct (4175, 320); gpu: distance + refloor + composite + raycast + direct (3820, 320); gpu: prefix + refloor + composite + raycast + direct (3767, 316); gpu: hier + refloor + composite + raycast + direct (3570, 315); gpu: svo_dag + refloor + composite + raycast + direct (3523, 309); gpu: svo_dag + refloor + beam + composite + raycast + direct (3260, 309); gpu: tree64 + refloor + composite + raycast + direct (2735, 298); cpu: greedy + faces + raster + hier + refloor + direct (123, 56); cpu: naive + faces + raster + hier + refloor + direct (122, 54); cpu: hier + refloor + raycast + direct (112, 31); cpu: prefix + refloor + raycast + direct (103, 26) |
 | showcase [unlit] | cpu: prefix + refloor + raycast + direct | 26 | 332 | gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace (6842, 332); gpu: prefix + refloor + composite + raycast + pathtrace (5895, 325); gpu: hier + refloor + composite + raycast + pathtrace (5605, 324); gpu: svo_dag + refloor + composite + raycast + pathtrace (5401, 318); gpu: svo_dag + sphere + beam + composite + raycast + pathtrace (2176, 318); cpu: naive + faces + raster + bricks + refloor + direct (328, 56); cpu: greedy + faces + raster + bricks + refloor + direct (326, 56); cpu: hier + refloor + raycast + direct (249, 31); cpu: prefix + refloor + raycast + direct (213, 26) |
 | terrain-flight [lit] | cpu: palette + incremental + raycast + direct | 252 | 1118 | gpu: bricks + refloor + composite + raycast + direct (569, 1118); gpu: hier + refloor + composite + raycast + direct (522, 1116); gpu: bricks + refloor + beam + composite + raycast + direct (505, 1115); gpu: tree64 + refloor + composite + raycast + direct (486, 775); gpu: svo_dag + refloor + composite + raycast + direct (450, 749); cpu: hier + refloor + raycast + direct (31, 339); cpu: bits + refloor + raycast + direct (27, 339); cpu: bricks + refloor + raycast + direct (27, 323); cpu: u8 + refloor + raycast + direct (26, 259); cpu: palette + refloor + raycast + direct (26, 253); cpu: palette + incremental + raycast + direct (25, 252) |
@@ -1231,1182 +1243,1182 @@ Leanest first (geometric mean of *mem* over the scenarios where it ran correctly
 
 | renderer | geomean mem | geomean rel | on the frontier |
 |---|---:|---:|---|
-| cpu: palette + incremental + raycast + direct | 1.00 | 0.03 | terrain-flight [lit], terrain-flight [unlit] |
-| cpu: palette + refloor + raycast + direct | 1.00 | 0.03 | terrain-flight [lit], terrain-flight [unlit] |
-| cpu: u8 + incremental + raycast + direct | 1.05 | 0.03 |  |
-| cpu: u8 + refloor + raycast + direct | 1.05 | 0.03 | terrain-flight [lit], terrain-flight [unlit] |
-| cpu: bricks + refloor + raycast + direct | 1.23 | 0.04 | terrain-flight [lit], terrain-flight [unlit] |
-| cpu: bricks + incremental + raycast + direct | 1.23 | 0.03 |  |
-| cpu: bits + refloor + raycast + direct | 1.26 | 0.04 | terrain-flight [lit], terrain-flight [unlit] |
-| cpu: hier + refloor + raycast + direct | 1.27 | 0.04 | showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |
-| cpu: prefix + refloor + raycast + direct | 1.27 | 0.04 | showcase [lit], showcase [unlit] |
-| cpu: hier + incremental + raycast + direct | 1.27 | 0.04 |  |
-| cpu: bits + incremental + raycast + direct | 1.27 | 0.03 |  |
-| cpu: prefix + incremental + raycast + direct | 1.28 | 0.03 |  |
-| cpu: morton + refloor + raycast + direct | 1.45 | 0.03 |  |
-| cpu: morton + incremental + raycast + direct | 1.45 | 0.03 |  |
-| cpu: brickmajor + incremental + raycast + direct | 1.46 | 0.03 |  |
-| cpu: brickmajor + refloor + raycast + direct | 1.46 | 0.03 |  |
-| cpu: greedy + faces + raster + bricks + refloor + direct | 2.13 | 0.04 | showcase [unlit] |
-| cpu: greedy + faces + raster + bits + refloor + direct | 2.14 | 0.03 |  |
-| cpu: greedy + faces + raster + hier + incremental + direct | 2.15 | 0.04 |  |
-| cpu: greedy + faces + raster + bricks + incremental + direct | 2.16 | 0.03 |  |
-| cpu: greedy + faces + raster + bits + incremental + direct | 2.16 | 0.03 |  |
-| cpu: greedy + faces + raster + hier + refloor + direct | 2.17 | 0.04 | showcase [lit] |
-| cpu: greedy + faces + raster + palette + incremental + direct | 2.22 | 0.03 |  |
-| cpu: greedy + faces + raster + palette + refloor + direct | 2.23 | 0.03 |  |
-| cpu: greedy + faces + raster + u8 + refloor + direct | 2.42 | 0.03 |  |
-| cpu: greedy + faces + raster + u8 + incremental + direct | 2.44 | 0.03 |  |
-| cpu: greedy + faces + raster + prefix + incremental + direct | 2.56 | 0.03 |  |
-| cpu: greedy + faces + raster + prefix + refloor + direct | 2.58 | 0.04 |  |
-| cpu: naive + faces + raster + hier + refloor + direct | 2.67 | 0.03 | showcase [lit] |
-| cpu: naive + faces + raster + hier + incremental + direct | 2.67 | 0.03 |  |
-| cpu: naive + faces + raster + bricks + refloor + direct | 2.67 | 0.03 | showcase [unlit] |
-| cpu: naive + faces + raster + bits + incremental + direct | 2.68 | 0.03 |  |
-| cpu: naive + faces + raster + bits + refloor + direct | 2.69 | 0.03 |  |
-| cpu: naive + faces + raster + bricks + incremental + direct | 2.70 | 0.03 |  |
-| cpu: greedy + faces + raster + morton + incremental + direct | 2.70 | 0.03 |  |
-| cpu: greedy + faces + raster + brickmajor + refloor + direct | 2.71 | 0.03 |  |
-| cpu: greedy + faces + raster + morton + refloor + direct | 2.72 | 0.03 |  |
-| cpu: naive + faces + raster + palette + refloor + direct | 2.74 | 0.03 |  |
-| cpu: greedy + faces + raster + brickmajor + incremental + direct | 2.74 | 0.03 |  |
-| cpu: naive + faces + raster + palette + incremental + direct | 2.76 | 0.03 |  |
-| cpu: naive + faces + raster + u8 + incremental + direct | 2.92 | 0.03 |  |
-| cpu: naive + faces + raster + u8 + refloor + direct | 2.93 | 0.03 |  |
-| cpu: naive + faces + raster + prefix + refloor + direct | 3.06 | 0.03 |  |
-| cpu: naive + faces + raster + prefix + incremental + direct | 3.06 | 0.03 |  |
-| cpu: naive + faces + raster + morton + refloor + direct | 3.21 | 0.03 |  |
-| cpu: naive + faces + raster + brickmajor + incremental + direct | 3.22 | 0.03 |  |
-| cpu: naive + faces + raster + brickmajor + refloor + direct | 3.22 | 0.03 |  |
-| cpu: naive + faces + raster + morton + incremental + direct | 3.23 | 0.03 |  |
-| gpu: tree64 + incremental + composite + raycast + direct | 5.94 | 0.53 |  |
-| gpu: tree64 + refloor + composite + raycast + direct | 5.96 | 0.73 | showcase [lit], terrain-flight [lit] |
-| gpu: svo_dag + refloor + composite + raycast + direct | 5.97 | 0.79 | showcase [lit], terrain-flight [lit] |
-| gpu: svo_dag + refloor + beam + composite + raycast + direct | 5.97 | 0.64 | showcase [lit] |
-| gpu: svo_dag + rowrun + composite + raycast + direct | 5.98 | 0.49 |  |
-| gpu: svo_dag + sphere + composite + raycast + direct | 5.98 | 0.38 |  |
-| gpu: tree64 + refloor + beam + composite + raycast + direct | 6.07 | 0.61 |  |
-| gpu: tree64 + incremental + beam + composite + raycast + direct | 6.08 | 0.46 |  |
-| gpu: svo_dag + sphere + beam + composite + raycast + direct | 6.18 | 0.33 |  |
-| gpu: svo_dag + incremental + composite + raycast + direct | 6.21 | 0.33 |  |
-| gpu: svo_dag + refloor + composite + raycast + pathtrace | 6.22 | 0.55 | showcase [unlit], terrain-flight [unlit] |
-| gpu: svo_dag + rowrun + beam + composite + raycast + direct | 6.24 | 0.42 |  |
-| gpu: svo_dag + refloor + beam + composite + raycast + pathtrace | 6.24 | 0.46 |  |
-| gpu: svo_dag + sphere + composite + raycast + pathtrace | 6.24 | 0.25 |  |
-| gpu: svo_dag + rowrun + composite + raycast + pathtrace | 6.26 | 0.31 |  |
-| gpu: svo_dag + incremental + beam + composite + raycast + direct | 6.26 | 0.31 |  |
-| gpu: svo_dag + sphere + beam + composite + raycast + pathtrace | 6.27 | 0.23 | showcase [unlit] |
-| gpu: svo_dag + incremental + composite + raycast + pathtrace | 6.27 | 0.23 |  |
-| gpu: svo_dag + incremental + beam + composite + raycast + pathtrace | 6.29 | 0.22 |  |
-| gpu: tree64 + sphere + composite + raycast + direct | 6.30 | 0.29 |  |
-| gpu: tree64 + rowrun + composite + raycast + direct | 6.31 | 0.33 |  |
-| gpu: tree64 + refloor + composite + raycast + pathtrace | 6.32 | 0.52 | terrain-flight [unlit] |
-| gpu: tree64 + refloor + beam + composite + raycast + pathtrace | 6.32 | 0.45 |  |
-| gpu: tree64 + rowrun + beam + composite + raycast + direct | 6.33 | 0.31 |  |
-| gpu: tree64 + sphere + beam + composite + raycast + direct | 6.34 | 0.26 |  |
-| gpu: tree64 + sphere + composite + raycast + pathtrace | 6.35 | 0.20 |  |
-| gpu: tree64 + incremental + composite + raycast + pathtrace | 6.35 | 0.35 |  |
-| gpu: svo_dag + rowrun + beam + composite + raycast + pathtrace | 6.37 | 0.28 |  |
-| gpu: tree64 + incremental + beam + composite + raycast + pathtrace | 6.38 | 0.33 |  |
-| gpu: tree64 + rowrun + composite + raycast + pathtrace | 6.39 | 0.23 |  |
-| gpu: tree64 + sphere + beam + composite + raycast + pathtrace | 6.45 | 0.19 |  |
-| gpu: tree64 + rowrun + beam + composite + raycast + pathtrace | 6.49 | 0.22 |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + direct | 6.62 | 0.53 |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + direct | 6.63 | 0.33 |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + direct | 6.63 | 0.27 |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + direct | 6.66 | 0.19 |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + direct | 6.66 | 0.51 |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + direct | 6.66 | 0.32 |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + direct | 6.67 | 0.39 |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + direct | 6.74 | 0.30 |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + direct | 6.74 | 0.53 |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + direct | 6.75 | 0.39 |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + direct | 6.76 | 0.20 |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 6.80 | 0.63 |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 6.81 | 0.46 |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 6.83 | 0.52 |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 6.84 | 0.43 |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 6.88 | 0.23 |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 6.90 | 0.60 |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 6.90 | 0.07 |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 6.90 | 0.24 |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 6.90 | 0.46 |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 6.91 | 0.43 |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 6.92 | 0.09 |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 6.92 | 0.51 |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 6.93 | 0.10 |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 6.93 | 0.10 |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 6.93 | 0.42 |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 6.93 | 0.63 |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 6.93 | 0.06 |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 6.93 | 0.54 |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 6.93 | 0.15 |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 6.95 | 0.42 |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + direct | 6.97 | 0.27 |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 6.98 | 0.14 |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 6.98 | 0.08 |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + direct | 6.99 | 0.18 |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + direct | 6.99 | 0.22 |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + direct | 6.99 | 0.28 |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 6.99 | 0.05 |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + direct | 6.99 | 0.13 |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + direct | 6.99 | 0.20 |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + direct | 7.00 | 0.17 |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 7.00 | 0.60 |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + direct | 7.00 | 0.13 |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 7.00 | 0.22 |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 7.01 | 0.43 |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 7.03 | 0.41 |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 7.04 | 0.53 |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + direct | 7.10 | 0.18 |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + direct | 7.10 | 0.54 |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + direct | 7.11 | 0.26 |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + direct | 7.12 | 0.33 |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + direct | 7.14 | 0.18 |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 7.19 | 0.15 |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 7.20 | 0.06 |  |
-| gpu: bricks + incremental + composite + raycast + direct | 7.21 | 0.54 |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 7.21 | 0.10 |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 7.22 | 0.05 |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 7.23 | 0.15 |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 7.23 | 0.05 |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 7.24 | 0.07 |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 7.25 | 0.36 |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 7.25 | 0.70 |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 7.26 | 0.47 |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 7.27 | 0.07 |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 7.28 | 0.73 |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 7.28 | 0.45 |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 7.28 | 0.59 |  |
-| gpu: bricks + refloor + composite + raycast + direct | 7.30 | 0.85 | terrain-flight [lit] |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 7.30 | 0.51 |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 7.30 | 0.18 |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 7.32 | 0.58 |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 7.32 | 0.41 |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 7.33 | 0.19 |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 7.34 | 0.09 |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 7.34 | 0.35 |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 7.34 | 0.47 |  |
-| gpu: bricks + sphere + composite + raycast + direct | 7.34 | 0.40 |  |
-| gpu: bricks + sphere + beam + composite + raycast + direct | 7.35 | 0.38 |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 7.35 | 0.32 |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 7.35 | 0.30 |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 7.35 | 0.42 |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 7.35 | 0.29 |  |
-| gpu: bricks + rowrun + composite + raycast + direct | 7.35 | 0.66 |  |
-| gpu: bricks + refloor + beam + composite + raycast + direct | 7.35 | 0.76 | terrain-flight [lit] |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 7.35 | 0.06 |  |
-| gpu: hier + refloor + composite + raycast + direct | 7.35 | 0.86 | showcase [lit], terrain-flight [lit] |
-| gpu: bricks + incremental + beam + composite + raycast + direct | 7.35 | 0.49 |  |
-| gpu: hier + sphere + composite + raycast + direct | 7.36 | 0.44 |  |
-| gpu: bricks + rowrun + beam + composite + raycast + direct | 7.36 | 0.63 |  |
-| gpu: hier + rowrun + composite + raycast + direct | 7.36 | 0.58 |  |
-| gpu: hier + sphere + beam + composite + raycast + direct | 7.36 | 0.42 |  |
-| gpu: hier + incremental + composite + raycast + direct | 7.36 | 0.51 |  |
-| gpu: hier + refloor + beam + composite + raycast + direct | 7.36 | 0.82 |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 7.36 | 0.71 |  |
-| gpu: hier + rowrun + beam + composite + raycast + direct | 7.36 | 0.57 |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 7.36 | 0.37 |  |
-| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 7.37 | 0.34 |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 7.37 | 0.22 |  |
-| gpu: hier + incremental + beam + composite + raycast + direct | 7.37 | 0.49 |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 7.37 | 0.47 |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 7.37 | 0.36 |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 7.38 | 0.45 |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 7.39 | 0.61 |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 7.39 | 0.08 |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 7.40 | 0.51 |  |
-| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 7.40 | 0.18 |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 7.41 | 0.16 |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 7.41 | 0.15 |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 7.41 | 0.31 |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 7.42 | 0.73 |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 7.42 | 0.59 |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 7.43 | 0.41 |  |
-| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 7.44 | 0.34 |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 7.44 | 0.25 |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 7.45 | 0.33 |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 7.45 | 0.47 |  |
-| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 7.45 | 0.19 |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 7.45 | 0.14 |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 7.46 | 0.29 |  |
-| gpu: rows + incremental + composite + raycast + direct | 7.46 | 0.48 |  |
-| gpu: rows + rowrun + composite + raycast + direct | 7.46 | 0.72 |  |
-| gpu: rows + sphere + beam + composite + raycast + direct | 7.46 | 0.37 |  |
-| gpu: rows + refloor + composite + raycast + direct | 7.46 | 0.77 |  |
-| gpu: rows + sphere + composite + raycast + direct | 7.46 | 0.38 |  |
-| gpu: rows + refloor + beam + composite + raycast + direct | 7.47 | 0.73 |  |
-| gpu: rows + incremental + beam + composite + raycast + direct | 7.47 | 0.45 |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 7.47 | 0.42 |  |
-| gpu: rows + rowrun + beam + composite + raycast + direct | 7.47 | 0.67 |  |
-| gpu: bricks + refloor + beam + composite + raycast + pathtrace | 7.47 | 0.55 |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 7.47 | 0.30 |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 7.47 | 0.36 |  |
-| gpu: bricks + refloor + composite + raycast + pathtrace | 7.48 | 0.56 | terrain-flight [unlit] |
-| gpu: hier + refloor + composite + raycast + pathtrace | 7.48 | 0.62 | showcase [unlit] |
-| gpu: hier + refloor + beam + composite + raycast + pathtrace | 7.48 | 0.59 |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 7.48 | 0.36 |  |
-| gpu: prefix + sphere + composite + raycast + direct | 7.49 | 0.40 |  |
-| gpu: prefix + refloor + composite + raycast + direct | 7.49 | 0.90 | showcase [lit] |
-| gpu: prefix + rowrun + composite + raycast + direct | 7.49 | 0.81 |  |
-| gpu: prefix + refloor + beam + composite + raycast + direct | 7.49 | 0.83 |  |
-| gpu: prefix + sphere + beam + composite + raycast + direct | 7.49 | 0.38 |  |
-| gpu: prefix + incremental + beam + composite + raycast + direct | 7.50 | 0.45 |  |
-| gpu: prefix + incremental + composite + raycast + direct | 7.50 | 0.49 |  |
-| gpu: prefix + rowrun + beam + composite + raycast + direct | 7.50 | 0.76 |  |
-| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 7.51 | 0.16 |  |
-| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 7.51 | 0.15 |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 7.53 | 0.30 |  |
-| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 7.54 | 0.25 |  |
-| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 7.55 | 0.14 |  |
-| gpu: bricks + sphere + composite + raycast + pathtrace | 7.57 | 0.27 |  |
-| gpu: rows + refloor + composite + raycast + pathtrace | 7.58 | 0.55 |  |
-| gpu: bricks + sphere + beam + composite + raycast + pathtrace | 7.59 | 0.26 |  |
-| gpu: hier + sphere + composite + raycast + pathtrace | 7.59 | 0.30 |  |
-| gpu: bricks + incremental + composite + raycast + pathtrace | 7.59 | 0.38 |  |
-| gpu: hier + sphere + beam + composite + raycast + pathtrace | 7.60 | 0.29 |  |
-| gpu: hier + rowrun + composite + raycast + pathtrace | 7.60 | 0.39 |  |
-| gpu: bricks + rowrun + composite + raycast + pathtrace | 7.60 | 0.41 |  |
-| gpu: prefix + refloor + composite + raycast + pathtrace | 7.61 | 0.63 | showcase [unlit] |
-| gpu: hier + incremental + composite + raycast + pathtrace | 7.61 | 0.39 |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 7.61 | 0.26 |  |
-| gpu: prefix + refloor + beam + composite + raycast + pathtrace | 7.61 | 0.60 |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 7.61 | 0.26 |  |
-| gpu: hier + rowrun + beam + composite + raycast + pathtrace | 7.61 | 0.37 |  |
-| gpu: bricks + incremental + beam + composite + raycast + pathtrace | 7.62 | 0.37 |  |
-| gpu: hier + incremental + beam + composite + raycast + pathtrace | 7.62 | 0.37 |  |
-| gpu: bricks + rowrun + beam + composite + raycast + pathtrace | 7.62 | 0.40 |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 7.66 | 0.15 |  |
-| gpu: rows + refloor + beam + composite + raycast + pathtrace | 7.66 | 0.51 |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 7.68 | 0.12 |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 7.68 | 0.14 |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 7.69 | 0.17 |  |
-| gpu: rows + sphere + composite + raycast + pathtrace | 7.69 | 0.26 |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 7.69 | 0.38 |  |
-| gpu: rows + rowrun + composite + raycast + pathtrace | 7.69 | 0.47 |  |
-| gpu: rows + rowrun + beam + composite + raycast + pathtrace | 7.69 | 0.45 |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + direct | 7.69 | 0.57 |  |
-| gpu: rows + sphere + beam + composite + raycast + pathtrace | 7.69 | 0.26 |  |
-| gpu: rows + incremental + composite + raycast + pathtrace | 7.70 | 0.36 |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 7.71 | 0.38 |  |
-| gpu: prefix + sphere + composite + raycast + pathtrace | 7.71 | 0.27 |  |
-| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 7.72 | 0.26 |  |
-| gpu: rows + incremental + beam + composite + raycast + pathtrace | 7.72 | 0.36 |  |
-| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 7.72 | 0.27 |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 7.73 | 0.20 |  |
-| gpu: prefix + rowrun + composite + raycast + pathtrace | 7.73 | 0.52 |  |
-| gpu: prefix + sphere + beam + composite + raycast + pathtrace | 7.73 | 0.27 |  |
-| gpu: prefix + rowrun + beam + composite + raycast + pathtrace | 7.73 | 0.50 |  |
-| gpu: prefix + incremental + composite + raycast + pathtrace | 7.74 | 0.36 |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 7.74 | 0.13 |  |
-| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 7.75 | 0.14 |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 7.76 | 0.17 |  |
-| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 7.76 | 0.15 |  |
-| gpu: prefix + incremental + beam + composite + raycast + pathtrace | 7.76 | 0.35 |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 7.78 | 0.19 |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 7.78 | 0.26 |  |
-| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 7.80 | 0.12 |  |
-| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 7.80 | 0.17 |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 7.80 | 0.14 |  |
-| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 7.81 | 0.38 |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 7.82 | 0.20 |  |
-| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 7.84 | 0.38 |  |
-| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 7.84 | 0.20 |  |
-| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 7.85 | 0.13 |  |
-| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 7.86 | 0.17 |  |
-| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 7.86 | 0.27 |  |
-| gpu: clipmap + refloor + composite + raycast + direct | 7.87 | 0.64 |  |
-| gpu: clipmap + rowrun + composite + raycast + direct | 7.87 | 0.55 |  |
-| gpu: clipmap + incremental + composite + raycast + direct | 7.88 | 0.51 |  |
-| gpu: clipmap + sphere + composite + raycast + direct | 7.88 | 0.32 |  |
-| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 7.88 | 0.19 |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 7.89 | 0.16 |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + direct | 7.89 | 0.63 |  |
-| gpu: clipmap + rowrun + beam + composite + raycast + direct | 7.89 | 0.49 |  |
-| gpu: clipmap + refloor + beam + composite + raycast + direct | 7.89 | 0.56 |  |
-| gpu: clipmap + incremental + beam + composite + raycast + direct | 7.89 | 0.45 |  |
-| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 7.90 | 0.14 |  |
-| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 7.92 | 0.20 |  |
-| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 7.99 | 0.16 |  |
-| gpu: clipmap + sphere + beam + composite + raycast + direct | 8.06 | 0.29 |  |
-| gpu: clipmap + refloor + composite + raycast + pathtrace | 8.10 | 0.44 |  |
-| gpu: clipmap + refloor + beam + composite + raycast + pathtrace | 8.10 | 0.40 |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + pathtrace | 8.11 | 0.41 |  |
-| gpu: clipmap + sphere + composite + raycast + pathtrace | 8.11 | 0.22 |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + direct | 8.11 | 0.36 |  |
-| gpu: clipmap + rowrun + composite + raycast + pathtrace | 8.11 | 0.36 |  |
-| gpu: clipmap + sphere + beam + composite + raycast + pathtrace | 8.12 | 0.21 |  |
-| gpu: clipmap + incremental + composite + raycast + pathtrace | 8.12 | 0.34 |  |
-| gpu: clipmap + rowrun + beam + composite + raycast + pathtrace | 8.13 | 0.32 |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + raster + direct | 8.13 | 0.56 |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + raster + direct | 8.14 | 0.37 |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + direct | 8.14 | 0.34 |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + raster + direct | 8.14 | 0.43 |  |
-| gpu: clipmap + incremental + beam + composite + raycast + pathtrace | 8.15 | 0.30 |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + direct | 8.15 | 0.34 |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + direct | 8.15 | 0.43 |  |
-| gpu: distance + refloor + beam + composite + raycast + direct | 8.20 | 0.76 |  |
-| gpu: distance + refloor + composite + raycast + direct | 8.21 | 0.83 | showcase [lit] |
-| gpu: distance + rowrun + composite + raycast + direct | 8.21 | 0.74 |  |
-| gpu: distance + sphere + composite + raycast + direct | 8.21 | 0.91 | showcase [lit] |
-| gpu: distance + sphere + beam + composite + raycast + direct | 8.21 | 0.86 | showcase [lit] |
-| gpu: distance + rowrun + beam + composite + raycast + direct | 8.21 | 0.70 |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + raster + direct | 8.21 | 0.58 |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + raster + direct | 8.22 | 0.35 |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + raster + direct | 8.22 | 0.60 |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + raster + direct | 8.22 | 0.45 |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + raster + direct | 8.22 | 0.52 |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + direct | 8.23 | 0.34 |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + raster + direct | 8.23 | 0.35 |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + raster + direct | 8.24 | 0.38 |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + direct | 8.24 | 0.48 |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + raster + direct | 8.24 | 0.45 |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + raster + direct | 8.25 | 0.34 |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + direct | 8.25 | 0.55 |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + direct | 8.26 | 0.35 |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + raster + direct | 8.26 | 0.44 |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + direct | 8.26 | 0.41 |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + direct | 8.27 | 0.77 |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + direct | 8.27 | 0.54 |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + direct | 8.27 | 0.56 |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 8.27 | 0.68 |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + direct | 8.28 | 0.75 |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + direct | 8.28 | 0.47 |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + direct | 8.29 | 0.55 |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + direct | 8.29 | 0.61 |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + direct | 8.30 | 0.53 |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + direct | 8.31 | 0.75 |  |
-| gpu: distance + sphere + composite + raycast + pathtrace | 8.31 | 0.65 |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + direct | 8.31 | 0.55 |  |
-| gpu: distance + refloor + composite + raycast + pathtrace | 8.31 | 0.59 |  |
-| gpu: distance + sphere + beam + composite + raycast + pathtrace | 8.32 | 0.63 |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + direct | 8.32 | 0.56 |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + raster + direct | 8.32 | 0.51 |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + raster + direct | 8.32 | 0.34 |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + raster + direct | 8.33 | 0.58 |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + direct | 8.33 | 0.49 |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + direct | 8.33 | 0.72 |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 8.33 | 0.68 |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + raster + direct | 8.33 | 0.46 |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 8.33 | 0.46 |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + raster + direct | 8.33 | 0.61 |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + direct | 8.33 | 0.55 |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + direct | 8.34 | 0.60 |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + direct | 8.34 | 0.53 |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + direct | 8.34 | 0.49 |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + direct | 8.35 | 0.63 |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + direct | 8.35 | 0.51 |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace | 8.36 | 0.43 | showcase [unlit] |
-| gpu: naive@cpu + faces + prefix + sphere + depth + raster + direct | 8.36 | 0.35 |  |
-| gpu: distance + incremental + beam + composite + raycast + direct | 8.36 | 0.41 |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + direct | 8.37 | 0.55 |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + raster + direct | 8.37 | 0.42 |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + direct | 8.37 | 0.51 |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + direct | 8.37 | 0.46 |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + direct | 8.37 | 0.68 |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + raster + pathtrace | 8.37 | 0.13 |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + direct | 8.37 | 0.51 |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + direct | 8.38 | 0.70 |  |
-| gpu: distance + incremental + composite + raycast + direct | 8.38 | 0.43 |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + direct | 8.39 | 0.53 |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + raster + pathtrace | 8.39 | 0.26 |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 8.39 | 0.12 |  |
-| gpu: distance + refloor + beam + composite + raycast + pathtrace | 8.39 | 0.56 |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 8.39 | 0.60 |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + pathtrace | 8.40 | 0.12 |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + direct | 8.40 | 0.64 |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + direct | 8.40 | 0.76 |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + direct | 8.40 | 0.52 |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + pathtrace | 8.41 | 0.26 |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 8.41 | 0.72 |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + pathtrace | 8.41 | 0.11 |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + pathtrace | 8.41 | 0.15 |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + direct | 8.41 | 0.71 |  |
-| gpu: distance + rowrun + composite + raycast + pathtrace | 8.42 | 0.49 |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + direct | 8.42 | 0.53 |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + direct | 8.42 | 0.68 |  |
-| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 8.42 | 0.46 |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + direct | 8.42 | 0.51 |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + direct | 8.42 | 0.51 |  |
-| gpu: distance + incremental + composite + raycast + pathtrace | 8.42 | 0.33 |  |
-| gpu: points@cpu + splat + svo_dag + refloor + direct | 8.43 | 0.38 |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + raster + pathtrace | 8.43 | 0.15 |  |
-| gpu: distance + rowrun + beam + composite + raycast + pathtrace | 8.43 | 0.47 |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 8.43 | 0.54 |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct | 8.43 | 0.28 |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + raster + direct | 8.44 | 0.29 |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + direct | 8.44 | 0.20 |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + direct | 8.44 | 0.47 |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + direct | 8.44 | 0.61 |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + direct | 8.44 | 0.46 |  |
-| gpu: distance + incremental + beam + composite + raycast + pathtrace | 8.44 | 0.31 |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 8.45 | 0.10 |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + raster + direct | 8.45 | 0.21 |  |
-| gpu: points@cpu + splat + svo_dag + sphere + direct | 8.45 | 0.30 |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + direct | 8.45 | 0.74 |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + direct | 8.45 | 0.60 |  |
-| gpu: svo_dag + refloor + quadtree + visbuffer + direct | 8.45 | 0.40 |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + raster + direct | 8.45 | 0.24 |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + raster + pathtrace | 8.45 | 0.10 |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 8.45 | 0.72 |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + direct | 8.45 | 0.20 |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + direct | 8.45 | 0.53 |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + raster + pathtrace | 8.45 | 0.14 |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + direct | 8.45 | 0.53 |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + direct | 8.45 | 0.21 |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + direct | 8.46 | 0.50 |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + direct | 8.46 | 0.50 |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + raster + pathtrace | 8.46 | 0.10 |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + direct | 8.47 | 0.49 |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 8.47 | 0.59 |  |
-| gpu: points@cpu + splat + svo_dag + rowrun + direct | 8.47 | 0.32 |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + raster + pathtrace | 8.47 | 0.13 |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + raster + pathtrace | 8.47 | 0.11 |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + direct | 8.47 | 0.24 |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + direct | 8.47 | 0.63 |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + raster + pathtrace | 8.47 | 0.24 |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + direct | 8.48 | 0.46 |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + raster + pathtrace | 8.48 | 0.11 |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + direct | 8.48 | 0.63 |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + pathtrace | 8.48 | 0.19 |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + raster + pathtrace | 8.49 | 0.24 |  |
-| gpu: points@cpu + splat + svo_dag + incremental + direct | 8.49 | 0.29 |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + direct | 8.49 | 0.58 |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + pathtrace | 8.51 | 0.12 |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + pathtrace | 8.51 | 0.28 |  |
-| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 8.52 | 0.53 |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + raster + pathtrace | 8.52 | 0.15 |  |
-| gpu: svo_dag + refloor + quadtree + gbuffer + direct | 8.53 | 0.40 |  |
-| gpu: svo_dag + refloor + quadtree + visbuffer + pathtrace | 8.53 | 0.30 |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 8.53 | 0.61 |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + raster + direct | 8.54 | 0.28 |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + raster + direct | 8.54 | 0.19 |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 8.54 | 0.19 |  |
-| gpu: svo_dag + refloor + quadtree + raster + direct | 8.55 | 0.30 |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + raster + pathtrace | 8.55 | 0.17 |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + direct | 8.55 | 0.27 |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + direct | 8.56 | 0.47 |  |
-| gpu: tree64 + refloor + quadtree + visbuffer + direct | 8.56 | 0.41 |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + direct | 8.57 | 0.30 |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + raster + pathtrace | 8.57 | 0.23 |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 8.57 | 0.63 |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + pathtrace | 8.57 | 0.15 |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + raster + pathtrace | 8.57 | 0.10 |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + raster + pathtrace | 8.57 | 0.14 |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + direct | 8.57 | 0.20 |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + direct | 8.58 | 0.23 |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + direct | 8.58 | 0.58 |  |
-| gpu: svo_dag + refloor + quadtree + gbuffer + pathtrace | 8.58 | 0.30 |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + raster + direct | 8.58 | 0.24 |  |
-| gpu: tree64 + refloor + quadtree + raster + direct | 8.58 | 0.30 |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + direct | 8.59 | 0.66 |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + direct | 8.59 | 0.47 |  |
-| gpu: points@cpu + splat + tree64 + refloor + direct | 8.59 | 0.37 |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + direct | 8.60 | 0.27 |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + raster + pathtrace | 8.60 | 0.26 |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + raster + pathtrace | 8.60 | 0.10 |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + raster + pathtrace | 8.60 | 0.13 |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 8.60 | 0.18 |  |
-| gpu: points@cpu + splat + tree64 + sphere + direct | 8.61 | 0.29 |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 8.61 | 0.34 |  |
-| gpu: tree64 + refloor + quadtree + gbuffer + direct | 8.61 | 0.41 |  |
-| gpu: points@cpu + splat + tree64 + rowrun + direct | 8.62 | 0.27 |  |
-| gpu: points@cpu + splat + tree64 + incremental + direct | 8.63 | 0.34 |  |
-| gpu: tree64 + refloor + quadtree + visbuffer + pathtrace | 8.63 | 0.32 |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + direct | 8.64 | 0.47 |  |
-| gpu: svo_dag + rowrun + quadtree + raster + pathtrace | 8.64 | 0.10 |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + pathtrace | 8.64 | 0.07 |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 8.66 | 0.41 |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + raster + pathtrace | 8.66 | 0.08 |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + direct | 8.66 | 0.46 |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 8.67 | 0.08 |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 8.67 | 0.20 |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 8.68 | 0.22 |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + pathtrace | 8.68 | 0.08 |  |
-| gpu: svo_dag + sphere + quadtree + visbuffer + direct | 8.69 | 0.27 |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + direct | 8.69 | 0.33 |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + direct | 8.69 | 0.49 |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + pathtrace | 8.69 | 0.09 |  |
-| gpu: tree64 + refloor + quadtree + gbuffer + pathtrace | 8.69 | 0.31 |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + raster + pathtrace | 8.69 | 0.16 |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + direct | 8.70 | 0.41 |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + raster + pathtrace | 8.71 | 0.10 |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + direct | 8.71 | 0.38 |  |
-| gpu: svo_dag + sphere + quadtree + gbuffer + direct | 8.71 | 0.27 |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 8.71 | 0.26 |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 8.71 | 0.24 |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 8.71 | 0.25 |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 8.71 | 0.23 |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + direct | 8.72 | 0.49 |  |
-| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 8.72 | 0.20 |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + direct | 8.73 | 0.49 |  |
-| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 8.73 | 0.22 |  |
-| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 8.73 | 0.40 |  |
-| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 8.74 | 0.23 |  |
-| gpu: svo_dag + rowrun + quadtree + raster + direct | 8.74 | 0.09 |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 8.75 | 0.36 |  |
-| gpu: svo_dag + sphere + quadtree + visbuffer + pathtrace | 8.75 | 0.20 |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + raster + pathtrace | 8.76 | 0.07 |  |
-| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 8.76 | 0.26 |  |
-| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 8.76 | 0.25 |  |
-| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 8.76 | 0.23 |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + pathtrace | 8.76 | 0.12 |  |
-| gpu: tree64 + incremental + quadtree + visbuffer + pathtrace | 8.77 | 0.24 |  |
-| gpu: svo_dag + sphere + quadtree + raster + direct | 8.77 | 0.18 |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + direct | 8.77 | 0.46 |  |
-| gpu: tree64 + incremental + quadtree + visbuffer + direct | 8.78 | 0.33 |  |
-| gpu: svo_dag + refloor + quadtree + raster + pathtrace | 8.78 | 0.22 |  |
-| gpu: tree64 + incremental + quadtree + gbuffer + pathtrace | 8.78 | 0.24 |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 8.79 | 0.31 |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 8.79 | 0.43 |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 8.79 | 0.20 |  |
-| gpu: svo_dag + incremental + quadtree + visbuffer + pathtrace | 8.79 | 0.18 |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + raster + pathtrace | 8.79 | 0.15 |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 8.79 | 0.38 |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 8.79 | 0.19 |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + pathtrace | 8.79 | 0.10 |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 8.79 | 0.33 |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + raster + pathtrace | 8.80 | 0.10 |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + pathtrace | 8.80 | 0.08 |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + pathtrace | 8.80 | 0.17 |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + direct | 8.81 | 0.34 |  |
-| gpu: svo_dag + sphere + quadtree + raster + pathtrace | 8.81 | 0.13 |  |
-| gpu: points@cpu + splat + svo_dag + refloor + pathtrace | 8.81 | 0.25 |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 8.81 | 0.21 |  |
-| gpu: svo_dag + rowrun + quadtree + visbuffer + pathtrace | 8.81 | 0.17 |  |
-| gpu: svo_dag + incremental + quadtree + visbuffer + direct | 8.81 | 0.25 |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + direct | 8.82 | 0.44 |  |
-| gpu: tree64 + incremental + quadtree + raster + direct | 8.82 | 0.21 |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 8.82 | 0.34 |  |
-| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 8.82 | 0.37 |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 8.82 | 0.13 |  |
-| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 8.82 | 0.31 |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + direct | 8.82 | 0.44 |  |
-| gpu: svo_dag + sphere + quadtree + gbuffer + pathtrace | 8.82 | 0.19 |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 8.83 | 0.24 |  |
-| gpu: tree64 + sphere + quadtree + visbuffer + direct | 8.83 | 0.25 |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + direct | 8.83 | 0.35 |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 8.83 | 0.20 |  |
-| gpu: tree64 + incremental + quadtree + gbuffer + direct | 8.83 | 0.33 |  |
-| gpu: svo_dag + rowrun + quadtree + visbuffer + direct | 8.83 | 0.24 |  |
-| gpu: svo_dag + incremental + quadtree + raster + pathtrace | 8.83 | 0.12 |  |
-| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 8.83 | 0.41 |  |
-| gpu: tree64 + rowrun + quadtree + raster + pathtrace | 8.84 | 0.09 |  |
-| gpu: svo_dag + rowrun + quadtree + gbuffer + pathtrace | 8.84 | 0.17 |  |
-| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 8.85 | 0.20 |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + direct | 8.85 | 0.36 |  |
-| gpu: tree64 + sphere + quadtree + gbuffer + direct | 8.85 | 0.25 |  |
-| gpu: points@cpu + splat + svo_dag + sphere + pathtrace | 8.86 | 0.15 |  |
-| gpu: svo_dag + incremental + quadtree + gbuffer + pathtrace | 8.86 | 0.18 |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + direct | 8.86 | 0.39 |  |
-| gpu: tree64 + sphere + quadtree + raster + direct | 8.86 | 0.16 |  |
-| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 8.86 | 0.34 |  |
-| gpu: svo_dag + incremental + quadtree + gbuffer + direct | 8.86 | 0.25 |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 8.87 | 0.23 |  |
-| gpu: svo_dag + incremental + quadtree + raster + direct | 8.87 | 0.14 |  |
-| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 8.87 | 0.23 |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 8.87 | 0.22 |  |
-| gpu: tree64 + rowrun + quadtree + raster + direct | 8.87 | 0.09 |  |
-| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 8.88 | 0.20 |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + direct | 8.88 | 0.36 |  |
-| gpu: tree64 + incremental + quadtree + raster + pathtrace | 8.88 | 0.17 |  |
-| gpu: tree64 + sphere + quadtree + visbuffer + pathtrace | 8.90 | 0.19 |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 8.90 | 0.62 |  |
-| gpu: svo_dag + rowrun + quadtree + gbuffer + direct | 8.90 | 0.24 |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 8.90 | 0.23 |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 8.90 | 0.44 |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 8.90 | 0.35 |  |
-| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 8.90 | 0.23 |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + direct | 8.90 | 0.38 |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 8.91 | 0.24 |  |
-| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 8.91 | 0.37 |  |
-| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 8.91 | 0.19 |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 8.91 | 0.41 |  |
-| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 8.92 | 0.22 |  |
-| gpu: points@cpu + splat + svo_dag + rowrun + pathtrace | 8.92 | 0.16 |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 8.93 | 0.39 |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + direct | 8.93 | 0.43 |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + direct | 8.93 | 0.33 |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 8.93 | 0.29 |  |
-| gpu: points@cpu + splat + bricks + refloor + direct | 8.93 | 0.39 |  |
-| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 8.93 | 0.21 |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + direct | 8.93 | 0.42 |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 8.94 | 0.19 |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + direct | 8.94 | 0.34 |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 8.94 | 0.57 |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 8.94 | 0.55 |  |
-| gpu: tree64 + refloor + quadtree + raster + pathtrace | 8.94 | 0.22 |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + direct | 8.94 | 0.35 |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 8.94 | 0.13 |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 8.95 | 0.21 |  |
-| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + direct | 8.95 | 0.44 |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 8.96 | 0.25 |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 8.96 | 0.14 |  |
-| gpu: tree64 + rowrun + quadtree + visbuffer + pathtrace | 8.96 | 0.14 |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + direct | 8.96 | 0.45 |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + direct | 8.96 | 0.44 |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + raster + direct | 8.96 | 0.54 |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + raster + direct | 8.97 | 0.55 |  |
-| gpu: tree64 + sphere + quadtree + gbuffer + pathtrace | 8.97 | 0.19 |  |
-| gpu: points@cpu + splat + svo_dag + incremental + pathtrace | 8.97 | 0.13 |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + direct | 8.97 | 0.33 |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + direct | 8.97 | 0.36 |  |
-| gpu: points@cpu + splat + tree64 + refloor + pathtrace | 8.97 | 0.26 |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 8.97 | 0.20 |  |
-| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 8.98 | 0.29 |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + direct | 8.98 | 0.41 |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 8.98 | 0.09 |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + direct | 8.99 | 0.35 |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + direct | 8.99 | 0.45 |  |
-| gpu: tree64 + rowrun + quadtree + gbuffer + pathtrace | 8.99 | 0.14 |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 9.00 | 0.40 |  |
-| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 9.00 | 0.25 |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 9.00 | 0.23 |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + direct | 9.00 | 0.35 |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + direct | 9.00 | 0.27 |  |
-| gpu: tree64 + sphere + quadtree + raster + pathtrace | 9.01 | 0.12 |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + direct | 9.01 | 0.18 |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + raster + direct | 9.01 | 0.40 |  |
-| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 9.01 | 0.23 |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 9.01 | 0.54 |  |
-| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 9.01 | 0.33 |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 9.01 | 0.44 |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + direct | 9.01 | 0.22 |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + raster + direct | 9.02 | 0.58 |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + raster + direct | 9.02 | 0.59 |  |
-| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 9.02 | 0.24 |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + direct | 9.03 | 0.22 |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + raster + direct | 9.03 | 0.45 |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + raster + direct | 9.03 | 0.40 |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 9.04 | 0.44 |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + direct | 9.04 | 0.35 |  |
-| gpu: points@cpu + splat + tree64 + sphere + pathtrace | 9.04 | 0.14 |  |
-| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 9.04 | 0.39 |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + direct | 9.05 | 0.33 |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + direct | 9.05 | 0.67 |  |
-| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 9.05 | 0.19 |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 9.05 | 0.55 |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 9.05 | 0.56 |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + direct | 9.06 | 0.70 |  |
-| gpu: points@cpu + splat + tree64 + incremental + pathtrace | 9.06 | 0.20 |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + direct | 9.06 | 0.43 |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + direct | 9.07 | 0.69 |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + direct | 9.07 | 0.44 |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 9.07 | 0.22 |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 9.08 | 0.44 |  |
-| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 9.08 | 0.19 |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + direct | 9.09 | 0.34 |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 9.09 | 0.29 |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 9.09 | 0.32 |  |
-| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 9.10 | 0.32 |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + direct | 9.10 | 0.32 |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + direct | 9.10 | 0.52 |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 9.10 | 0.15 |  |
-| gpu: points@cpu + splat + tree64 + rowrun + pathtrace | 9.11 | 0.12 |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + direct | 9.11 | 0.68 |  |
-| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 9.11 | 0.23 |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + direct | 9.12 | 0.71 |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + direct | 9.12 | 0.66 |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + direct | 9.12 | 0.34 |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 9.12 | 0.17 |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + direct | 9.12 | 0.37 |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + direct | 9.15 | 0.35 |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + direct | 9.15 | 0.41 |  |
-| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 9.18 | 0.22 |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 9.18 | 0.18 |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + direct | 9.19 | 0.60 |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + direct | 9.20 | 0.60 |  |
-| gpu: tree64 + rowrun + quadtree + gbuffer + direct | 9.20 | 0.19 |  |
-| gpu: tree64 + rowrun + quadtree + visbuffer + direct | 9.21 | 0.19 |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 9.21 | 0.18 |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 9.21 | 0.26 |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 9.21 | 0.19 |  |
-| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 9.22 | 0.28 |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 9.22 | 0.15 |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + direct | 9.22 | 0.58 |  |
-| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 9.22 | 0.15 |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + raster + pathtrace | 9.23 | 0.27 |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + direct | 9.23 | 0.47 |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + raster + pathtrace | 9.23 | 0.29 |  |
-| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 9.23 | 0.18 |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 9.23 | 0.09 |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 9.23 | 0.09 |  |
-| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 9.24 | 0.17 |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + pathtrace | 9.24 | 0.19 |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 9.24 | 0.13 |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 9.24 | 0.23 |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 9.24 | 0.29 |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + raster + direct | 9.26 | 0.30 |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + raster + pathtrace | 9.26 | 0.28 |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + raster + direct | 9.26 | 0.29 |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 9.26 | 0.06 |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + raster + pathtrace | 9.27 | 0.14 |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + raster + pathtrace | 9.27 | 0.25 |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 9.27 | 0.16 |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + raster + pathtrace | 9.27 | 0.17 |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + direct | 9.27 | 0.59 |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + raster + pathtrace | 9.27 | 0.12 |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 9.27 | 0.20 |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + direct | 9.28 | 0.26 |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + direct | 9.28 | 0.47 |  |
-| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 9.29 | 0.22 |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + raster + direct | 9.29 | 0.23 |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 9.30 | 0.18 |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 9.30 | 0.29 |  |
-| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 9.31 | 0.18 |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 9.32 | 0.69 |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 9.33 | 0.42 |  |
-| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 9.33 | 0.19 |  |
-| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 9.33 | 0.26 |  |
-| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 9.33 | 0.15 |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + direct | 9.33 | 0.61 |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + direct | 9.34 | 0.58 |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 9.34 | 0.16 |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 9.34 | 0.11 |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 9.35 | 0.31 |  |
-| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 9.36 | 0.29 |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 9.36 | 0.61 |  |
-| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 9.36 | 0.19 |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 9.36 | 0.64 |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 9.36 | 0.49 |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 9.37 | 0.19 |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 9.37 | 0.18 |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 9.37 | 0.12 |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 9.38 | 0.25 |  |
-| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 9.38 | 0.16 |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 9.38 | 0.08 |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + direct | 9.39 | 0.42 |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 9.39 | 0.23 |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 9.39 | 0.40 |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 9.40 | 0.22 |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 9.40 | 0.39 |  |
-| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 9.41 | 0.18 |  |
-| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 9.41 | 0.29 |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 9.43 | 0.45 |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 9.43 | 0.67 |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 9.44 | 0.50 |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 9.44 | 0.42 |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 9.44 | 0.41 |  |
-| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 9.45 | 0.16 |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 9.46 | 0.32 |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 9.47 | 0.34 |  |
-| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 9.47 | 0.25 |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 9.48 | 0.62 |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 9.48 | 0.65 |  |
-| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 9.49 | 0.18 |  |
-| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 9.49 | 0.45 |  |
-| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 9.49 | 0.39 |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 9.49 | 0.20 |  |
-| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 9.50 | 0.24 |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + raster + pathtrace | 9.51 | 0.18 |  |
-| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 9.51 | 0.32 |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + pathtrace | 9.51 | 0.12 |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + raster + pathtrace | 9.51 | 0.17 |  |
-| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 9.51 | 0.22 |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + raster + pathtrace | 9.51 | 0.09 |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 9.51 | 0.38 |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + direct | 9.52 | 0.42 |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 9.52 | 0.39 |  |
-| gpu: bricks + refloor + quadtree + raster + direct | 9.52 | 0.36 |  |
-| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 9.54 | 0.20 |  |
-| gpu: points@cpu + splat + bricks + refloor + pathtrace | 9.55 | 0.31 |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 9.60 | 0.23 |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 9.62 | 0.38 |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 9.62 | 0.41 |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 9.63 | 0.13 |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + direct | 9.65 | 0.43 |  |
-| gpu: boxes@cpu + rayquery + raycast + direct | 9.65 | 0.55 |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + direct | 9.65 | 0.43 |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + direct | 9.67 | 0.30 |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + direct | 9.67 | 0.41 |  |
-| gpu: points@cpu + splat + bricks + sphere + direct | 9.68 | 0.31 |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 9.68 | 0.19 |  |
-| gpu: points@cpu + splat + hier + sphere + direct | 9.70 | 0.32 |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 9.71 | 0.31 |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + pathtrace | 9.71 | 0.31 |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + direct | 9.71 | 0.32 |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 9.72 | 0.17 |  |
-| gpu: points@cpu + splat + hier + refloor + direct | 9.72 | 0.39 |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + direct | 9.73 | 0.41 |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 9.73 | 0.32 |  |
-| gpu: points@cpu + splat + hier + rowrun + direct | 9.73 | 0.35 |  |
-| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 9.73 | 0.22 |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 9.74 | 0.20 |  |
-| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 9.74 | 0.37 |  |
-| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 9.74 | 0.13 |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + pathtrace | 9.74 | 0.31 |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 9.75 | 0.16 |  |
-| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 9.75 | 0.42 |  |
-| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 9.75 | 0.30 |  |
-| gpu: points@cpu + splat + rows + sphere + direct | 9.79 | 0.31 |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + direct | 9.79 | 0.42 |  |
-| gpu: points@cpu + splat + bricks + rowrun + direct | 9.80 | 0.36 |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + direct | 9.80 | 0.43 |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + pathtrace | 9.80 | 0.23 |  |
-| gpu: points@cpu + splat + rows + rowrun + direct | 9.80 | 0.37 |  |
-| gpu: points@cpu + splat + rows + refloor + direct | 9.81 | 0.38 |  |
-| gpu: points@cpu + splat + prefix + refloor + direct | 9.81 | 0.40 |  |
-| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 9.81 | 0.18 |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + direct | 9.82 | 0.32 |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 9.82 | 0.25 |  |
-| gpu: points@cpu + splat + prefix + sphere + direct | 9.82 | 0.31 |  |
-| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 9.82 | 0.17 |  |
-| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 9.83 | 0.31 |  |
-| gpu: points@cpu + splat + bricks + incremental + direct | 9.83 | 0.33 |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 9.83 | 0.23 |  |
-| gpu: points@cpu + splat + hier + incremental + direct | 9.85 | 0.32 |  |
-| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 9.86 | 0.20 |  |
-| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 9.86 | 0.16 |  |
-| gpu: hier + refloor + quadtree + raster + direct | 9.87 | 0.36 |  |
-| gpu: bricks + refloor + quadtree + visbuffer + direct | 9.88 | 0.47 |  |
-| gpu: points@cpu + splat + prefix + rowrun + direct | 9.89 | 0.39 |  |
-| gpu: bricks + refloor + quadtree + gbuffer + direct | 9.91 | 0.48 |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + direct | 9.91 | 0.42 |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 9.93 | 0.31 |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 9.93 | 0.29 |  |
-| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 9.93 | 0.25 |  |
-| gpu: points@cpu + splat + rows + incremental + direct | 9.93 | 0.31 |  |
-| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + direct | 9.93 | 0.41 |  |
-| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 9.94 | 0.23 |  |
-| gpu: bricks + sphere + quadtree + visbuffer + direct | 9.95 | 0.31 |  |
-| gpu: hier + sphere + quadtree + visbuffer + direct | 9.96 | 0.32 |  |
-| gpu: bricks + rowrun + quadtree + visbuffer + direct | 9.96 | 0.38 |  |
-| gpu: hier + refloor + quadtree + visbuffer + direct | 9.97 | 0.47 |  |
-| gpu: points@cpu + splat + prefix + incremental + direct | 9.97 | 0.32 |  |
-| gpu: bricks + sphere + quadtree + gbuffer + direct | 9.99 | 0.31 |  |
-| gpu: rows + refloor + quadtree + raster + direct | 10.00 | 0.33 |  |
-| gpu: hier + sphere + quadtree + gbuffer + direct | 10.00 | 0.34 |  |
-| gpu: boxes@cpu + rayquery + raycast + pathtrace | 10.00 | 0.40 |  |
-| gpu: bricks + rowrun + quadtree + gbuffer + direct | 10.01 | 0.38 |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 10.01 | 0.16 |  |
-| gpu: hier + refloor + quadtree + gbuffer + direct | 10.01 | 0.47 |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 10.01 | 0.25 |  |
-| gpu: rows + rowrun + quadtree + raster + direct | 10.02 | 0.30 |  |
-| gpu: prefix + refloor + quadtree + raster + direct | 10.02 | 0.37 |  |
-| gpu: rows + rowrun + quadtree + visbuffer + direct | 10.04 | 0.43 |  |
-| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 10.05 | 0.28 |  |
-| gpu: hier + refloor + quadtree + visbuffer + pathtrace | 10.05 | 0.31 |  |
-| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 10.05 | 0.31 |  |
-| gpu: points@cpu + splat + hier + refloor + pathtrace | 10.05 | 0.27 |  |
-| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 10.05 | 0.24 |  |
-| gpu: hier + sphere + quadtree + raster + direct | 10.06 | 0.21 |  |
-| gpu: rows + refloor + quadtree + visbuffer + direct | 10.06 | 0.45 |  |
-| gpu: bricks + sphere + quadtree + raster + direct | 10.06 | 0.19 |  |
-| gpu: bricks + incremental + quadtree + raster + direct | 10.07 | 0.26 |  |
-| gpu: points@cpu + splat + hier + sphere + pathtrace | 10.08 | 0.17 |  |
-| gpu: points@cpu + splat + bricks + sphere + pathtrace | 10.08 | 0.15 |  |
-| gpu: hier + incremental + quadtree + raster + direct | 10.08 | 0.26 |  |
-| gpu: bricks + refloor + quadtree + visbuffer + pathtrace | 10.08 | 0.30 |  |
-| gpu: rows + refloor + quadtree + gbuffer + direct | 10.09 | 0.43 |  |
-| gpu: rows + rowrun + quadtree + gbuffer + direct | 10.10 | 0.42 |  |
-| gpu: bricks + rowrun + quadtree + raster + pathtrace | 10.10 | 0.13 |  |
-| gpu: hier + refloor + quadtree + gbuffer + pathtrace | 10.11 | 0.30 |  |
-| gpu: hier + rowrun + quadtree + visbuffer + direct | 10.12 | 0.35 |  |
-| gpu: prefix + rowrun + quadtree + visbuffer + direct | 10.12 | 0.43 |  |
-| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 10.12 | 0.16 |  |
-| gpu: prefix + refloor + quadtree + visbuffer + direct | 10.13 | 0.48 |  |
-| gpu: rows + incremental + quadtree + raster + direct | 10.13 | 0.27 |  |
-| gpu: bricks + refloor + quadtree + raster + pathtrace | 10.13 | 0.19 |  |
-| gpu: points@cpu + splat + hier + rowrun + pathtrace | 10.13 | 0.18 |  |
-| gpu: bricks + rowrun + quadtree + raster + direct | 10.14 | 0.18 |  |
-| gpu: points@cpu + splat + rows + refloor + pathtrace | 10.15 | 0.25 |  |
-| gpu: prefix + rowrun + quadtree + gbuffer + direct | 10.15 | 0.43 |  |
-| gpu: prefix + refloor + quadtree + gbuffer + direct | 10.15 | 0.48 |  |
-| gpu: hier + rowrun + quadtree + raster + pathtrace | 10.15 | 0.12 |  |
-| gpu: points@cpu + splat + bricks + incremental + pathtrace | 10.15 | 0.18 |  |
-| gpu: hier + incremental + quadtree + visbuffer + direct | 10.16 | 0.33 |  |
-| gpu: bricks + incremental + quadtree + visbuffer + direct | 10.16 | 0.34 |  |
-| gpu: hier + rowrun + quadtree + raster + direct | 10.16 | 0.18 |  |
-| gpu: prefix + rowrun + quadtree + raster + direct | 10.16 | 0.28 |  |
-| gpu: rows + refloor + quadtree + visbuffer + pathtrace | 10.17 | 0.29 |  |
-| gpu: hier + rowrun + quadtree + gbuffer + direct | 10.17 | 0.35 |  |
-| gpu: bricks + refloor + quadtree + gbuffer + pathtrace | 10.17 | 0.29 |  |
-| gpu: points@cpu + splat + hier + incremental + pathtrace | 10.17 | 0.19 |  |
-| gpu: rows + sphere + quadtree + raster + direct | 10.18 | 0.20 |  |
-| gpu: points@cpu + splat + rows + sphere + pathtrace | 10.18 | 0.15 |  |
-| gpu: points@cpu + splat + prefix + refloor + pathtrace | 10.18 | 0.27 |  |
-| gpu: points@cpu + splat + rows + rowrun + pathtrace | 10.18 | 0.22 |  |
-| gpu: bricks + incremental + quadtree + visbuffer + pathtrace | 10.18 | 0.21 |  |
-| gpu: hier + incremental + quadtree + gbuffer + direct | 10.18 | 0.33 |  |
-| gpu: prefix + refloor + quadtree + visbuffer + pathtrace | 10.18 | 0.31 |  |
-| gpu: points@cpu + splat + bricks + rowrun + pathtrace | 10.18 | 0.19 |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 10.20 | 0.01 |  |
-| gpu: points@cpu + splat + prefix + sphere + pathtrace | 10.20 | 0.16 |  |
-| gpu: prefix + incremental + quadtree + raster + direct | 10.20 | 0.24 |  |
-| gpu: points@cpu + splat + clipmap + sphere + direct | 10.20 | 0.30 |  |
-| gpu: points@cpu + splat + clipmap + refloor + direct | 10.20 | 0.37 |  |
-| gpu: rows + rowrun + quadtree + raster + pathtrace | 10.21 | 0.18 |  |
-| gpu: prefix + refloor + quadtree + gbuffer + pathtrace | 10.21 | 0.31 |  |
-| gpu: bricks + sphere + quadtree + visbuffer + pathtrace | 10.22 | 0.18 |  |
-| gpu: rows + sphere + quadtree + visbuffer + direct | 10.22 | 0.30 |  |
-| gpu: prefix + sphere + quadtree + raster + direct | 10.22 | 0.19 |  |
-| gpu: hier + incremental + quadtree + visbuffer + pathtrace | 10.22 | 0.21 |  |
-| gpu: bricks + incremental + quadtree + gbuffer + pathtrace | 10.23 | 0.21 |  |
-| gpu: hier + sphere + quadtree + visbuffer + pathtrace | 10.23 | 0.19 |  |
-| gpu: points@cpu + splat + rows + incremental + pathtrace | 10.23 | 0.18 |  |
-| gpu: bricks + rowrun + quadtree + visbuffer + pathtrace | 10.23 | 0.21 |  |
-| gpu: rows + refloor + quadtree + gbuffer + pathtrace | 10.23 | 0.28 |  |
-| gpu: prefix + rowrun + quadtree + visbuffer + pathtrace | 10.24 | 0.26 |  |
-| gpu: bricks + incremental + quadtree + gbuffer + direct | 10.24 | 0.34 |  |
-| gpu: prefix + rowrun + quadtree + raster + pathtrace | 10.24 | 0.17 |  |
-| gpu: points@cpu + splat + clipmap + rowrun + direct | 10.24 | 0.36 |  |
-| gpu: points@cpu + splat + clipmap + incremental + direct | 10.25 | 0.35 |  |
-| gpu: rows + incremental + quadtree + visbuffer + direct | 10.25 | 0.33 |  |
-| gpu: rows + rowrun + quadtree + visbuffer + pathtrace | 10.26 | 0.25 |  |
-| gpu: prefix + sphere + quadtree + visbuffer + direct | 10.26 | 0.31 |  |
-| gpu: bricks + sphere + quadtree + gbuffer + pathtrace | 10.26 | 0.18 |  |
-| gpu: rows + sphere + quadtree + gbuffer + direct | 10.26 | 0.30 |  |
-| gpu: hier + sphere + quadtree + gbuffer + pathtrace | 10.27 | 0.19 |  |
-| gpu: bricks + rowrun + quadtree + gbuffer + pathtrace | 10.27 | 0.21 |  |
-| gpu: prefix + rowrun + quadtree + gbuffer + pathtrace | 10.28 | 0.26 |  |
-| gpu: hier + incremental + quadtree + gbuffer + pathtrace | 10.29 | 0.21 |  |
-| gpu: prefix + sphere + quadtree + gbuffer + direct | 10.29 | 0.31 |  |
-| gpu: hier + rowrun + quadtree + visbuffer + pathtrace | 10.31 | 0.19 |  |
-| gpu: rows + rowrun + quadtree + gbuffer + pathtrace | 10.31 | 0.25 |  |
-| gpu: rows + incremental + quadtree + gbuffer + direct | 10.31 | 0.33 |  |
-| gpu: prefix + incremental + quadtree + visbuffer + direct | 10.32 | 0.33 |  |
-| gpu: points@cpu + splat + prefix + rowrun + pathtrace | 10.32 | 0.24 |  |
-| gpu: hier + rowrun + quadtree + gbuffer + pathtrace | 10.33 | 0.19 |  |
-| gpu: points@cpu + splat + prefix + incremental + pathtrace | 10.33 | 0.17 |  |
-| gpu: rows + incremental + quadtree + visbuffer + pathtrace | 10.33 | 0.21 |  |
-| gpu: rows + incremental + quadtree + gbuffer + pathtrace | 10.35 | 0.21 |  |
-| gpu: bricks + incremental + quadtree + raster + pathtrace | 10.36 | 0.14 |  |
-| gpu: hier + incremental + quadtree + raster + pathtrace | 10.37 | 0.15 |  |
-| gpu: rows + sphere + quadtree + visbuffer + pathtrace | 10.37 | 0.18 |  |
-| gpu: hier + refloor + quadtree + raster + pathtrace | 10.37 | 0.22 |  |
-| gpu: clipmap + rowrun + quadtree + raster + pathtrace | 10.37 | 0.16 |  |
-| gpu: bricks + sphere + quadtree + raster + pathtrace | 10.38 | 0.12 |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 10.38 | 0.01 |  |
-| gpu: clipmap + refloor + quadtree + raster + direct | 10.38 | 0.30 |  |
-| gpu: prefix + sphere + quadtree + visbuffer + pathtrace | 10.39 | 0.18 |  |
-| gpu: prefix + incremental + quadtree + visbuffer + pathtrace | 10.39 | 0.20 |  |
-| gpu: rows + sphere + quadtree + gbuffer + pathtrace | 10.39 | 0.18 |  |
-| gpu: hier + sphere + quadtree + raster + pathtrace | 10.41 | 0.13 |  |
-| gpu: clipmap + refloor + quadtree + visbuffer + pathtrace | 10.41 | 0.29 |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.42 | 0.01 |  |
-| gpu: clipmap + refloor + quadtree + visbuffer + direct | 10.43 | 0.40 |  |
-| gpu: prefix + sphere + quadtree + gbuffer + pathtrace | 10.43 | 0.18 |  |
-| gpu: clipmap + incremental + quadtree + visbuffer + direct | 10.45 | 0.34 |  |
-| gpu: clipmap + rowrun + quadtree + visbuffer + direct | 10.45 | 0.36 |  |
-| gpu: prefix + incremental + quadtree + gbuffer + pathtrace | 10.47 | 0.20 |  |
-| gpu: points@cpu + splat + distance + sphere + direct | 10.47 | 0.39 |  |
-| gpu: clipmap + refloor + quadtree + gbuffer + pathtrace | 10.47 | 0.29 |  |
-| gpu: points@cpu + splat + distance + rowrun + direct | 10.48 | 0.37 |  |
-| gpu: points@cpu + splat + distance + refloor + direct | 10.48 | 0.38 |  |
-| gpu: rows + incremental + quadtree + raster + pathtrace | 10.48 | 0.15 |  |
-| gpu: rows + refloor + quadtree + raster + pathtrace | 10.48 | 0.21 |  |
-| gpu: clipmap + rowrun + quadtree + visbuffer + pathtrace | 10.48 | 0.25 |  |
-| gpu: prefix + refloor + quadtree + raster + pathtrace | 10.48 | 0.22 |  |
-| gpu: clipmap + incremental + quadtree + gbuffer + direct | 10.49 | 0.34 |  |
-| gpu: clipmap + sphere + quadtree + visbuffer + pathtrace | 10.50 | 0.19 |  |
-| gpu: clipmap + incremental + quadtree + visbuffer + pathtrace | 10.50 | 0.24 |  |
-| gpu: clipmap + refloor + quadtree + gbuffer + direct | 10.50 | 0.38 |  |
-| gpu: prefix + incremental + quadtree + gbuffer + direct | 10.50 | 0.33 |  |
-| gpu: rows + sphere + quadtree + raster + pathtrace | 10.51 | 0.12 |  |
-| gpu: greedy@cpu + rayquery + raycast + direct | 10.51 | 0.42 |  |
-| gpu: clipmap + rowrun + quadtree + gbuffer + direct | 10.51 | 0.35 |  |
-| gpu: prefix + incremental + quadtree + raster + pathtrace | 10.51 | 0.14 |  |
-| gpu: clipmap + sphere + quadtree + gbuffer + pathtrace | 10.52 | 0.19 |  |
-| gpu: clipmap + incremental + quadtree + gbuffer + pathtrace | 10.52 | 0.23 |  |
-| gpu: clipmap + rowrun + quadtree + gbuffer + pathtrace | 10.53 | 0.25 |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.53 | 0.01 |  |
-| gpu: prefix + sphere + quadtree + raster + pathtrace | 10.54 | 0.12 |  |
-| gpu: clipmap + incremental + quadtree + raster + direct | 10.55 | 0.21 |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 10.56 | 0.01 |  |
-| gpu: points@cpu + splat + clipmap + refloor + pathtrace | 10.57 | 0.22 |  |
-| gpu: clipmap + rowrun + quadtree + raster + direct | 10.57 | 0.20 |  |
-| gpu: points@cpu + splat + distance + incremental + direct | 10.58 | 0.30 |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.59 | 0.01 |  |
-| gpu: clipmap + sphere + quadtree + visbuffer + direct | 10.59 | 0.28 |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.60 | 0.01 |  |
-| gpu: clipmap + sphere + quadtree + raster + direct | 10.60 | 0.17 |  |
-| gpu: points@cpu + splat + clipmap + sphere + pathtrace | 10.60 | 0.13 |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.61 | 0.01 |  |
-| gpu: clipmap + sphere + quadtree + gbuffer + direct | 10.63 | 0.27 |  |
-| gpu: points@cpu + splat + clipmap + rowrun + pathtrace | 10.63 | 0.19 |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 10.63 | 0.01 |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.65 | 0.01 |  |
-| gpu: points@cpu + splat + clipmap + incremental + pathtrace | 10.65 | 0.17 |  |
-| gpu: clipmap + sphere + quadtree + raster + pathtrace | 10.66 | 0.13 |  |
-| gpu: clipmap + refloor + quadtree + raster + pathtrace | 10.66 | 0.21 |  |
-| gpu: clipmap + incremental + quadtree + raster + pathtrace | 10.66 | 0.16 |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.67 | 0.01 |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.67 | 0.01 |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.76 | 0.01 |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.77 | 0.01 |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.77 | 0.01 |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.77 | 0.01 |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.78 | 0.01 |  |
-| gpu: greedy@cpu + rayquery + raycast + pathtrace | 10.80 | 0.36 |  |
-| gpu: points@cpu + splat + distance + sphere + pathtrace | 10.81 | 0.29 |  |
-| gpu: points@cpu + splat + distance + refloor + pathtrace | 10.81 | 0.27 |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.82 | 0.01 |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.83 | 0.01 |  |
-| gpu: distance + sphere + quadtree + raster + direct | 10.85 | 0.37 |  |
-| gpu: points@cpu + splat + distance + rowrun + pathtrace | 10.87 | 0.23 |  |
-| gpu: distance + refloor + quadtree + raster + direct | 10.90 | 0.36 |  |
-| gpu: distance + sphere + quadtree + visbuffer + pathtrace | 10.91 | 0.32 |  |
-| gpu: distance + refloor + quadtree + visbuffer + direct | 10.93 | 0.44 |  |
-| gpu: points@cpu + splat + distance + incremental + pathtrace | 10.93 | 0.16 |  |
-| gpu: distance + rowrun + quadtree + visbuffer + direct | 10.95 | 0.42 |  |
-| gpu: distance + sphere + quadtree + visbuffer + direct | 10.96 | 0.47 |  |
-| gpu: distance + refloor + quadtree + gbuffer + direct | 10.97 | 0.45 |  |
-| gpu: distance + rowrun + quadtree + gbuffer + direct | 10.97 | 0.42 |  |
-| gpu: distance + refloor + quadtree + visbuffer + pathtrace | 10.97 | 0.30 |  |
-| gpu: distance + incremental + quadtree + raster + direct | 10.97 | 0.24 |  |
-| gpu: distance + sphere + quadtree + gbuffer + direct | 10.97 | 0.47 |  |
-| gpu: distance + sphere + quadtree + gbuffer + pathtrace | 10.98 | 0.32 |  |
-| gpu: distance + rowrun + quadtree + raster + pathtrace | 10.98 | 0.17 |  |
-| gpu: distance + rowrun + quadtree + raster + direct | 11.00 | 0.26 |  |
-| gpu: distance + refloor + quadtree + gbuffer + pathtrace | 11.01 | 0.30 |  |
-| gpu: distance + rowrun + quadtree + visbuffer + pathtrace | 11.05 | 0.26 |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 11.06 | 0.01 |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.07 | 0.01 |  |
-| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.09 | 0.01 |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 11.09 | 0.01 |  |
-| gpu: distance + rowrun + quadtree + gbuffer + pathtrace | 11.09 | 0.26 |  |
-| gpu: distance + incremental + quadtree + visbuffer + direct | 11.09 | 0.30 |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + incremental + pathtrace | 11.10 | 0.21 |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 11.13 | 0.01 |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + rowrun + pathtrace | 11.14 | 0.13 |  |
-| gpu: distance + incremental + quadtree + visbuffer + pathtrace | 11.14 | 0.19 |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.15 | 0.01 |  |
-| gpu: distance + incremental + quadtree + gbuffer + direct | 11.16 | 0.30 |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + refloor + pathtrace | 11.17 | 0.26 |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 11.18 | 0.01 |  |
-| gpu: distance + sphere + quadtree + raster + pathtrace | 11.19 | 0.24 |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 11.21 | 0.01 |  |
-| gpu: distance + incremental + quadtree + gbuffer + pathtrace | 11.22 | 0.19 |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 11.23 | 0.01 |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + sphere + pathtrace | 11.23 | 0.16 |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 11.23 | 0.01 |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 11.25 | 0.01 |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.25 | 0.01 |  |
-| gpu: greedy@cpu + rayquery + raycast + tree64 + sphere + pathtrace | 11.26 | 0.15 |  |
-| gpu: distance + refloor + quadtree + raster + pathtrace | 11.27 | 0.22 |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 11.28 | 0.01 |  |
-| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.28 | 0.01 |  |
-| gpu: distance + incremental + quadtree + raster + pathtrace | 11.30 | 0.14 |  |
-| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.30 | 0.01 |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + rowrun + pathtrace | 11.30 | 0.17 |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + incremental + pathtrace | 11.31 | 0.17 |  |
-| gpu: greedy@cpu + rayquery + raycast + svo_dag + refloor + pathtrace | 11.32 | 0.26 |  |
-| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.41 | 0.01 |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 11.44 | 0.01 |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 11.46 | 0.01 |  |
-| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.48 | 0.01 |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 11.50 | 0.01 |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 11.53 | 0.01 |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 11.54 | 0.01 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + refloor + direct | 11.71 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + rowrun + direct | 11.71 | 0.04 |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.76 | 0.01 |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 11.77 | 0.01 |  |
-| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.85 | 0.01 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + rowrun + direct | 11.88 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.94 | 0.01 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + incremental + direct | 11.97 | 0.04 |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 12.01 | 0.01 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + incremental + direct | 12.02 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + sphere + direct | 12.06 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + sphere + direct | 12.08 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + refloor + direct | 12.08 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 12.09 | 0.01 |  |
-| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 12.20 | 0.01 |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + refloor + pathtrace | 12.38 | 0.26 |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + incremental + pathtrace | 12.43 | 0.21 |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + refloor + pathtrace | 12.50 | 0.27 |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + sphere + pathtrace | 12.51 | 0.18 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 12.52 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + hier + rowrun + pathtrace | 12.54 | 0.19 |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 12.55 | 0.04 |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 12.57 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + refloor + pathtrace | 12.58 | 0.28 |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + incremental + pathtrace | 12.58 | 0.21 |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 12.59 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + sphere + pathtrace | 12.62 | 0.17 |  |
-| gpu: greedy@cpu + rayquery + raycast + bricks + rowrun + pathtrace | 12.62 | 0.21 |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 12.63 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 12.64 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + rowrun + pathtrace | 12.66 | 0.23 |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + sphere + pathtrace | 12.66 | 0.17 |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + refloor + pathtrace | 12.67 | 0.26 |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + rowrun + pathtrace | 12.71 | 0.25 |  |
-| gpu: greedy@cpu + rayquery + raycast + rows + incremental + pathtrace | 12.72 | 0.21 |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + incremental + pathtrace | 12.74 | 0.21 |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 12.76 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + prefix + sphere + pathtrace | 12.76 | 0.17 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 12.82 | 0.04 |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 12.85 | 0.04 |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 12.85 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + rowrun + direct | 12.86 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + sphere + pathtrace | 12.86 | 0.15 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 12.87 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + sphere + direct | 12.88 | 0.04 |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 12.89 | 0.04 |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 12.89 | 0.04 |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 12.90 | 0.04 |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 12.91 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + rowrun + pathtrace | 12.92 | 0.21 |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 12.94 | 0.04 |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 12.95 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + refloor + pathtrace | 12.95 | 0.25 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + refloor + direct | 12.96 | 0.04 |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 12.96 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + sphere + direct | 12.97 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 12.98 | 0.04 |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 12.98 | 0.04 |  |
+| cpu: palette + refloor + raycast + direct | 1.00 | 0.04 | far [unlit], terrain-flight [lit], terrain-flight [unlit] |
+| cpu: palette + incremental + raycast + direct | 1.01 | 0.04 | far [lit], terrain-flight [lit], terrain-flight [unlit] |
+| cpu: u8 + refloor + raycast + direct | 1.04 | 0.05 | far [lit], far [unlit], terrain-flight [lit], terrain-flight [unlit] |
+| cpu: u8 + incremental + raycast + direct | 1.05 | 0.04 |  |
+| cpu: bricks + refloor + raycast + direct | 1.21 | 0.05 | far [lit], far [unlit], terrain-flight [lit], terrain-flight [unlit] |
+| cpu: bricks + incremental + raycast + direct | 1.22 | 0.04 | far [unlit] |
+| cpu: bits + refloor + raycast + direct | 1.26 | 0.05 | terrain-flight [lit], terrain-flight [unlit] |
+| cpu: hier + refloor + raycast + direct | 1.26 | 0.05 | far [lit], far [unlit], showcase [lit], showcase [unlit], terrain-flight [lit], terrain-flight [unlit] |
+| cpu: hier + incremental + raycast + direct | 1.27 | 0.05 | far [lit] |
+| cpu: bits + incremental + raycast + direct | 1.27 | 0.04 |  |
+| cpu: prefix + refloor + raycast + direct | 1.39 | 0.05 | showcase [lit], showcase [unlit] |
+| cpu: prefix + incremental + raycast + direct | 1.40 | 0.05 |  |
+| cpu: brickmajor + refloor + raycast + direct | 1.57 | 0.05 |  |
+| cpu: morton + refloor + raycast + direct | 1.58 | 0.04 |  |
+| cpu: brickmajor + incremental + raycast + direct | 1.58 | 0.04 |  |
+| cpu: morton + incremental + raycast + direct | 1.58 | 0.04 |  |
+| cpu: greedy + faces + raster + bricks + refloor + direct | 2.08 | 0.04 | showcase [unlit] |
+| cpu: greedy + faces + raster + bricks + incremental + direct | 2.12 | 0.04 |  |
+| cpu: greedy + faces + raster + hier + incremental + direct | 2.14 | 0.04 |  |
+| cpu: greedy + faces + raster + hier + refloor + direct | 2.14 | 0.04 | showcase [lit] |
+| cpu: greedy + faces + raster + bits + incremental + direct | 2.15 | 0.04 |  |
+| cpu: greedy + faces + raster + bits + refloor + direct | 2.15 | 0.04 |  |
+| cpu: greedy + faces + raster + palette + incremental + direct | 2.22 | 0.04 |  |
+| cpu: greedy + faces + raster + palette + refloor + direct | 2.22 | 0.04 |  |
+| cpu: greedy + faces + raster + u8 + refloor + direct | 2.48 | 0.04 |  |
+| cpu: greedy + faces + raster + u8 + incremental + direct | 2.51 | 0.04 |  |
+| cpu: greedy + faces + raster + prefix + refloor + direct | 2.71 | 0.04 |  |
+| cpu: greedy + faces + raster + prefix + incremental + direct | 2.73 | 0.04 |  |
+| cpu: naive + faces + raster + bricks + refloor + direct | 2.84 | 0.03 | showcase [unlit] |
+| cpu: greedy + faces + raster + brickmajor + refloor + direct | 2.85 | 0.04 |  |
+| cpu: greedy + faces + raster + morton + refloor + direct | 2.87 | 0.04 |  |
+| cpu: greedy + faces + raster + brickmajor + incremental + direct | 2.87 | 0.04 |  |
+| cpu: greedy + faces + raster + morton + incremental + direct | 2.87 | 0.04 |  |
+| cpu: naive + faces + raster + bits + incremental + direct | 2.89 | 0.03 |  |
+| cpu: naive + faces + raster + bits + refloor + direct | 2.90 | 0.03 |  |
+| cpu: naive + faces + raster + hier + incremental + direct | 2.92 | 0.03 |  |
+| cpu: naive + faces + raster + hier + refloor + direct | 2.92 | 0.03 | showcase [lit] |
+| cpu: naive + faces + raster + bricks + incremental + direct | 2.93 | 0.03 |  |
+| cpu: naive + faces + raster + palette + refloor + direct | 2.96 | 0.03 |  |
+| cpu: naive + faces + raster + palette + incremental + direct | 2.97 | 0.03 |  |
+| cpu: naive + faces + raster + u8 + incremental + direct | 3.21 | 0.03 |  |
+| cpu: naive + faces + raster + u8 + refloor + direct | 3.22 | 0.03 |  |
+| cpu: naive + faces + raster + prefix + incremental + direct | 3.40 | 0.03 |  |
+| cpu: naive + faces + raster + prefix + refloor + direct | 3.44 | 0.03 |  |
+| cpu: naive + faces + raster + morton + refloor + direct | 3.56 | 0.03 |  |
+| cpu: naive + faces + raster + brickmajor + incremental + direct | 3.57 | 0.03 |  |
+| cpu: naive + faces + raster + morton + incremental + direct | 3.58 | 0.03 |  |
+| cpu: naive + faces + raster + brickmajor + refloor + direct | 3.58 | 0.03 |  |
+| gpu: svo_dag + refloor + composite + raycast + direct | 4.49 | 0.78 | far [lit], showcase [lit], terrain-flight [lit] |
+| gpu: svo_dag + refloor + beam + composite + raycast + direct | 4.49 | 0.65 | showcase [lit] |
+| gpu: svo_dag + rowrun + composite + raycast + direct | 4.50 | 0.50 | far [lit] |
+| gpu: svo_dag + sphere + composite + raycast + direct | 4.50 | 0.43 |  |
+| gpu: svo_dag + sphere + beam + composite + raycast + direct | 4.60 | 0.38 |  |
+| gpu: svo_dag + incremental + composite + raycast + direct | 4.62 | 0.38 |  |
+| gpu: svo_dag + rowrun + beam + composite + raycast + direct | 4.63 | 0.44 |  |
+| gpu: svo_dag + refloor + composite + raycast + pathtrace | 4.63 | 0.57 | far [unlit], showcase [unlit], terrain-flight [unlit] |
+| gpu: svo_dag + refloor + beam + composite + raycast + pathtrace | 4.64 | 0.49 |  |
+| gpu: svo_dag + incremental + beam + composite + raycast + direct | 4.64 | 0.35 |  |
+| gpu: tree64 + refloor + composite + raycast + direct | 4.68 | 0.80 | far [lit], showcase [lit], terrain-flight [lit] |
+| gpu: svo_dag + sphere + composite + raycast + pathtrace | 4.68 | 0.29 |  |
+| gpu: tree64 + incremental + composite + raycast + direct | 4.69 | 0.61 |  |
+| gpu: svo_dag + rowrun + composite + raycast + pathtrace | 4.69 | 0.32 |  |
+| gpu: svo_dag + sphere + beam + composite + raycast + pathtrace | 4.70 | 0.27 | showcase [unlit] |
+| gpu: svo_dag + incremental + composite + raycast + pathtrace | 4.70 | 0.27 |  |
+| gpu: svo_dag + incremental + beam + composite + raycast + pathtrace | 4.72 | 0.25 |  |
+| gpu: tree64 + refloor + beam + composite + raycast + direct | 4.72 | 0.68 | far [lit] |
+| gpu: svo_dag + rowrun + beam + composite + raycast + pathtrace | 4.75 | 0.29 |  |
+| gpu: tree64 + incremental + beam + composite + raycast + direct | 4.86 | 0.53 |  |
+| gpu: tree64 + rowrun + beam + composite + raycast + direct | 4.86 | 0.36 |  |
+| gpu: tree64 + sphere + composite + raycast + direct | 4.87 | 0.37 |  |
+| gpu: tree64 + refloor + beam + composite + raycast + pathtrace | 4.87 | 0.51 | far [unlit] |
+| gpu: tree64 + sphere + beam + composite + raycast + direct | 4.90 | 0.33 |  |
+| gpu: tree64 + refloor + composite + raycast + pathtrace | 4.90 | 0.59 | far [unlit], terrain-flight [unlit] |
+| gpu: tree64 + incremental + beam + composite + raycast + pathtrace | 4.91 | 0.39 |  |
+| gpu: tree64 + sphere + composite + raycast + pathtrace | 4.93 | 0.25 |  |
+| gpu: tree64 + rowrun + composite + raycast + pathtrace | 4.95 | 0.25 |  |
+| gpu: tree64 + rowrun + composite + raycast + direct | 5.00 | 0.39 |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + direct | 5.00 | 0.44 |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + direct | 5.01 | 0.31 |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + direct | 5.01 | 0.27 |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + direct | 5.02 | 0.22 |  |
+| gpu: tree64 + sphere + beam + composite + raycast + pathtrace | 5.04 | 0.23 |  |
+| gpu: tree64 + rowrun + beam + composite + raycast + pathtrace | 5.05 | 0.24 |  |
+| gpu: tree64 + incremental + composite + raycast + pathtrace | 5.07 | 0.41 |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 5.15 | 0.50 |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 5.16 | 0.40 |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 5.17 | 0.44 |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 5.18 | 0.21 |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 5.18 | 0.38 |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + direct | 5.18 | 0.44 |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 5.18 | 0.07 |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 5.19 | 0.10 |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + direct | 5.20 | 0.31 |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 5.20 | 0.10 |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 5.21 | 0.40 |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 5.22 | 0.43 |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 5.22 | 0.50 |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 5.24 | 0.37 |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + direct | 5.24 | 0.24 |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + direct | 5.28 | 0.36 |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 5.34 | 0.07 |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 5.35 | 0.50 |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 5.35 | 0.40 |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 5.36 | 0.15 |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + direct | 5.37 | 0.30 |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + direct | 5.40 | 0.48 |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 5.40 | 0.47 |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 5.42 | 0.32 |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + direct | 5.42 | 0.37 |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 5.42 | 0.40 |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 5.43 | 0.39 |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 5.44 | 0.40 |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 5.44 | 0.46 |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 5.45 | 0.19 |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + direct | 5.46 | 0.17 |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 5.46 | 0.51 |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 5.48 | 0.19 |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + direct | 5.48 | 0.16 |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + direct | 5.48 | 0.20 |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + direct | 5.48 | 0.20 |  |
+| gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 5.48 | 0.32 |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + direct | 5.49 | 0.12 |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + direct | 5.49 | 0.14 |  |
+| gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 5.51 | 0.19 |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 5.52 | 0.16 |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 5.53 | 0.13 |  |
+| gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 5.54 | 0.19 |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + direct | 5.54 | 0.47 |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 5.54 | 0.21 |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + direct | 5.55 | 0.32 |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + direct | 5.56 | 0.15 |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 5.56 | 0.33 |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + direct | 5.56 | 0.25 |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 5.57 | 0.08 |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 5.57 | 0.05 |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 5.58 | 0.23 |  |
+| gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 5.58 | 0.16 |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + direct | 5.58 | 0.23 |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + direct | 5.59 | 0.22 |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 5.61 | 0.15 |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 5.61 | 0.10 |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 5.61 | 0.25 |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 5.61 | 0.60 |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 5.62 | 0.04 |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 5.62 | 0.12 |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 5.63 | 0.09 |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 5.64 | 0.12 |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 5.64 | 0.47 |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 5.64 | 0.06 |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 5.64 | 0.06 |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 5.66 | 0.62 |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 5.66 | 0.51 |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 5.66 | 0.17 |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 5.66 | 0.46 |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 5.66 | 0.44 |  |
+| gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 5.67 | 0.33 |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 5.68 | 0.08 |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 5.69 | 0.46 |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 5.70 | 0.54 |  |
+| gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 5.71 | 0.15 |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 5.71 | 0.20 |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 5.71 | 0.05 |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 5.72 | 0.32 |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 5.72 | 0.46 |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 5.72 | 0.62 |  |
+| gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 5.72 | 0.18 |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 5.72 | 0.32 |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 5.72 | 0.27 |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + direct | 5.72 | 0.12 |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 5.72 | 0.08 |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 5.72 | 0.32 |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 5.73 | 0.30 |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 5.73 | 0.52 |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 5.74 | 0.29 |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 5.74 | 0.60 |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 5.75 | 0.26 |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 5.76 | 0.47 |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 5.76 | 0.43 |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 5.76 | 0.26 |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 5.78 | 0.27 |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 5.79 | 0.32 |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 5.79 | 0.29 |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 5.80 | 0.26 |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 5.81 | 0.04 |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 5.82 | 0.26 |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 5.83 | 0.25 |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 5.83 | 0.05 |  |
+| gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 5.83 | 0.26 |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 5.84 | 0.55 |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 5.89 | 0.23 |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 5.91 | 0.23 |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 5.92 | 0.14 |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 5.93 | 0.26 |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 5.93 | 0.15 |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 5.96 | 0.30 |  |
+| gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 5.96 | 0.23 |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 5.96 | 0.36 |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 5.96 | 0.13 |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 5.97 | 0.46 |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 5.97 | 0.18 |  |
+| gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 5.98 | 0.14 |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 5.98 | 0.21 |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 5.98 | 0.38 |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 6.00 | 0.13 |  |
+| gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 6.00 | 0.18 |  |
+| gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 6.00 | 0.15 |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 6.00 | 0.28 |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 6.00 | 0.19 |  |
+| gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 6.00 | 0.13 |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 6.01 | 0.20 |  |
+| gpu: svo_dag + refloor + quadtree + visbuffer + direct | 6.01 | 0.43 |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 6.02 | 0.16 |  |
+| gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 6.03 | 0.36 |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 6.03 | 0.18 |  |
+| gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 6.04 | 0.13 |  |
+| gpu: svo_dag + refloor + quadtree + visbuffer + pathtrace | 6.05 | 0.34 |  |
+| gpu: svo_dag + refloor + quadtree + raster + direct | 6.05 | 0.32 |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 6.05 | 0.12 |  |
+| gpu: svo_dag + refloor + quadtree + gbuffer + direct | 6.05 | 0.43 |  |
+| gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 6.06 | 0.19 |  |
+| gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 6.07 | 0.20 |  |
+| gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 6.07 | 0.28 |  |
+| gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 6.07 | 0.37 |  |
+| gpu: svo_dag + refloor + quadtree + gbuffer + pathtrace | 6.08 | 0.34 |  |
+| gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 6.10 | 0.21 |  |
+| gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 6.12 | 0.18 |  |
+| gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 6.12 | 0.12 |  |
+| gpu: svo_dag + sphere + quadtree + visbuffer + direct | 6.13 | 0.30 |  |
+| gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 6.14 | 0.23 |  |
+| gpu: svo_dag + sphere + quadtree + gbuffer + direct | 6.15 | 0.30 |  |
+| gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 6.17 | 0.16 |  |
+| gpu: svo_dag + rowrun + quadtree + raster + pathtrace | 6.18 | 0.10 |  |
+| gpu: svo_dag + sphere + quadtree + visbuffer + pathtrace | 6.21 | 0.23 |  |
+| gpu: svo_dag + incremental + quadtree + visbuffer + direct | 6.24 | 0.28 |  |
+| gpu: svo_dag + rowrun + quadtree + raster + direct | 6.24 | 0.13 |  |
+| gpu: svo_dag + refloor + quadtree + raster + pathtrace | 6.24 | 0.23 |  |
+| gpu: svo_dag + incremental + quadtree + visbuffer + pathtrace | 6.25 | 0.20 |  |
+| gpu: svo_dag + rowrun + quadtree + visbuffer + direct | 6.25 | 0.27 |  |
+| gpu: svo_dag + sphere + quadtree + raster + pathtrace | 6.25 | 0.14 |  |
+| gpu: svo_dag + sphere + quadtree + gbuffer + pathtrace | 6.26 | 0.23 |  |
+| gpu: svo_dag + rowrun + quadtree + visbuffer + pathtrace | 6.26 | 0.19 |  |
+| gpu: svo_dag + incremental + quadtree + raster + pathtrace | 6.27 | 0.13 |  |
+| gpu: tree64 + refloor + quadtree + raster + direct | 6.27 | 0.34 |  |
+| gpu: svo_dag + sphere + quadtree + raster + direct | 6.28 | 0.19 |  |
+| gpu: svo_dag + incremental + quadtree + gbuffer + direct | 6.28 | 0.28 |  |
+| gpu: svo_dag + incremental + quadtree + gbuffer + pathtrace | 6.29 | 0.20 |  |
+| gpu: svo_dag + rowrun + quadtree + gbuffer + pathtrace | 6.29 | 0.19 |  |
+| gpu: svo_dag + rowrun + quadtree + gbuffer + direct | 6.29 | 0.27 |  |
+| gpu: tree64 + refloor + quadtree + gbuffer + direct | 6.31 | 0.47 |  |
+| gpu: tree64 + refloor + quadtree + visbuffer + direct | 6.31 | 0.47 |  |
+| gpu: svo_dag + incremental + quadtree + raster + direct | 6.36 | 0.15 |  |
+| gpu: tree64 + refloor + quadtree + visbuffer + pathtrace | 6.40 | 0.37 |  |
+| gpu: tree64 + incremental + quadtree + visbuffer + direct | 6.40 | 0.38 |  |
+| gpu: tree64 + incremental + quadtree + gbuffer + pathtrace | 6.45 | 0.29 |  |
+| gpu: tree64 + incremental + quadtree + gbuffer + direct | 6.45 | 0.38 |  |
+| gpu: tree64 + refloor + quadtree + gbuffer + pathtrace | 6.46 | 0.37 |  |
+| gpu: tree64 + sphere + quadtree + gbuffer + direct | 6.47 | 0.30 |  |
+| gpu: bricks + incremental + composite + raycast + direct | 6.50 | 0.59 |  |
+| gpu: tree64 + incremental + quadtree + visbuffer + pathtrace | 6.51 | 0.29 |  |
+| gpu: tree64 + incremental + quadtree + raster + pathtrace | 6.54 | 0.18 |  |
+| gpu: bricks + refloor + composite + raycast + direct | 6.55 | 0.89 | far [lit], terrain-flight [lit] |
+| gpu: tree64 + sphere + quadtree + visbuffer + direct | 6.57 | 0.30 |  |
+| gpu: bricks + sphere + composite + raycast + direct | 6.57 | 0.49 |  |
+| gpu: bricks + sphere + beam + composite + raycast + direct | 6.58 | 0.47 |  |
+| gpu: bricks + rowrun + composite + raycast + direct | 6.58 | 0.72 |  |
+| gpu: bricks + refloor + beam + composite + raycast + direct | 6.58 | 0.83 | far [lit], terrain-flight [lit] |
+| gpu: tree64 + refloor + quadtree + raster + pathtrace | 6.58 | 0.24 |  |
+| gpu: bricks + incremental + beam + composite + raycast + direct | 6.58 | 0.54 |  |
+| gpu: tree64 + sphere + quadtree + raster + direct | 6.58 | 0.18 |  |
+| gpu: bricks + rowrun + beam + composite + raycast + direct | 6.58 | 0.69 |  |
+| gpu: hier + refloor + composite + raycast + direct | 6.59 | 0.85 | showcase [lit], terrain-flight [lit] |
+| gpu: hier + sphere + composite + raycast + direct | 6.59 | 0.50 |  |
+| gpu: hier + rowrun + composite + raycast + direct | 6.59 | 0.61 |  |
+| gpu: hier + incremental + composite + raycast + direct | 6.59 | 0.53 |  |
+| gpu: hier + sphere + beam + composite + raycast + direct | 6.59 | 0.48 |  |
+| gpu: hier + refloor + beam + composite + raycast + direct | 6.59 | 0.82 |  |
+| gpu: hier + rowrun + beam + composite + raycast + direct | 6.59 | 0.59 |  |
+| gpu: tree64 + rowrun + quadtree + visbuffer + pathtrace | 6.59 | 0.16 |  |
+| gpu: hier + incremental + beam + composite + raycast + direct | 6.60 | 0.51 |  |
+| gpu: tree64 + sphere + quadtree + raster + pathtrace | 6.60 | 0.13 |  |
+| gpu: tree64 + rowrun + quadtree + raster + pathtrace | 6.60 | 0.09 |  |
+| gpu: tree64 + rowrun + quadtree + gbuffer + pathtrace | 6.61 | 0.16 |  |
+| gpu: bricks + refloor + beam + composite + raycast + pathtrace | 6.64 | 0.61 |  |
+| gpu: bricks + refloor + composite + raycast + pathtrace | 6.64 | 0.63 | far [unlit], terrain-flight [unlit] |
+| gpu: hier + refloor + composite + raycast + pathtrace | 6.65 | 0.64 | showcase [unlit] |
+| gpu: hier + refloor + beam + composite + raycast + pathtrace | 6.65 | 0.61 |  |
+| gpu: rows + incremental + composite + raycast + direct | 6.67 | 0.50 |  |
+| gpu: rows + rowrun + composite + raycast + direct | 6.67 | 0.73 |  |
+| gpu: rows + sphere + beam + composite + raycast + direct | 6.67 | 0.43 |  |
+| gpu: rows + refloor + composite + raycast + direct | 6.67 | 0.77 |  |
+| gpu: rows + sphere + composite + raycast + direct | 6.67 | 0.45 |  |
+| gpu: rows + refloor + beam + composite + raycast + direct | 6.68 | 0.74 |  |
+| gpu: rows + rowrun + beam + composite + raycast + direct | 6.68 | 0.69 |  |
+| gpu: tree64 + rowrun + quadtree + visbuffer + direct | 6.68 | 0.23 |  |
+| gpu: rows + incremental + beam + composite + raycast + direct | 6.68 | 0.47 |  |
+| gpu: prefix + sphere + composite + raycast + direct | 6.70 | 0.46 |  |
+| gpu: prefix + rowrun + composite + raycast + direct | 6.70 | 0.80 |  |
+| gpu: prefix + refloor + beam + composite + raycast + direct | 6.70 | 0.83 |  |
+| gpu: prefix + refloor + composite + raycast + direct | 6.70 | 0.89 | showcase [lit] |
+| gpu: tree64 + rowrun + quadtree + raster + direct | 6.70 | 0.12 |  |
+| gpu: prefix + sphere + beam + composite + raycast + direct | 6.70 | 0.44 |  |
+| gpu: prefix + incremental + composite + raycast + direct | 6.70 | 0.51 |  |
+| gpu: prefix + incremental + beam + composite + raycast + direct | 6.70 | 0.48 |  |
+| gpu: prefix + rowrun + beam + composite + raycast + direct | 6.70 | 0.76 |  |
+| gpu: tree64 + rowrun + quadtree + gbuffer + direct | 6.71 | 0.23 |  |
+| gpu: bricks + sphere + composite + raycast + pathtrace | 6.73 | 0.33 |  |
+| gpu: rows + refloor + composite + raycast + pathtrace | 6.73 | 0.58 |  |
+| gpu: bricks + sphere + beam + composite + raycast + pathtrace | 6.74 | 0.32 |  |
+| gpu: bricks + incremental + composite + raycast + pathtrace | 6.74 | 0.43 |  |
+| gpu: hier + sphere + composite + raycast + pathtrace | 6.74 | 0.35 |  |
+| gpu: tree64 + incremental + quadtree + raster + direct | 6.74 | 0.23 |  |
+| gpu: bricks + rowrun + composite + raycast + pathtrace | 6.75 | 0.47 |  |
+| gpu: hier + sphere + beam + composite + raycast + pathtrace | 6.75 | 0.34 |  |
+| gpu: hier + rowrun + composite + raycast + pathtrace | 6.75 | 0.42 |  |
+| gpu: bricks + rowrun + beam + composite + raycast + pathtrace | 6.75 | 0.45 |  |
+| gpu: hier + incremental + composite + raycast + pathtrace | 6.76 | 0.42 |  |
+| gpu: bricks + incremental + beam + composite + raycast + pathtrace | 6.76 | 0.41 |  |
+| gpu: prefix + refloor + composite + raycast + pathtrace | 6.76 | 0.66 | showcase [unlit] |
+| gpu: hier + rowrun + beam + composite + raycast + pathtrace | 6.76 | 0.40 |  |
+| gpu: prefix + refloor + beam + composite + raycast + pathtrace | 6.76 | 0.63 |  |
+| gpu: hier + incremental + beam + composite + raycast + pathtrace | 6.77 | 0.40 |  |
+| gpu: clipmap + refloor + composite + raycast + direct | 6.77 | 0.69 |  |
+| gpu: clipmap + rowrun + composite + raycast + direct | 6.77 | 0.60 |  |
+| gpu: clipmap + incremental + composite + raycast + direct | 6.77 | 0.57 |  |
+| gpu: tree64 + sphere + quadtree + visbuffer + pathtrace | 6.78 | 0.22 |  |
+| gpu: clipmap + sphere + composite + raycast + direct | 6.78 | 0.39 |  |
+| gpu: clipmap + rowrun + beam + composite + raycast + direct | 6.78 | 0.54 |  |
+| gpu: rows + refloor + beam + composite + raycast + pathtrace | 6.78 | 0.55 |  |
+| gpu: clipmap + refloor + beam + composite + raycast + direct | 6.78 | 0.60 |  |
+| gpu: clipmap + incremental + beam + composite + raycast + direct | 6.78 | 0.50 |  |
+| gpu: rows + rowrun + beam + composite + raycast + pathtrace | 6.82 | 0.48 |  |
+| gpu: rows + sphere + composite + raycast + pathtrace | 6.82 | 0.31 |  |
+| gpu: rows + rowrun + composite + raycast + pathtrace | 6.82 | 0.50 |  |
+| gpu: rows + sphere + beam + composite + raycast + pathtrace | 6.83 | 0.30 |  |
+| gpu: prefix + rowrun + composite + raycast + pathtrace | 6.83 | 0.55 |  |
+| gpu: rows + incremental + composite + raycast + pathtrace | 6.84 | 0.38 |  |
+| gpu: prefix + rowrun + beam + composite + raycast + pathtrace | 6.84 | 0.53 |  |
+| gpu: tree64 + sphere + quadtree + gbuffer + pathtrace | 6.84 | 0.22 |  |
+| gpu: rows + incremental + beam + composite + raycast + pathtrace | 6.85 | 0.39 |  |
+| gpu: prefix + sphere + composite + raycast + pathtrace | 6.85 | 0.32 |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + direct | 6.86 | 0.48 |  |
+| gpu: prefix + sphere + beam + composite + raycast + pathtrace | 6.86 | 0.31 |  |
+| gpu: prefix + incremental + composite + raycast + pathtrace | 6.87 | 0.39 |  |
+| gpu: clipmap + sphere + beam + composite + raycast + direct | 6.88 | 0.35 |  |
+| gpu: prefix + incremental + beam + composite + raycast + pathtrace | 6.89 | 0.38 |  |
+| gpu: clipmap + refloor + composite + raycast + pathtrace | 6.90 | 0.50 |  |
+| gpu: clipmap + refloor + beam + composite + raycast + pathtrace | 6.92 | 0.44 |  |
+| gpu: clipmap + sphere + composite + raycast + pathtrace | 6.93 | 0.27 |  |
+| gpu: clipmap + rowrun + composite + raycast + pathtrace | 6.93 | 0.40 |  |
+| gpu: clipmap + incremental + composite + raycast + pathtrace | 6.94 | 0.39 |  |
+| gpu: clipmap + sphere + beam + composite + raycast + pathtrace | 6.94 | 0.24 |  |
+| gpu: clipmap + rowrun + beam + composite + raycast + pathtrace | 6.94 | 0.36 |  |
+| gpu: clipmap + incremental + beam + composite + raycast + pathtrace | 6.96 | 0.34 |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + direct | 7.03 | 0.52 |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + raster + pathtrace | 7.10 | 0.36 |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + direct | 7.11 | 0.34 |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + raster + direct | 7.12 | 0.46 |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + raster + direct | 7.12 | 0.34 |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + direct | 7.12 | 0.34 |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + raster + direct | 7.12 | 0.38 |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + direct | 7.13 | 0.33 |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + direct | 7.13 | 0.38 |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + raster + direct | 7.20 | 0.44 |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + raster + direct | 7.20 | 0.32 |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + direct | 7.21 | 0.42 |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + raster + direct | 7.22 | 0.39 |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + direct | 7.22 | 0.46 |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + direct | 7.23 | 0.33 |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + direct | 7.23 | 0.37 |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + direct | 7.24 | 0.41 |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + raster + direct | 7.26 | 0.50 |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 7.26 | 0.41 |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + raster + direct | 7.26 | 0.35 |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + raster + direct | 7.26 | 0.53 |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + raster + direct | 7.26 | 0.41 |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + direct | 7.27 | 0.36 |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + raster + direct | 7.27 | 0.36 |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + raster + direct | 7.27 | 0.41 |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + raster + direct | 7.28 | 0.35 |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + direct | 7.28 | 0.43 |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + raster + pathtrace | 7.29 | 0.13 |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + direct | 7.29 | 0.66 |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + direct | 7.30 | 0.43 |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + direct | 7.30 | 0.51 |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + direct | 7.30 | 0.51 |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + direct | 7.30 | 0.51 |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + raster + pathtrace | 7.30 | 0.25 |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 7.30 | 0.60 |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + direct | 7.30 | 0.62 |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + pathtrace | 7.30 | 0.20 |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + direct | 7.30 | 0.43 |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 7.30 | 0.12 |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + raster + pathtrace | 7.31 | 0.12 |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + direct | 7.31 | 0.50 |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + direct | 7.31 | 0.46 |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + direct | 7.31 | 0.54 |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + direct | 7.31 | 0.47 |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + raster + pathtrace | 7.31 | 0.11 |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 7.31 | 0.41 |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + raster + pathtrace | 7.31 | 0.15 |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + raster + pathtrace | 7.33 | 0.15 |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + direct | 7.33 | 0.64 |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct | 7.33 | 0.20 |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 7.33 | 0.50 |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + direct | 7.33 | 0.51 |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace | 7.33 | 0.38 | showcase [unlit] |
+| gpu: cubes@cpu + faces + hier + refloor + depth + raster + direct | 7.33 | 0.21 |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + direct | 7.33 | 0.16 |  |
+| gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + direct | 7.33 | 0.52 |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + direct | 7.33 | 0.50 |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + raster + direct | 7.33 | 0.16 |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + direct | 7.34 | 0.32 |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + direct | 7.34 | 0.61 |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + direct | 7.34 | 0.43 |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + raster + direct | 7.34 | 0.18 |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 7.34 | 0.60 |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + direct | 7.34 | 0.16 |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + direct | 7.34 | 0.17 |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + direct | 7.34 | 0.37 |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + raster + direct | 7.34 | 0.46 |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + direct | 7.34 | 0.50 |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + raster + direct | 7.34 | 0.34 |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + raster + direct | 7.34 | 0.49 |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + direct | 7.35 | 0.45 |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + raster + direct | 7.35 | 0.42 |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + direct | 7.35 | 0.47 |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + direct | 7.35 | 0.36 |  |
+| gpu: points@cpu + splat + svo_dag + refloor + direct | 7.35 | 0.29 |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + direct | 7.35 | 0.18 |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + direct | 7.35 | 0.54 |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + direct | 7.36 | 0.43 |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + raster + direct | 7.36 | 0.52 |  |
+| gpu: points@cpu + splat + svo_dag + sphere + direct | 7.36 | 0.24 |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + direct | 7.37 | 0.41 |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + direct | 7.37 | 0.43 |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + raster + direct | 7.37 | 0.34 |  |
+| gpu: points@cpu + splat + svo_dag + rowrun + direct | 7.37 | 0.26 |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + direct | 7.38 | 0.49 |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + direct | 7.38 | 0.37 |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + raster + pathtrace | 7.38 | 0.12 |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + raster + direct | 7.38 | 0.39 |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + direct | 7.38 | 0.58 |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 7.38 | 0.50 |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + direct | 7.38 | 0.45 |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + direct | 7.38 | 0.41 |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + direct | 7.38 | 0.43 |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + raster + pathtrace | 7.38 | 0.19 |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + direct | 7.38 | 0.59 |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + direct | 7.38 | 0.49 |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 7.38 | 0.50 |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + direct | 7.38 | 0.51 |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + raster + pathtrace | 7.38 | 0.23 |  |
+| gpu: distance + refloor + beam + composite + raycast + direct | 7.38 | 0.70 |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + direct | 7.38 | 0.47 |  |
+| gpu: distance + refloor + composite + raycast + direct | 7.38 | 0.76 | showcase [lit] |
+| gpu: distance + sphere + composite + raycast + direct | 7.38 | 0.81 | showcase [lit] |
+| gpu: distance + rowrun + composite + raycast + direct | 7.38 | 0.69 |  |
+| gpu: distance + sphere + beam + composite + raycast + direct | 7.38 | 0.77 | showcase [lit] |
+| gpu: distance + rowrun + beam + composite + raycast + direct | 7.39 | 0.65 |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + direct | 7.40 | 0.49 |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + raster + pathtrace | 7.40 | 0.16 |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + raster + pathtrace | 7.40 | 0.12 |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + raster + pathtrace | 7.40 | 0.25 |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + direct | 7.41 | 0.51 |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + direct | 7.41 | 0.60 |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + direct | 7.41 | 0.63 |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 7.41 | 0.61 |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + raster + direct | 7.41 | 0.20 |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + direct | 7.41 | 0.41 |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + direct | 7.41 | 0.58 |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + raster + direct | 7.41 | 0.16 |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + direct | 7.41 | 0.46 |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + direct | 7.41 | 0.48 |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + direct | 7.41 | 0.47 |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + direct | 7.42 | 0.47 |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + direct | 7.42 | 0.20 |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 7.42 | 0.09 |  |
+| gpu: points@cpu + splat + svo_dag + incremental + direct | 7.42 | 0.24 |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + raster + pathtrace | 7.42 | 0.09 |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + raster + pathtrace | 7.42 | 0.13 |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 7.42 | 0.19 |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + raster + pathtrace | 7.43 | 0.10 |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + raster + pathtrace | 7.43 | 0.13 |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + raster + pathtrace | 7.43 | 0.11 |  |
+| gpu: distance + sphere + composite + raycast + pathtrace | 7.43 | 0.63 |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + raster + direct | 7.44 | 0.18 |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + direct | 7.44 | 0.21 |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + raster + pathtrace | 7.44 | 0.23 |  |
+| gpu: distance + sphere + beam + composite + raycast + pathtrace | 7.44 | 0.60 |  |
+| gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 7.44 | 0.49 |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + direct | 7.44 | 0.62 |  |
+| gpu: distance + refloor + composite + raycast + pathtrace | 7.44 | 0.57 |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + raster + pathtrace | 7.44 | 0.15 |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 7.44 | 0.61 |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + direct | 7.44 | 0.16 |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + direct | 7.44 | 0.47 |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + direct | 7.44 | 0.18 |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 7.44 | 0.28 |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + direct | 7.44 | 0.49 |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 7.45 | 0.50 |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + direct | 7.45 | 0.41 |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + direct | 7.45 | 0.20 |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + direct | 7.46 | 0.48 |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 7.47 | 0.51 |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + raster + pathtrace | 7.48 | 0.06 |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + direct | 7.48 | 0.52 |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + direct | 7.48 | 0.42 |  |
+| gpu: points@cpu + splat + tree64 + refloor + direct | 7.48 | 0.29 |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + raster + pathtrace | 7.49 | 0.07 |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 7.49 | 0.07 |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + raster + pathtrace | 7.50 | 0.07 |  |
+| gpu: distance + refloor + beam + composite + raycast + pathtrace | 7.50 | 0.54 |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 7.50 | 0.51 |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + raster + pathtrace | 7.50 | 0.17 |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + raster + pathtrace | 7.50 | 0.08 |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + direct | 7.50 | 0.40 |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 7.50 | 0.40 |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + raster + pathtrace | 7.51 | 0.13 |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + direct | 7.51 | 0.39 |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + raster + pathtrace | 7.51 | 0.22 |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + raster + pathtrace | 7.51 | 0.08 |  |
+| gpu: points@cpu + splat + tree64 + sphere + direct | 7.52 | 0.24 |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + raster + pathtrace | 7.52 | 0.09 |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 7.52 | 0.13 |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + raster + pathtrace | 7.52 | 0.14 |  |
+| gpu: distance + incremental + beam + composite + raycast + direct | 7.52 | 0.41 |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 7.52 | 0.20 |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + direct | 7.52 | 0.41 |  |
+| gpu: distance + rowrun + composite + raycast + pathtrace | 7.52 | 0.48 |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 7.52 | 0.14 |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 7.53 | 0.48 |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 7.53 | 0.47 |  |
+| gpu: distance + rowrun + beam + composite + raycast + pathtrace | 7.53 | 0.46 |  |
+| gpu: distance + incremental + composite + raycast + pathtrace | 7.53 | 0.34 |  |
+| gpu: distance + incremental + composite + raycast + direct | 7.53 | 0.44 |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 7.53 | 0.10 |  |
+| gpu: points@cpu + splat + tree64 + rowrun + direct | 7.54 | 0.23 |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + raster + pathtrace | 7.54 | 0.24 |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + raster + pathtrace | 7.54 | 0.09 |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + raster + pathtrace | 7.54 | 0.13 |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 7.54 | 0.27 |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 7.54 | 0.16 |  |
+| gpu: distance + incremental + beam + composite + raycast + pathtrace | 7.54 | 0.33 |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 7.55 | 0.39 |  |
+| gpu: points@cpu + splat + tree64 + incremental + direct | 7.55 | 0.27 |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 7.56 | 0.22 |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 7.56 | 0.24 |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + direct | 7.56 | 0.29 |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + direct | 7.56 | 0.41 |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + raster + pathtrace | 7.56 | 0.06 |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + direct | 7.57 | 0.34 |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + direct | 7.57 | 0.34 |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + raster + pathtrace | 7.57 | 0.10 |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + direct | 7.57 | 0.28 |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 7.57 | 0.47 |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 7.58 | 0.40 |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 7.58 | 0.28 |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + direct | 7.58 | 0.31 |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + direct | 7.58 | 0.39 |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 7.58 | 0.25 |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + raster + pathtrace | 7.58 | 0.12 |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 7.58 | 0.25 |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 7.58 | 0.26 |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 7.59 | 0.34 |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + raster + pathtrace | 7.59 | 0.09 |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 7.59 | 0.20 |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + direct | 7.59 | 0.28 |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + raster + pathtrace | 7.60 | 0.08 |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + direct | 7.60 | 0.29 |  |
+| gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 7.60 | 0.22 |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 7.60 | 0.47 |  |
+| gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 7.60 | 0.24 |  |
+| gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 7.60 | 0.39 |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + raster + pathtrace | 7.60 | 0.06 |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 7.60 | 0.22 |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 7.60 | 0.48 |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + raster + pathtrace | 7.60 | 0.13 |  |
+| gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 7.61 | 0.24 |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 7.61 | 0.10 |  |
+| gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 7.62 | 0.25 |  |
+| gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 7.62 | 0.25 |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 7.62 | 0.35 |  |
+| gpu: points@cpu + splat + svo_dag + refloor + pathtrace | 7.63 | 0.21 |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 7.64 | 0.32 |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + direct | 7.64 | 0.28 |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + direct | 7.64 | 0.31 |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 7.64 | 0.23 |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 7.65 | 0.35 |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 7.65 | 0.22 |  |
+| gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 7.65 | 0.28 |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + direct | 7.65 | 0.29 |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 7.66 | 0.40 |  |
+| gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 7.66 | 0.34 |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 7.66 | 0.23 |  |
+| gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + direct | 7.66 | 0.34 |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 7.66 | 0.31 |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 7.66 | 0.23 |  |
+| gpu: points@cpu + splat + svo_dag + sphere + pathtrace | 7.66 | 0.14 |  |
+| gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 7.66 | 0.20 |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + direct | 7.67 | 0.34 |  |
+| gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 7.67 | 0.36 |  |
+| gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 7.67 | 0.23 |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 7.67 | 0.21 |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 7.67 | 0.25 |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 7.68 | 0.34 |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 7.68 | 0.32 |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + direct | 7.68 | 0.28 |  |
+| gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 7.68 | 0.31 |  |
+| gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 7.68 | 0.22 |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + direct | 7.68 | 0.29 |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + direct | 7.68 | 0.33 |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 7.68 | 0.22 |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + direct | 7.69 | 0.34 |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + direct | 7.69 | 0.33 |  |
+| gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 7.69 | 0.22 |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 7.69 | 0.25 |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + direct | 7.69 | 0.28 |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + direct | 7.69 | 0.28 |  |
+| gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 7.69 | 0.40 |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 7.69 | 0.28 |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 7.70 | 0.20 |  |
+| gpu: points@cpu + splat + svo_dag + rowrun + pathtrace | 7.70 | 0.15 |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 7.70 | 0.32 |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 7.70 | 0.24 |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + direct | 7.70 | 0.28 |  |
+| gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 7.71 | 0.34 |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + direct | 7.71 | 0.20 |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + direct | 7.71 | 0.15 |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + direct | 7.71 | 0.28 |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 7.71 | 0.34 |  |
+| gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 7.72 | 0.22 |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + direct | 7.72 | 0.17 |  |
+| gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 7.72 | 0.35 |  |
+| gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 7.72 | 0.24 |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + direct | 7.73 | 0.32 |  |
+| gpu: points@cpu + splat + svo_dag + incremental + pathtrace | 7.73 | 0.13 |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + direct | 7.73 | 0.17 |  |
+| gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 7.73 | 0.28 |  |
+| gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 7.73 | 0.24 |  |
+| gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 7.73 | 0.23 |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + direct | 7.73 | 0.33 |  |
+| gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 7.73 | 0.24 |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 7.73 | 0.22 |  |
+| gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 7.73 | 0.23 |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + direct | 7.74 | 0.28 |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 7.74 | 0.22 |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + direct | 7.74 | 0.34 |  |
+| gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 7.74 | 0.20 |  |
+| gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 7.74 | 0.31 |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 7.75 | 0.34 |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 7.75 | 0.30 |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + direct | 7.75 | 0.28 |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 7.75 | 0.25 |  |
+| gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 7.75 | 0.30 |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 7.76 | 0.16 |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 7.76 | 0.15 |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 7.76 | 0.28 |  |
+| gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 7.77 | 0.20 |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + direct | 7.79 | 0.28 |  |
+| gpu: points@cpu + splat + tree64 + refloor + pathtrace | 7.79 | 0.22 |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 7.79 | 0.17 |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 7.80 | 0.17 |  |
+| gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 7.80 | 0.22 |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 7.81 | 0.17 |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + direct | 7.81 | 0.27 |  |
+| gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 7.81 | 0.22 |  |
+| gpu: points@cpu + splat + tree64 + sphere + pathtrace | 7.81 | 0.14 |  |
+| gpu: points@cpu + splat + tree64 + incremental + pathtrace | 7.82 | 0.18 |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 7.82 | 0.24 |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 7.83 | 0.23 |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + direct | 7.83 | 0.32 |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + direct | 7.83 | 0.47 |  |
+| gpu: points@cpu + splat + tree64 + rowrun + pathtrace | 7.83 | 0.12 |  |
+| gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 7.83 | 0.28 |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + direct | 7.84 | 0.37 |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 7.85 | 0.16 |  |
+| gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 7.85 | 0.16 |  |
+| gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 7.85 | 0.17 |  |
+| gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 7.85 | 0.24 |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + direct | 7.86 | 0.38 |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 7.86 | 0.25 |  |
+| gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 7.86 | 0.17 |  |
+| gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 7.87 | 0.15 |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 7.87 | 0.08 |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 7.87 | 0.07 |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 7.87 | 0.23 |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 7.87 | 0.18 |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 7.87 | 0.11 |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 7.87 | 0.15 |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 7.87 | 0.15 |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 7.88 | 0.20 |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 7.89 | 0.05 |  |
+| gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 7.89 | 0.24 |  |
+| gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 7.89 | 0.16 |  |
+| gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 7.90 | 0.22 |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + raster + direct | 7.91 | 0.43 |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + raster + direct | 7.91 | 0.44 |  |
+| gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 7.91 | 0.20 |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + direct | 7.92 | 0.38 |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 7.92 | 0.17 |  |
+| gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 7.93 | 0.17 |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 7.93 | 0.16 |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + raster + direct | 7.93 | 0.35 |  |
+| gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 7.93 | 0.25 |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 7.93 | 0.22 |  |
+| gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 7.94 | 0.23 |  |
+| gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 7.94 | 0.15 |  |
+| gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 7.94 | 0.18 |  |
+| gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 7.94 | 0.15 |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 7.95 | 0.33 |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 7.96 | 0.60 |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 7.96 | 0.26 |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 7.98 | 0.57 |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 7.98 | 0.55 |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 7.99 | 0.47 |  |
+| gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 7.99 | 0.17 |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 7.99 | 0.31 |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 8.00 | 0.10 |  |
+| gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 8.00 | 0.22 |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 8.00 | 0.31 |  |
+| gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 8.00 | 0.16 |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 8.01 | 0.12 |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 8.01 | 0.18 |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 8.02 | 0.33 |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 8.02 | 0.08 |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + raster + direct | 8.02 | 0.49 |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + raster + direct | 8.02 | 0.48 |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 8.03 | 0.59 |  |
+| gpu: bricks + refloor + quadtree + raster + direct | 8.03 | 0.40 |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 8.03 | 0.27 |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + raster + direct | 8.03 | 0.40 |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 8.03 | 0.48 |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + raster + direct | 8.03 | 0.36 |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + direct | 8.05 | 0.54 |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + direct | 8.05 | 0.56 |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 8.06 | 0.55 |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 8.06 | 0.58 |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + direct | 8.06 | 0.56 |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 8.07 | 0.31 |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 8.07 | 0.31 |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + raster + pathtrace | 8.09 | 0.24 |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + direct | 8.09 | 0.47 |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + raster + pathtrace | 8.09 | 0.26 |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + direct | 8.09 | 0.55 |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + direct | 8.10 | 0.47 |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + direct | 8.10 | 0.57 |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + raster + pathtrace | 8.10 | 0.18 |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + direct | 8.10 | 0.54 |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + raster + direct | 8.11 | 0.21 |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + raster + direct | 8.11 | 0.21 |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + direct | 8.11 | 0.46 |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + raster + pathtrace | 8.11 | 0.14 |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + direct | 8.12 | 0.35 |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + direct | 8.12 | 0.19 |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + pathtrace | 8.13 | 0.37 |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + raster + direct | 8.13 | 0.18 |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 8.14 | 0.20 |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + direct | 8.15 | 0.47 |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 8.15 | 0.13 |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + pathtrace | 8.16 | 0.35 |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + direct | 8.18 | 0.48 |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + direct | 8.19 | 0.46 |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + direct | 8.19 | 0.41 |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 8.19 | 0.17 |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + direct | 8.19 | 0.41 |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + raster + pathtrace | 8.19 | 0.25 |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + raster + pathtrace | 8.20 | 0.23 |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + raster + pathtrace | 8.20 | 0.16 |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + raster + pathtrace | 8.20 | 0.12 |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 8.21 | 0.16 |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + direct | 8.21 | 0.36 |  |
+| gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 8.21 | 0.20 |  |
+| gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 8.22 | 0.13 |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + pathtrace | 8.23 | 0.25 |  |
+| gpu: bricks + refloor + quadtree + visbuffer + direct | 8.24 | 0.54 |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 8.26 | 0.32 |  |
+| gpu: bricks + refloor + quadtree + gbuffer + direct | 8.26 | 0.54 |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + direct | 8.26 | 0.48 |  |
+| gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 8.27 | 0.17 |  |
+| gpu: hier + refloor + quadtree + raster + direct | 8.28 | 0.39 |  |
+| gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 8.28 | 0.16 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + refloor + direct | 8.28 | 0.04 |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + raster + pathtrace | 8.28 | 0.14 |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 8.28 | 0.18 |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + raster + pathtrace | 8.28 | 0.10 |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + raster + pathtrace | 8.29 | 0.13 |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + raster + pathtrace | 8.29 | 0.08 |  |
+| gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + direct | 8.29 | 0.47 |  |
+| gpu: bricks + sphere + quadtree + visbuffer + direct | 8.29 | 0.38 |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + direct | 8.29 | 0.36 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + rowrun + direct | 8.29 | 0.04 |  |
+| gpu: hier + refloor + quadtree + visbuffer + direct | 8.29 | 0.52 |  |
+| gpu: hier + sphere + quadtree + visbuffer + direct | 8.30 | 0.37 |  |
+| gpu: bricks + rowrun + quadtree + visbuffer + direct | 8.30 | 0.43 |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 8.30 | 0.40 |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 8.31 | 0.38 |  |
+| gpu: bricks + sphere + quadtree + gbuffer + direct | 8.32 | 0.38 |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 8.32 | 0.26 |  |
+| gpu: hier + sphere + quadtree + gbuffer + direct | 8.33 | 0.38 |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 8.33 | 0.32 |  |
+| gpu: hier + refloor + quadtree + gbuffer + direct | 8.33 | 0.51 |  |
+| gpu: bricks + rowrun + quadtree + gbuffer + direct | 8.33 | 0.44 |  |
+| gpu: points@cpu + splat + bricks + refloor + direct | 8.33 | 0.30 |  |
+| gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 8.33 | 0.31 |  |
+| gpu: bricks + refloor + quadtree + visbuffer + pathtrace | 8.33 | 0.37 |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 8.33 | 0.25 |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 8.34 | 0.21 |  |
+| gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 8.34 | 0.40 |  |
+| gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 8.34 | 0.36 |  |
+| gpu: hier + refloor + quadtree + visbuffer + pathtrace | 8.34 | 0.37 |  |
+| gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 8.35 | 0.18 |  |
+| gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 8.35 | 0.31 |  |
+| gpu: rows + rowrun + quadtree + visbuffer + direct | 8.36 | 0.46 |  |
+| gpu: rows + refloor + quadtree + raster + direct | 8.37 | 0.36 |  |
+| gpu: rows + refloor + quadtree + visbuffer + direct | 8.37 | 0.49 |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 8.38 | 0.33 |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 8.38 | 0.35 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + incremental + direct | 8.38 | 0.04 |  |
+| gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 8.38 | 0.21 |  |
+| gpu: hier + rowrun + quadtree + visbuffer + direct | 8.38 | 0.39 |  |
+| gpu: hier + refloor + quadtree + gbuffer + pathtrace | 8.39 | 0.36 |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + direct | 8.39 | 0.33 |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + direct | 8.39 | 0.33 |  |
+| gpu: bricks + refloor + quadtree + gbuffer + pathtrace | 8.39 | 0.36 |  |
+| gpu: rows + rowrun + quadtree + raster + direct | 8.39 | 0.33 |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + direct | 8.39 | 0.32 |  |
+| gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 8.40 | 0.26 |  |
+| gpu: prefix + refloor + quadtree + raster + direct | 8.40 | 0.40 |  |
+| gpu: bricks + rowrun + quadtree + raster + pathtrace | 8.40 | 0.15 |  |
+| gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 8.40 | 0.33 |  |
+| gpu: rows + refloor + quadtree + gbuffer + direct | 8.40 | 0.47 |  |
+| gpu: hier + incremental + quadtree + raster + direct | 8.40 | 0.28 |  |
+| gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 8.40 | 0.25 |  |
+| gpu: bricks + refloor + quadtree + raster + pathtrace | 8.40 | 0.23 |  |
+| gpu: rows + rowrun + quadtree + gbuffer + direct | 8.40 | 0.46 |  |
+| gpu: bricks + incremental + quadtree + visbuffer + direct | 8.40 | 0.38 |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + direct | 8.41 | 0.26 |  |
+| gpu: clipmap + refloor + quadtree + visbuffer + pathtrace | 8.42 | 0.34 |  |
+| gpu: clipmap + refloor + quadtree + visbuffer + direct | 8.42 | 0.45 |  |
+| gpu: prefix + rowrun + quadtree + visbuffer + direct | 8.42 | 0.47 |  |
+| gpu: hier + rowrun + quadtree + gbuffer + direct | 8.42 | 0.39 |  |
+| gpu: bricks + incremental + quadtree + raster + direct | 8.42 | 0.28 |  |
+| gpu: prefix + refloor + quadtree + visbuffer + direct | 8.42 | 0.52 |  |
+| gpu: hier + sphere + quadtree + raster + direct | 8.42 | 0.24 |  |
+| gpu: bricks + rowrun + quadtree + raster + direct | 8.42 | 0.23 |  |
+| gpu: clipmap + rowrun + quadtree + raster + pathtrace | 8.43 | 0.17 |  |
+| gpu: bricks + sphere + quadtree + raster + direct | 8.43 | 0.22 |  |
+| gpu: hier + rowrun + quadtree + raster + pathtrace | 8.43 | 0.14 |  |
+| gpu: clipmap + refloor + quadtree + raster + direct | 8.43 | 0.32 |  |
+| gpu: rows + refloor + quadtree + visbuffer + pathtrace | 8.44 | 0.35 |  |
+| gpu: clipmap + rowrun + quadtree + visbuffer + direct | 8.44 | 0.41 |  |
+| gpu: clipmap + incremental + quadtree + visbuffer + direct | 8.44 | 0.39 |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + direct | 8.44 | 0.32 |  |
+| gpu: bricks + incremental + quadtree + visbuffer + pathtrace | 8.44 | 0.26 |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 8.44 | 0.29 |  |
+| gpu: bricks + rowrun + quadtree + visbuffer + pathtrace | 8.44 | 0.27 |  |
+| gpu: hier + rowrun + quadtree + raster + direct | 8.44 | 0.23 |  |
+| gpu: prefix + refloor + quadtree + gbuffer + direct | 8.44 | 0.52 |  |
+| gpu: prefix + refloor + quadtree + visbuffer + pathtrace | 8.44 | 0.37 |  |
+| gpu: prefix + rowrun + quadtree + gbuffer + direct | 8.45 | 0.47 |  |
+| gpu: hier + incremental + quadtree + visbuffer + direct | 8.45 | 0.37 |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 8.45 | 0.19 |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + direct | 8.45 | 0.33 |  |
+| gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 8.45 | 0.36 |  |
+| gpu: clipmap + refloor + quadtree + gbuffer + pathtrace | 8.45 | 0.34 |  |
+| gpu: bricks + sphere + quadtree + visbuffer + pathtrace | 8.46 | 0.23 |  |
+| gpu: rows + incremental + quadtree + raster + direct | 8.46 | 0.29 |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + direct | 8.46 | 0.33 |  |
+| gpu: bricks + incremental + quadtree + gbuffer + direct | 8.46 | 0.38 |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + direct | 8.46 | 0.26 |  |
+| gpu: hier + incremental + quadtree + visbuffer + pathtrace | 8.46 | 0.26 |  |
+| gpu: clipmap + incremental + quadtree + gbuffer + direct | 8.46 | 0.39 |  |
+| gpu: clipmap + refloor + quadtree + gbuffer + direct | 8.46 | 0.44 |  |
+| gpu: hier + sphere + quadtree + visbuffer + pathtrace | 8.47 | 0.24 |  |
+| gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 8.47 | 0.28 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + sphere + direct | 8.47 | 0.04 |  |
+| gpu: bricks + incremental + quadtree + gbuffer + pathtrace | 8.47 | 0.25 |  |
+| gpu: hier + incremental + quadtree + gbuffer + direct | 8.47 | 0.36 |  |
+| gpu: bricks + rowrun + quadtree + gbuffer + pathtrace | 8.47 | 0.27 |  |
+| gpu: clipmap + rowrun + quadtree + gbuffer + direct | 8.47 | 0.40 |  |
+| gpu: clipmap + rowrun + quadtree + visbuffer + pathtrace | 8.47 | 0.29 |  |
+| gpu: prefix + refloor + quadtree + gbuffer + pathtrace | 8.48 | 0.37 |  |
+| gpu: boxes@cpu + rayquery + raycast + direct | 8.48 | 0.55 |  |
+| gpu: rows + refloor + quadtree + gbuffer + pathtrace | 8.48 | 0.34 |  |
+| gpu: prefix + rowrun + quadtree + raster + direct | 8.48 | 0.32 |  |
+| gpu: rows + rowrun + quadtree + raster + pathtrace | 8.49 | 0.20 |  |
+| gpu: clipmap + incremental + quadtree + visbuffer + pathtrace | 8.49 | 0.28 |  |
+| gpu: rows + rowrun + quadtree + visbuffer + pathtrace | 8.49 | 0.30 |  |
+| gpu: bricks + sphere + quadtree + gbuffer + pathtrace | 8.49 | 0.23 |  |
+| gpu: prefix + rowrun + quadtree + visbuffer + pathtrace | 8.49 | 0.31 |  |
+| gpu: clipmap + sphere + quadtree + visbuffer + pathtrace | 8.50 | 0.23 |  |
+| gpu: hier + sphere + quadtree + gbuffer + pathtrace | 8.50 | 0.24 |  |
+| gpu: rows + sphere + quadtree + visbuffer + direct | 8.50 | 0.35 |  |
+| gpu: hier + incremental + quadtree + gbuffer + pathtrace | 8.51 | 0.26 |  |
+| gpu: clipmap + incremental + quadtree + gbuffer + pathtrace | 8.51 | 0.27 |  |
+| gpu: hier + rowrun + quadtree + visbuffer + pathtrace | 8.51 | 0.24 |  |
+| gpu: clipmap + rowrun + quadtree + gbuffer + pathtrace | 8.51 | 0.29 |  |
+| gpu: clipmap + sphere + quadtree + visbuffer + direct | 8.51 | 0.33 |  |
+| gpu: prefix + rowrun + quadtree + raster + pathtrace | 8.51 | 0.19 |  |
+| gpu: clipmap + sphere + quadtree + gbuffer + pathtrace | 8.52 | 0.23 |  |
+| gpu: prefix + incremental + quadtree + raster + direct | 8.52 | 0.26 |  |
+| gpu: rows + sphere + quadtree + raster + direct | 8.52 | 0.22 |  |
+| gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 8.52 | 0.19 |  |
+| gpu: prefix + sphere + quadtree + visbuffer + direct | 8.52 | 0.36 |  |
+| gpu: prefix + rowrun + quadtree + gbuffer + pathtrace | 8.52 | 0.31 |  |
+| gpu: prefix + sphere + quadtree + gbuffer + direct | 8.52 | 0.36 |  |
+| gpu: rows + incremental + quadtree + visbuffer + direct | 8.53 | 0.36 |  |
+| gpu: hier + rowrun + quadtree + gbuffer + pathtrace | 8.53 | 0.24 |  |
+| gpu: rows + rowrun + quadtree + gbuffer + pathtrace | 8.53 | 0.31 |  |
+| gpu: clipmap + rowrun + quadtree + raster + direct | 8.53 | 0.24 |  |
+| gpu: rows + sphere + quadtree + gbuffer + direct | 8.53 | 0.35 |  |
+| gpu: bricks + incremental + quadtree + raster + pathtrace | 8.54 | 0.17 |  |
+| gpu: clipmap + sphere + quadtree + gbuffer + direct | 8.54 | 0.32 |  |
+| gpu: hier + incremental + quadtree + raster + pathtrace | 8.55 | 0.17 |  |
+| gpu: hier + refloor + quadtree + raster + pathtrace | 8.55 | 0.24 |  |
+| gpu: rows + incremental + quadtree + visbuffer + pathtrace | 8.55 | 0.26 |  |
+| gpu: bricks + sphere + quadtree + raster + pathtrace | 8.55 | 0.14 |  |
+| gpu: prefix + sphere + quadtree + raster + direct | 8.55 | 0.22 |  |
+| gpu: rows + incremental + quadtree + gbuffer + direct | 8.56 | 0.36 |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 8.57 | 0.24 |  |
+| gpu: rows + sphere + quadtree + visbuffer + pathtrace | 8.57 | 0.23 |  |
+| gpu: hier + sphere + quadtree + raster + pathtrace | 8.57 | 0.15 |  |
+| gpu: clipmap + incremental + quadtree + raster + direct | 8.57 | 0.23 |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 8.57 | 0.26 |  |
+| gpu: rows + incremental + quadtree + gbuffer + pathtrace | 8.57 | 0.26 |  |
+| gpu: clipmap + refloor + quadtree + raster + pathtrace | 8.58 | 0.23 |  |
+| gpu: clipmap + sphere + quadtree + raster + pathtrace | 8.58 | 0.14 |  |
+| gpu: prefix + incremental + quadtree + visbuffer + direct | 8.58 | 0.36 |  |
+| gpu: clipmap + incremental + quadtree + raster + pathtrace | 8.58 | 0.17 |  |
+| gpu: prefix + sphere + quadtree + visbuffer + pathtrace | 8.59 | 0.23 |  |
+| gpu: rows + sphere + quadtree + gbuffer + pathtrace | 8.59 | 0.23 |  |
+| gpu: prefix + incremental + quadtree + visbuffer + pathtrace | 8.59 | 0.25 |  |
+| gpu: clipmap + sphere + quadtree + raster + direct | 8.61 | 0.18 |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 8.62 | 0.22 |  |
+| gpu: prefix + sphere + quadtree + gbuffer + pathtrace | 8.62 | 0.23 |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 8.63 | 0.15 |  |
+| gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 8.63 | 0.24 |  |
+| gpu: rows + incremental + quadtree + raster + pathtrace | 8.64 | 0.17 |  |
+| gpu: rows + refloor + quadtree + raster + pathtrace | 8.64 | 0.23 |  |
+| gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 8.64 | 0.26 |  |
+| gpu: prefix + incremental + quadtree + gbuffer + pathtrace | 8.64 | 0.25 |  |
+| gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 8.64 | 0.21 |  |
+| gpu: prefix + refloor + quadtree + raster + pathtrace | 8.65 | 0.25 |  |
+| gpu: rows + sphere + quadtree + raster + pathtrace | 8.65 | 0.14 |  |
+| gpu: prefix + incremental + quadtree + raster + pathtrace | 8.67 | 0.16 |  |
+| gpu: prefix + sphere + quadtree + raster + pathtrace | 8.68 | 0.14 |  |
+| gpu: prefix + incremental + quadtree + gbuffer + direct | 8.69 | 0.36 |  |
+| gpu: points@cpu + splat + bricks + refloor + pathtrace | 8.69 | 0.24 |  |
+| gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 8.70 | 0.15 |  |
+| gpu: boxes@cpu + rayquery + raycast + pathtrace | 8.70 | 0.41 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + rowrun + direct | 8.73 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + refloor + direct | 8.77 | 0.04 |  |
+| gpu: points@cpu + splat + hier + sphere + direct | 8.79 | 0.26 |  |
+| gpu: points@cpu + splat + bricks + sphere + direct | 8.79 | 0.25 |  |
+| gpu: points@cpu + splat + hier + refloor + direct | 8.81 | 0.29 |  |
+| gpu: points@cpu + splat + hier + rowrun + direct | 8.81 | 0.27 |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 8.86 | 0.01 |  |
+| gpu: points@cpu + splat + bricks + rowrun + direct | 8.86 | 0.28 |  |
+| gpu: points@cpu + splat + bricks + incremental + direct | 8.88 | 0.26 |  |
+| gpu: points@cpu + splat + hier + incremental + direct | 8.89 | 0.25 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + incremental + direct | 8.89 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + sphere + direct | 8.89 | 0.04 |  |
+| gpu: points@cpu + splat + rows + sphere + direct | 8.90 | 0.25 |  |
+| gpu: points@cpu + splat + rows + rowrun + direct | 8.91 | 0.28 |  |
+| gpu: points@cpu + splat + rows + refloor + direct | 8.91 | 0.29 |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 8.92 | 0.01 |  |
+| gpu: points@cpu + splat + prefix + refloor + direct | 8.93 | 0.30 |  |
+| gpu: points@cpu + splat + prefix + sphere + direct | 8.93 | 0.25 |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 8.95 | 0.01 |  |
+| gpu: points@cpu + splat + prefix + rowrun + direct | 8.97 | 0.29 |  |
+| gpu: points@cpu + splat + rows + incremental + direct | 8.99 | 0.25 |  |
+| gpu: points@cpu + splat + prefix + incremental + direct | 9.02 | 0.25 |  |
+| gpu: points@cpu + splat + hier + refloor + pathtrace | 9.03 | 0.22 |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 9.04 | 0.01 |  |
+| gpu: points@cpu + splat + hier + sphere + pathtrace | 9.05 | 0.16 |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 9.06 | 0.01 |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 9.06 | 0.01 |  |
+| gpu: points@cpu + splat + bricks + sphere + pathtrace | 9.06 | 0.15 |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 9.08 | 0.01 |  |
+| gpu: points@cpu + splat + hier + rowrun + pathtrace | 9.09 | 0.16 |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 9.10 | 0.01 |  |
+| gpu: points@cpu + splat + bricks + incremental + pathtrace | 9.11 | 0.16 |  |
+| gpu: points@cpu + splat + hier + incremental + pathtrace | 9.12 | 0.17 |  |
+| gpu: points@cpu + splat + bricks + rowrun + pathtrace | 9.12 | 0.17 |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 9.14 | 0.01 |  |
+| gpu: points@cpu + splat + rows + refloor + pathtrace | 9.14 | 0.21 |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 9.14 | 0.01 |  |
+| gpu: distance + sphere + quadtree + raster + direct | 9.15 | 0.38 |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 9.15 | 0.01 |  |
+| gpu: distance + sphere + quadtree + visbuffer + pathtrace | 9.15 | 0.36 |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 9.16 | 0.01 |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 9.16 | 0.01 |  |
+| gpu: distance + refloor + quadtree + visbuffer + direct | 9.16 | 0.46 |  |
+| gpu: points@cpu + splat + rows + rowrun + pathtrace | 9.16 | 0.19 |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 9.16 | 0.01 |  |
+| gpu: points@cpu + splat + rows + sphere + pathtrace | 9.17 | 0.14 |  |
+| gpu: points@cpu + splat + prefix + refloor + pathtrace | 9.18 | 0.23 |  |
+| gpu: distance + sphere + quadtree + visbuffer + direct | 9.18 | 0.48 |  |
+| gpu: distance + refloor + quadtree + raster + direct | 9.18 | 0.37 |  |
+| gpu: distance + refloor + quadtree + visbuffer + pathtrace | 9.18 | 0.34 |  |
+| gpu: points@cpu + splat + prefix + sphere + pathtrace | 9.19 | 0.15 |  |
+| gpu: distance + refloor + quadtree + gbuffer + direct | 9.20 | 0.46 |  |
+| gpu: distance + sphere + quadtree + gbuffer + pathtrace | 9.20 | 0.36 |  |
+| gpu: distance + sphere + quadtree + gbuffer + direct | 9.20 | 0.48 |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 9.20 | 0.01 |  |
+| gpu: points@cpu + splat + rows + incremental + pathtrace | 9.20 | 0.16 |  |
+| gpu: distance + rowrun + quadtree + visbuffer + direct | 9.21 | 0.43 |  |
+| gpu: distance + refloor + quadtree + gbuffer + pathtrace | 9.21 | 0.33 |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 9.21 | 0.01 |  |
+| gpu: distance + rowrun + quadtree + raster + pathtrace | 9.22 | 0.18 |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 9.22 | 0.01 |  |
+| gpu: distance + rowrun + quadtree + gbuffer + direct | 9.23 | 0.43 |  |
+| gpu: distance + rowrun + quadtree + raster + direct | 9.24 | 0.29 |  |
+| gpu: distance + rowrun + quadtree + visbuffer + pathtrace | 9.24 | 0.30 |  |
+| gpu: points@cpu + splat + prefix + rowrun + pathtrace | 9.26 | 0.20 |  |
+| gpu: distance + rowrun + quadtree + gbuffer + pathtrace | 9.27 | 0.29 |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 9.27 | 0.01 |  |
+| gpu: distance + incremental + quadtree + raster + direct | 9.27 | 0.25 |  |
+| gpu: points@cpu + splat + prefix + incremental + pathtrace | 9.28 | 0.16 |  |
+| gpu: distance + incremental + quadtree + visbuffer + direct | 9.30 | 0.31 |  |
+| gpu: distance + sphere + quadtree + raster + pathtrace | 9.33 | 0.26 |  |
+| gpu: distance + incremental + quadtree + visbuffer + pathtrace | 9.34 | 0.22 |  |
+| gpu: distance + incremental + quadtree + gbuffer + direct | 9.34 | 0.31 |  |
+| gpu: distance + refloor + quadtree + raster + pathtrace | 9.38 | 0.24 |  |
+| gpu: distance + incremental + quadtree + gbuffer + pathtrace | 9.40 | 0.22 |  |
+| gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 9.42 | 0.01 |  |
+| gpu: distance + incremental + quadtree + raster + pathtrace | 9.42 | 0.15 |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 9.43 | 0.01 |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 9.53 | 0.01 |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 9.54 | 0.01 |  |
+| gpu: points@cpu + splat + clipmap + sphere + direct | 9.54 | 0.24 |  |
+| gpu: points@cpu + splat + clipmap + refloor + direct | 9.54 | 0.28 |  |
+| gpu: points@cpu + splat + clipmap + rowrun + direct | 9.56 | 0.28 |  |
+| gpu: points@cpu + splat + clipmap + incremental + direct | 9.56 | 0.27 |  |
+| gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 9.59 | 0.01 |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 9.61 | 0.01 |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 9.63 | 0.01 |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 9.64 | 0.01 |  |
+| gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 9.65 | 0.01 |  |
+| gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 9.65 | 0.01 |  |
+| gpu: points@cpu + splat + distance + sphere + direct | 9.68 | 0.29 |  |
+| gpu: points@cpu + splat + distance + rowrun + direct | 9.68 | 0.28 |  |
+| gpu: points@cpu + splat + distance + refloor + direct | 9.68 | 0.28 |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 9.74 | 0.01 |  |
+| gpu: points@cpu + splat + distance + incremental + direct | 9.75 | 0.23 |  |
+| gpu: points@cpu + splat + clipmap + refloor + pathtrace | 9.79 | 0.19 |  |
+| gpu: points@cpu + splat + clipmap + sphere + pathtrace | 9.82 | 0.13 |  |
+| gpu: points@cpu + splat + clipmap + rowrun + pathtrace | 9.83 | 0.17 |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 9.83 | 0.01 |  |
+| gpu: points@cpu + splat + clipmap + incremental + pathtrace | 9.84 | 0.16 |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 9.84 | 0.01 |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 9.87 | 0.01 |  |
+| gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 9.89 | 0.01 |  |
+| gpu: points@cpu + splat + distance + sphere + pathtrace | 9.91 | 0.23 |  |
+| gpu: points@cpu + splat + distance + refloor + pathtrace | 9.91 | 0.22 |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 9.92 | 0.01 |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 9.95 | 0.01 |  |
+| gpu: points@cpu + splat + distance + rowrun + pathtrace | 9.95 | 0.19 |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 9.98 | 0.01 |  |
+| gpu: points@cpu + splat + distance + incremental + pathtrace | 9.99 | 0.15 |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 9.99 | 0.01 |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.07 | 0.01 |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.08 | 0.01 |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.08 | 0.01 |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.09 | 0.01 |  |
+| gpu: greedy@cpu + rayquery + raycast + direct | 10.19 | 0.31 |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.20 | 0.01 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 10.24 | 0.04 |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.29 | 0.04 |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 10.31 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 10.31 | 0.01 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 10.34 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + pathtrace | 10.35 | 0.28 |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 10.35 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.36 | 0.01 |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.37 | 0.01 |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 10.38 | 0.04 |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.38 | 0.04 |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 10.40 | 0.01 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.42 | 0.04 |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.45 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.46 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + rowrun + direct | 10.46 | 0.04 |  |
+| gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 10.49 | 0.01 |  |
+| gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.49 | 0.01 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + sphere + direct | 10.50 | 0.04 |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.50 | 0.03 |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.51 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + refloor + direct | 10.51 | 0.04 |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.52 | 0.03 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + sphere + direct | 10.55 | 0.04 |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.55 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.55 | 0.04 |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.56 | 0.03 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.57 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + incremental + direct | 10.57 | 0.04 |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.58 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + refloor + direct | 10.59 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + sphere + direct | 10.62 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + rowrun + direct | 10.64 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + rowrun + direct | 10.64 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + refloor + direct | 10.66 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + refloor + direct | 10.67 | 0.04 |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.67 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + incremental + direct | 10.68 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + incremental + pathtrace | 10.71 | 0.19 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + incremental + direct | 10.72 | 0.04 |  |
+| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 10.73 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + rowrun + direct | 10.73 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + rowrun + pathtrace | 10.74 | 0.12 |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.75 | 0.04 |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 10.76 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + sphere + direct | 10.77 | 0.04 |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.77 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + sphere + pathtrace | 10.77 | 0.15 |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + refloor + pathtrace | 10.77 | 0.22 |  |
+| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 10.78 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + incremental + pathtrace | 10.78 | 0.15 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + incremental + direct | 10.80 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + rowrun + pathtrace | 10.81 | 0.15 |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 10.81 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + svo_dag + refloor + pathtrace | 10.81 | 0.21 |  |
+| gpu: greedy@cpu + rayquery + raycast + tree64 + sphere + pathtrace | 10.84 | 0.14 |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 10.87 | 0.04 |  |
+| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 10.87 | 0.04 |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 10.89 | 0.04 |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 10.90 | 0.04 |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.08 | 0.04 |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 11.09 | 0.04 |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 11.18 | 0.04 |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 11.20 | 0.04 |  |
+| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.21 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + refloor + direct | 11.24 | 0.04 |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 11.25 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + rowrun + direct | 11.26 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 11.30 | 0.03 |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 11.31 | 0.04 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + incremental + direct | 11.32 | 0.04 |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 11.33 | 0.03 |  |
+| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + sphere + direct | 11.34 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 11.35 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 11.35 | 0.03 |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 11.40 | 0.03 |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.41 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 11.47 | 0.03 |  |
+| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.48 | 0.04 |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.62 | 0.04 |  |
+| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.67 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 11.68 | 0.04 |  |
+| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 11.69 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + refloor + pathtrace | 12.10 | 0.21 |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + incremental + pathtrace | 12.16 | 0.19 |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + sphere + pathtrace | 12.19 | 0.16 |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + refloor + pathtrace | 12.21 | 0.22 |  |
+| gpu: greedy@cpu + rayquery + raycast + hier + rowrun + pathtrace | 12.25 | 0.17 |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + incremental + pathtrace | 12.26 | 0.19 |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + sphere + pathtrace | 12.26 | 0.16 |  |
+| gpu: greedy@cpu + rayquery + raycast + bricks + rowrun + pathtrace | 12.27 | 0.18 |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + refloor + pathtrace | 12.32 | 0.23 |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + sphere + pathtrace | 12.35 | 0.15 |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + refloor + pathtrace | 12.35 | 0.21 |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + sphere + pathtrace | 12.36 | 0.15 |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + rowrun + pathtrace | 12.37 | 0.20 |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + incremental + pathtrace | 12.39 | 0.18 |  |
+| gpu: greedy@cpu + rayquery + raycast + prefix + rowrun + pathtrace | 12.40 | 0.21 |  |
+| gpu: greedy@cpu + rayquery + raycast + rows + incremental + pathtrace | 12.41 | 0.19 |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + sphere + pathtrace | 12.66 | 0.14 |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + rowrun + pathtrace | 12.69 | 0.19 |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + refloor + pathtrace | 12.70 | 0.21 |  |
+| gpu: greedy@cpu + rayquery + raycast + clipmap + incremental + pathtrace | 12.74 | 0.18 |  |
 | gpu: naive@cpu + rayquery + raycast + pathtrace | 12.99 | 0.35 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + refloor + direct | 13.01 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + clipmap + incremental + pathtrace | 13.01 | 0.21 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + incremental + direct | 13.06 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + sphere + direct | 13.10 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 13.11 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 13.14 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + rowrun + direct | 13.15 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + incremental + direct | 13.15 | 0.04 |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 13.16 | 0.04 |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 13.16 | 0.04 |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 13.18 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + refloor + direct | 13.18 | 0.04 |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 13.19 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + rowrun + direct | 13.22 | 0.04 |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + incremental + pathtrace | 13.02 | 0.17 |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + refloor + pathtrace | 13.04 | 0.21 |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + sphere + pathtrace | 13.07 | 0.23 |  |
+| gpu: greedy@cpu + rayquery + raycast + distance + rowrun + pathtrace | 13.11 | 0.20 |  |
 | gpu: naive@cpu + rayquery + raycast + direct | 13.22 | 0.43 |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + sphere + pathtrace | 13.24 | 0.28 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + incremental + direct | 13.25 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + refloor + pathtrace | 13.26 | 0.26 |  |
-| gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 13.27 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + incremental + pathtrace | 13.29 | 0.19 |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 13.32 | 0.04 |  |
-| gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 13.35 | 0.04 |  |
-| gpu: greedy@cpu + rayquery + raycast + distance + rowrun + pathtrace | 13.37 | 0.24 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + rowrun + direct | 13.37 | 0.04 |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 13.40 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 13.42 | 0.04 |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 13.43 | 0.04 |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 13.45 | 0.03 |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 13.46 | 0.04 |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 13.49 | 0.04 |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 13.50 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 13.51 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + refloor + direct | 13.51 | 0.04 |  |
-| gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 13.52 | 0.04 |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 13.58 | 0.03 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + sphere + direct | 13.61 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + refloor + direct | 13.62 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 13.65 | 0.03 |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 13.69 | 0.03 |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 13.70 | 0.04 |  |
-| gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 13.73 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + rowrun + direct | 13.74 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + incremental + direct | 13.75 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + incremental + direct | 13.77 | 0.04 |  |
-| gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + sphere + direct | 13.82 | 0.04 |  |
-| gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 13.85 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 13.95 | 0.04 |  |
-| gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 14.04 | 0.04 |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 14.07 | 0.04 |  |
-| gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 14.09 | 0.04 |  |
 
 ## Components
 
@@ -2416,319 +2428,1756 @@ The effect of a node's component, among pipelines whose graphs differ in that no
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| greedy | 1.00 | 22 | 34 |
-| naive | 0.81 | 12 | 34 |
+| greedy | 1.00 | 39 | 51 |
+| naive | 0.72 | 12 | 51 |
 
 **cpu · storage (image > hits > primary > storage; image > shadow > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| hier | 1.00 | 8 | 8 |
-| prefix | 0.91 | 0 | 8 |
-| bits | 0.86 | 0 | 8 |
-| bricks | 0.86 | 0 | 8 |
-| morton | 0.85 | 0 | 8 |
-| u8 | 0.85 | 0 | 8 |
-| brickmajor | 0.85 | 0 | 8 |
-| palette | 0.83 | 0 | 8 |
+| hier | 1.00 | 10 | 12 |
+| prefix | 0.92 | 2 | 12 |
+| bricks | 0.87 | 0 | 12 |
+| bits | 0.87 | 0 | 12 |
+| u8 | 0.85 | 0 | 12 |
+| brickmajor | 0.85 | 0 | 12 |
+| morton | 0.85 | 0 | 12 |
+| palette | 0.83 | 0 | 12 |
 
 **cpu · storage (image > shadow > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| hier | 1.00 | 8 | 8 |
-| prefix | 0.98 | 0 | 8 |
-| bricks | 0.96 | 0 | 8 |
-| u8 | 0.94 | 0 | 8 |
-| brickmajor | 0.94 | 0 | 8 |
-| morton | 0.94 | 0 | 8 |
-| bits | 0.93 | 0 | 8 |
-| palette | 0.93 | 0 | 8 |
+| hier | 1.00 | 11 | 12 |
+| prefix | 0.99 | 1 | 12 |
+| bricks | 0.97 | 0 | 12 |
+| u8 | 0.96 | 0 | 12 |
+| brickmajor | 0.96 | 0 | 12 |
+| morton | 0.95 | 0 | 12 |
+| bits | 0.95 | 0 | 12 |
+| palette | 0.94 | 0 | 12 |
 
 **cpu · traversal (image > hits > primary; image > shadow)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 1.00 | 30 | 32 |
-| incremental | 0.92 | 2 | 32 |
+| refloor | 1.00 | 43 | 48 |
+| incremental | 0.94 | 5 | 48 |
 
 **cpu · traversal (image > shadow)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 1.00 | 18 | 32 |
-| incremental | 0.99 | 14 | 32 |
+| refloor | 1.00 | 21 | 48 |
+| incremental | 0.99 | 27 | 48 |
 
 **gpu · draw (image > hits)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| visbuffer | 0.99 | 377 | 684 |
-| gbuffer | 0.99 | 210 | 684 |
-| raster | 0.67 | 97 | 684 |
+| visbuffer | 0.99 | 509 | 1026 |
+| gbuffer | 0.99 | 368 | 1026 |
+| raster | 0.65 | 149 | 1026 |
 
 **gpu · geometry (image > hits > faces > faces)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| naive | 0.97 | 324 | 390 |
-| greedy | 0.93 | 64 | 390 |
-| cubes | 0.65 | 2 | 390 |
+| naive | 0.97 | 487 | 585 |
+| greedy | 0.90 | 96 | 585 |
+| cubes | 0.57 | 2 | 585 |
 
 **gpu · geometry (image > hits > primary > geometry; image > shadow > geometry)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| boxes | 0.87 | 1 | 2 |
+| boxes | 0.91 | 2 | 3 |
 | naive | 0.68 | 1 | 2 |
-| greedy | 0.66 | 0 | 2 |
+| greedy | 0.52 | 0 | 3 |
 
 **gpu · geometry (image > hits > primary > geometry; image > shadow > geometry; image > bounce > geometry)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| boxes | 0.91 | 3 | 4 |
-| greedy | 0.81 | 0 | 4 |
+| boxes | 0.94 | 5 | 6 |
 | naive | 0.79 | 1 | 4 |
+| greedy | 0.64 | 0 | 6 |
 
 **gpu · storage (image > bounce > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.93 | 2 | 8 |
-| prefix | 0.86 | 3 | 8 |
-| rows | 0.82 | 1 | 8 |
-| hier | 0.80 | 0 | 8 |
-| bricks | 0.80 | 0 | 8 |
-| clipmap | 0.78 | 0 | 8 |
-| svo_dag | 0.71 | 1 | 8 |
-| tree64 | 0.70 | 1 | 8 |
+| distance | 0.93 | 3 | 12 |
+| prefix | 0.89 | 4 | 12 |
+| rows | 0.87 | 1 | 12 |
+| bricks | 0.85 | 1 | 12 |
+| hier | 0.85 | 0 | 12 |
+| clipmap | 0.83 | 0 | 12 |
+| tree64 | 0.76 | 2 | 12 |
+| svo_dag | 0.76 | 1 | 12 |
 
 **gpu · storage (image > hits > faces > rays > storage; image > hits > faces > exposure)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| hier | 1.00 | 31 | 36 |
-| bricks | 0.96 | 3 | 36 |
-| bits | 0.95 | 0 | 36 |
-| palette | 0.94 | 1 | 36 |
-| prefix | 0.94 | 0 | 36 |
-| u8 | 0.94 | 1 | 36 |
-| morton | 0.94 | 0 | 36 |
-| brickmajor | 0.87 | 0 | 36 |
+| hier | 1.00 | 49 | 54 |
+| bricks | 0.96 | 3 | 54 |
+| u8 | 0.95 | 1 | 54 |
+| bits | 0.94 | 0 | 54 |
+| prefix | 0.94 | 0 | 54 |
+| palette | 0.94 | 1 | 54 |
+| morton | 0.94 | 0 | 54 |
+| brickmajor | 0.90 | 0 | 54 |
 
 **gpu · storage (image > hits > faces > rays > storage; image > hits > faces > exposure; image > shadow > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.92 | 7 | 24 |
-| prefix | 0.85 | 7 | 24 |
-| rows | 0.84 | 4 | 24 |
-| hier | 0.81 | 0 | 24 |
-| bricks | 0.81 | 4 | 24 |
-| clipmap | 0.73 | 2 | 24 |
-| tree64 | 0.61 | 0 | 24 |
-| svo_dag | 0.59 | 0 | 24 |
+| distance | 0.88 | 8 | 36 |
+| prefix | 0.86 | 8 | 36 |
+| bricks | 0.85 | 11 | 36 |
+| rows | 0.85 | 5 | 36 |
+| hier | 0.83 | 0 | 36 |
+| clipmap | 0.76 | 3 | 36 |
+| tree64 | 0.65 | 1 | 36 |
+| svo_dag | 0.61 | 0 | 36 |
 
 **gpu · storage (image > hits > faces > rays > storage; image > hits > faces > exposure; image > shadow > storage; image > bounce > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.83 | 14 | 48 |
-| clipmap | 0.75 | 12 | 48 |
-| prefix | 0.73 | 6 | 48 |
-| rows | 0.72 | 7 | 48 |
-| hier | 0.69 | 2 | 48 |
-| bricks | 0.68 | 4 | 48 |
-| tree64 | 0.65 | 3 | 48 |
-| svo_dag | 0.63 | 0 | 48 |
+| distance | 0.82 | 17 | 72 |
+| prefix | 0.77 | 9 | 72 |
+| rows | 0.76 | 9 | 72 |
+| clipmap | 0.75 | 12 | 72 |
+| bricks | 0.73 | 18 | 72 |
+| hier | 0.73 | 2 | 72 |
+| tree64 | 0.66 | 5 | 72 |
+| svo_dag | 0.62 | 0 | 72 |
 
 **gpu · storage (image > hits > meshes > shadow > storage; image > shadow > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.91 | 14 | 72 |
-| prefix | 0.88 | 12 | 72 |
-| bricks | 0.86 | 24 | 72 |
-| rows | 0.86 | 7 | 72 |
-| hier | 0.85 | 4 | 72 |
-| clipmap | 0.83 | 6 | 72 |
-| svo_dag | 0.73 | 3 | 72 |
-| tree64 | 0.73 | 2 | 72 |
+| prefix | 0.90 | 16 | 108 |
+| bricks | 0.89 | 37 | 108 |
+| distance | 0.89 | 15 | 108 |
+| rows | 0.88 | 8 | 108 |
+| hier | 0.88 | 4 | 108 |
+| clipmap | 0.87 | 6 | 108 |
+| tree64 | 0.81 | 19 | 108 |
+| svo_dag | 0.78 | 3 | 108 |
 
 **gpu · storage (image > hits > meshes > shadow > storage; image > shadow > storage; image > bounce > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.92 | 24 | 72 |
-| prefix | 0.78 | 22 | 72 |
-| rows | 0.74 | 6 | 72 |
-| hier | 0.72 | 0 | 72 |
-| bricks | 0.69 | 0 | 72 |
-| clipmap | 0.63 | 0 | 72 |
-| tree64 | 0.60 | 16 | 72 |
-| svo_dag | 0.57 | 4 | 72 |
+| distance | 0.91 | 33 | 108 |
+| prefix | 0.81 | 30 | 108 |
+| rows | 0.78 | 12 | 108 |
+| hier | 0.76 | 3 | 108 |
+| bricks | 0.74 | 3 | 108 |
+| clipmap | 0.68 | 0 | 108 |
+| tree64 | 0.64 | 23 | 108 |
+| svo_dag | 0.61 | 4 | 108 |
 
 **gpu · storage (image > hits > primary > storage; image > hits > meshes > shadow > storage; image > shadow > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.89 | 4 | 8 |
-| prefix | 0.77 | 1 | 8 |
-| bricks | 0.74 | 1 | 8 |
-| hier | 0.73 | 1 | 8 |
-| rows | 0.71 | 0 | 8 |
-| clipmap | 0.62 | 0 | 8 |
-| svo_dag | 0.59 | 0 | 8 |
-| tree64 | 0.55 | 1 | 8 |
+| bricks | 0.81 | 4 | 12 |
+| distance | 0.81 | 4 | 12 |
+| prefix | 0.79 | 1 | 12 |
+| hier | 0.75 | 1 | 12 |
+| rows | 0.73 | 0 | 12 |
+| clipmap | 0.68 | 0 | 12 |
+| tree64 | 0.63 | 2 | 12 |
+| svo_dag | 0.62 | 0 | 12 |
 
 **gpu · storage (image > hits > primary > storage; image > hits > meshes > shadow > storage; image > shadow > storage; image > bounce > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.90 | 6 | 16 |
-| prefix | 0.77 | 5 | 16 |
-| hier | 0.75 | 2 | 16 |
-| rows | 0.72 | 0 | 16 |
-| bricks | 0.71 | 2 | 16 |
-| clipmap | 0.60 | 0 | 16 |
-| svo_dag | 0.58 | 0 | 16 |
-| tree64 | 0.55 | 1 | 16 |
+| distance | 0.84 | 7 | 24 |
+| prefix | 0.79 | 6 | 24 |
+| bricks | 0.77 | 7 | 24 |
+| hier | 0.76 | 2 | 24 |
+| rows | 0.74 | 0 | 24 |
+| clipmap | 0.65 | 0 | 24 |
+| tree64 | 0.60 | 2 | 24 |
+| svo_dag | 0.59 | 0 | 24 |
 
 **gpu · storage (image > hits > primary > storage; image > hits > start > storage; image > hits > meshes > shadow > storage; image > shadow > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.91 | 3 | 8 |
-| prefix | 0.79 | 1 | 8 |
-| hier | 0.77 | 2 | 8 |
-| bricks | 0.75 | 2 | 8 |
-| rows | 0.74 | 0 | 8 |
-| clipmap | 0.60 | 0 | 8 |
-| svo_dag | 0.56 | 0 | 8 |
-| tree64 | 0.54 | 0 | 8 |
+| distance | 0.82 | 3 | 12 |
+| bricks | 0.82 | 5 | 12 |
+| prefix | 0.81 | 1 | 12 |
+| hier | 0.78 | 2 | 12 |
+| rows | 0.75 | 0 | 12 |
+| clipmap | 0.65 | 0 | 12 |
+| tree64 | 0.61 | 1 | 12 |
+| svo_dag | 0.59 | 0 | 12 |
 
 **gpu · storage (image > hits > primary > storage; image > hits > start > storage; image > hits > meshes > shadow > storage; image > shadow > storage; image > bounce > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.91 | 6 | 16 |
-| prefix | 0.78 | 5 | 16 |
-| hier | 0.75 | 0 | 16 |
-| bricks | 0.73 | 3 | 16 |
-| rows | 0.73 | 0 | 16 |
-| clipmap | 0.57 | 0 | 16 |
-| svo_dag | 0.54 | 0 | 16 |
-| tree64 | 0.53 | 2 | 16 |
+| distance | 0.85 | 7 | 24 |
+| prefix | 0.80 | 6 | 24 |
+| bricks | 0.79 | 8 | 24 |
+| hier | 0.77 | 0 | 24 |
+| rows | 0.75 | 0 | 24 |
+| clipmap | 0.60 | 0 | 24 |
+| tree64 | 0.58 | 3 | 24 |
+| svo_dag | 0.56 | 0 | 24 |
 
 **gpu · storage (image > shadow > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.96 | 2 | 16 |
-| prefix | 0.95 | 4 | 16 |
-| hier | 0.94 | 1 | 16 |
-| rows | 0.94 | 1 | 16 |
-| clipmap | 0.94 | 1 | 16 |
-| bricks | 0.92 | 4 | 10 |
-| svo_dag | 0.92 | 2 | 16 |
-| tree64 | 0.90 | 1 | 16 |
+| prefix | 0.96 | 4 | 24 |
+| clipmap | 0.96 | 3 | 24 |
+| distance | 0.95 | 2 | 24 |
+| hier | 0.95 | 1 | 24 |
+| rows | 0.95 | 2 | 24 |
+| bricks | 0.94 | 5 | 15 |
+| tree64 | 0.93 | 4 | 24 |
+| svo_dag | 0.93 | 3 | 24 |
 
 **gpu · storage (image > shadow > storage; image > bounce > storage)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| distance | 0.93 | 3 | 8 |
-| prefix | 0.83 | 3 | 8 |
-| rows | 0.79 | 0 | 8 |
-| hier | 0.79 | 0 | 8 |
-| bricks | 0.77 | 0 | 8 |
-| clipmap | 0.71 | 0 | 8 |
-| tree64 | 0.70 | 2 | 8 |
-| svo_dag | 0.68 | 0 | 8 |
+| distance | 0.92 | 4 | 12 |
+| prefix | 0.86 | 4 | 12 |
+| rows | 0.84 | 0 | 12 |
+| hier | 0.83 | 0 | 12 |
+| bricks | 0.83 | 0 | 12 |
+| clipmap | 0.77 | 0 | 12 |
+| tree64 | 0.77 | 4 | 12 |
+| svo_dag | 0.74 | 0 | 12 |
 
 **gpu · traversal (image > bounce)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 14 | 16 |
-| incremental | 0.77 | 0 | 16 |
-| rowrun | 0.76 | 0 | 16 |
-| sphere | 0.66 | 2 | 16 |
+| refloor | 0.99 | 21 | 24 |
+| incremental | 0.82 | 0 | 24 |
+| rowrun | 0.81 | 0 | 24 |
+| sphere | 0.73 | 3 | 24 |
 
 **gpu · traversal (image > hits > faces > rays; image > shadow)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 40 | 48 |
-| incremental | 0.70 | 0 | 48 |
-| rowrun | 0.68 | 2 | 48 |
-| sphere | 0.67 | 6 | 48 |
+| refloor | 0.99 | 61 | 72 |
+| rowrun | 0.72 | 2 | 72 |
+| incremental | 0.71 | 0 | 72 |
+| sphere | 0.69 | 9 | 72 |
 
 **gpu · traversal (image > hits > faces > rays; image > shadow; image > bounce)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 84 | 96 |
-| incremental | 0.69 | 0 | 96 |
-| rowrun | 0.67 | 0 | 96 |
-| sphere | 0.65 | 12 | 96 |
+| refloor | 0.99 | 126 | 144 |
+| incremental | 0.69 | 0 | 144 |
+| rowrun | 0.68 | 0 | 144 |
+| sphere | 0.66 | 18 | 144 |
 
 **gpu · traversal (image > hits > meshes > shadow; image > shadow)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 1.00 | 124 | 144 |
-| rowrun | 0.80 | 5 | 144 |
-| incremental | 0.77 | 0 | 144 |
-| sphere | 0.74 | 15 | 144 |
+| refloor | 1.00 | 185 | 216 |
+| rowrun | 0.86 | 8 | 216 |
+| incremental | 0.81 | 0 | 216 |
+| sphere | 0.80 | 23 | 216 |
 
 **gpu · traversal (image > hits > meshes > shadow; image > shadow; image > bounce)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 126 | 144 |
-| rowrun | 0.61 | 0 | 144 |
-| incremental | 0.59 | 0 | 144 |
-| sphere | 0.55 | 18 | 144 |
+| refloor | 0.99 | 189 | 216 |
+| rowrun | 0.65 | 0 | 216 |
+| incremental | 0.64 | 0 | 216 |
+| sphere | 0.59 | 27 | 216 |
 
 **gpu · traversal (image > hits > primary; image > hits > meshes > shadow; image > shadow)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 28 | 32 |
-| rowrun | 0.75 | 0 | 32 |
-| incremental | 0.60 | 0 | 32 |
-| sphere | 0.53 | 4 | 32 |
+| refloor | 0.99 | 42 | 48 |
+| rowrun | 0.77 | 0 | 48 |
+| incremental | 0.63 | 0 | 48 |
+| sphere | 0.59 | 6 | 48 |
 
 **gpu · traversal (image > hits > primary; image > hits > meshes > shadow; image > shadow; image > bounce)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 55 | 64 |
-| rowrun | 0.69 | 1 | 64 |
-| incremental | 0.61 | 0 | 64 |
-| sphere | 0.52 | 8 | 64 |
+| refloor | 0.99 | 83 | 96 |
+| rowrun | 0.70 | 1 | 96 |
+| incremental | 0.64 | 0 | 96 |
+| sphere | 0.56 | 12 | 96 |
 
 **gpu · traversal (image > shadow)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 18 | 30 |
-| rowrun | 0.95 | 6 | 30 |
-| incremental | 0.90 | 4 | 30 |
-| sphere | 0.89 | 2 | 30 |
+| refloor | 0.99 | 23 | 45 |
+| rowrun | 0.96 | 11 | 45 |
+| incremental | 0.93 | 7 | 45 |
+| sphere | 0.92 | 4 | 45 |
 
 **gpu · traversal (image > shadow; image > bounce)**
 
 | component | geomean rel | wins | comparisons |
 |---|---:|---:|---:|
-| refloor | 0.99 | 14 | 16 |
-| rowrun | 0.73 | 0 | 16 |
-| incremental | 0.67 | 0 | 16 |
-| sphere | 0.63 | 2 | 16 |
+| refloor | 0.99 | 21 | 24 |
+| rowrun | 0.79 | 0 | 24 |
+| incremental | 0.73 | 0 | 24 |
+| sphere | 0.71 | 3 | 24 |
 
 ## Scenarios
+
+### far [lit]
+
+1920×1080. camera 4.78 blocks/frame (max 6.1), turn 0.52°/frame; 9141 chunks at start, 35.3 loads/frame; chunk fill 8%, solid 5.8%, surface 0.44%; sky 69%, hits at 465 blocks (median 455); 0.0 edits/frame; 0 lights; 0 mesh triangles.
+
+| # | renderer | rel | fps | frame p99 ms | gpu ms | cpu ms | psnr | bad pct | gpu mb | gpu device mb | peak rss mb | mem rel |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | gpu: bricks + refloor + composite + raycast + direct ◆ | 1.00 | 375.0 | 12.83 | 1.14 | 0.08 | 56.7 | 0.01 | 1045 | 1863 | 907 | 5.28 |
+| 2 | gpu: bricks + refloor + beam + composite + raycast + direct ◆ | 0.98 | 367.2 | 12.00 | 1.37 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 904 | 5.27 |
+| 3 | gpu: tree64 + refloor + composite + raycast + direct ◆ | 0.97 | 362.5 | 13.34 | 1.26 | 1.12 | 56.7 | 0.01 | 191 | 438 | 1078 | 2.89 |
+| 4 | gpu: prefix + refloor + composite + raycast + direct | 0.87 | 327.5 | 18.93 | 0.99 | 0.09 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 5 | gpu: bricks + rowrun + composite + raycast + direct | 0.87 | 326.3 | 13.11 | 1.66 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 903 | 5.27 |
+| 6 | gpu: tree64 + refloor + beam + composite + raycast + direct ◆ | 0.84 | 313.5 | 12.94 | 1.90 | 1.13 | 56.7 | 0.01 | 191 | 424 | 1075 | 2.86 |
+| 7 | gpu: bricks + rowrun + beam + composite + raycast + direct | 0.84 | 313.4 | 11.76 | 1.89 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 903 | 5.27 |
+| 8 | gpu: prefix + refloor + beam + composite + raycast + direct | 0.83 | 311.3 | 18.49 | 1.23 | 0.08 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 9 | gpu: hier + refloor + composite + raycast + direct | 0.82 | 309.0 | 19.81 | 1.04 | 0.08 | 56.7 | 0.01 | 1045 | 1863 | 914 | 5.29 |
+| 10 | gpu: hier + refloor + beam + composite + raycast + direct | 0.81 | 302.6 | 18.66 | 1.28 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 914 | 5.29 |
+| 11 | gpu: clipmap + refloor + composite + raycast + direct | 0.80 | 298.9 | 14.03 | 1.89 | 0.02 | 56.7 | 0.01 | 1239 | 1611 | 1020 | 5.01 |
+| 12 | gpu: prefix + rowrun + composite + raycast + direct | 0.80 | 298.9 | 20.06 | 1.31 | 0.10 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 13 | gpu: tree64 + incremental + composite + raycast + direct | 0.80 | 298.2 | 11.83 | 2.16 | 1.13 | 56.7 | 0.01 | 191 | 462 | 1073 | 2.92 |
+| 14 | gpu: rows + refloor + composite + raycast + direct | 0.79 | 296.2 | 20.20 | 1.14 | 0.08 | 56.7 | 0.01 | 1109 | 1895 | 907 | 5.34 |
+| 15 | gpu: prefix + rowrun + beam + composite + raycast + direct | 0.77 | 287.5 | 16.71 | 1.54 | 0.09 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 16 | gpu: svo_dag + refloor + composite + raycast + direct ◆ | 0.75 | 282.8 | 24.33 | 1.17 | 2.06 | 56.7 | 0.01 | 45 | 145 | 1191 | 2.54 |
+| 17 | gpu: rows + refloor + beam + composite + raycast + direct | 0.75 | 282.1 | 20.10 | 1.37 | 0.09 | 56.7 | 0.01 | 1109 | 1895 | 907 | 5.34 |
+| 18 | gpu: rows + rowrun + composite + raycast + direct | 0.75 | 281.0 | 19.89 | 1.36 | 0.08 | 56.7 | 0.01 | 1109 | 1895 | 907 | 5.34 |
+| 19 | gpu: bricks + sphere + composite + raycast + direct | 0.74 | 276.6 | 12.25 | 2.63 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 903 | 5.27 |
+| 20 | gpu: clipmap + rowrun + composite + raycast + direct | 0.73 | 273.0 | 12.59 | 2.30 | 0.03 | 56.7 | 0.01 | 1239 | 1611 | 1020 | 5.01 |
+| 21 | gpu: rows + rowrun + beam + composite + raycast + direct | 0.72 | 270.9 | 17.10 | 1.61 | 0.09 | 56.7 | 0.01 | 1109 | 1895 | 907 | 5.34 |
+| 22 | gpu: bricks + sphere + beam + composite + raycast + direct | 0.71 | 267.8 | 11.67 | 2.89 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 904 | 5.27 |
+| 23 | gpu: clipmap + incremental + composite + raycast + direct | 0.70 | 262.0 | 13.06 | 2.57 | 0.03 | 56.7 | 0.01 | 1239 | 1611 | 1020 | 5.01 |
+| 24 | gpu: bricks + refloor + quadtree + visbuffer + direct | 0.70 | 261.5 | 9.16 | 2.80 | 0.17 | 48.0 | 0.02 | 1235 | 2086 | 926 | 5.74 |
+| 25 | gpu: bricks + incremental + composite + raycast + direct | 0.70 | 260.8 | 12.45 | 2.87 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 903 | 5.27 |
+| 26 | gpu: tree64 + incremental + beam + composite + raycast + direct | 0.69 | 260.2 | 10.62 | 2.87 | 1.14 | 56.7 | 0.01 | 191 | 555 | 1073 | 3.10 |
+| 27 | gpu: bricks + refloor + quadtree + gbuffer + direct | 0.69 | 259.7 | 12.05 | 2.81 | 0.16 | 48.0 | 0.02 | 1243 | 2095 | 923 | 5.75 |
+| 28 | gpu: clipmap + refloor + beam + composite + raycast + direct | 0.69 | 258.0 | 10.35 | 2.74 | 0.03 | 56.7 | 0.01 | 1239 | 1611 | 1020 | 5.01 |
+| 29 | gpu: hier + rowrun + composite + raycast + direct | 0.68 | 253.4 | 16.79 | 2.16 | 0.08 | 56.7 | 0.01 | 1045 | 1863 | 914 | 5.29 |
+| 30 | gpu: svo_dag + refloor + beam + composite + raycast + direct | 0.67 | 249.8 | 23.70 | 1.80 | 2.10 | 56.7 | 0.01 | 45 | 145 | 1192 | 2.55 |
+| 31 | gpu: bricks + incremental + beam + composite + raycast + direct | 0.65 | 243.8 | 10.35 | 3.32 | 0.10 | 56.7 | 0.01 | 1045 | 1863 | 904 | 5.27 |
+| 32 | gpu: hier + rowrun + beam + composite + raycast + direct | 0.65 | 242.6 | 15.88 | 2.42 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 913 | 5.29 |
+| 33 | gpu: distance + sphere + composite + raycast + direct | 0.65 | 242.4 | 30.82 | 0.81 | 0.08 | 56.7 | 0.01 | 1557 | 2231 | 907 | 5.98 |
+| 34 | gpu: hier + sphere + composite + raycast + direct | 0.64 | 241.7 | 16.40 | 2.39 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 913 | 5.29 |
+| 35 | gpu: bricks + refloor + composite + raycast + pathtrace | 0.64 | 239.5 | 14.00 | 3.25 | 0.10 | 32.2 | 7.12 | 1076 | 1894 | 904 | 5.33 |
+| 36 | gpu: distance + refloor + composite + raycast + direct | 0.64 | 238.7 | 30.54 | 0.95 | 0.09 | 56.7 | 0.01 | 1557 | 2231 | 908 | 5.98 |
+| 37 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + direct | 0.63 | 236.8 | 10.13 | 3.26 | 0.18 | 48.4 | 0.02 | 1235 | 2086 | 931 | 5.75 |
+| 38 | gpu: tree64 + refloor + quadtree + gbuffer + direct | 0.63 | 236.4 | 11.31 | 3.22 | 1.23 | 48.0 | 0.02 | 389 | 665 | 1118 | 3.39 |
+| 39 | gpu: clipmap + rowrun + beam + composite + raycast + direct | 0.63 | 236.3 | 12.62 | 3.15 | 0.04 | 56.7 | 0.01 | 1239 | 1611 | 1016 | 5.00 |
+| 40 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + direct | 0.63 | 235.4 | 10.54 | 3.28 | 0.18 | 48.4 | 0.02 | 1243 | 2095 | 934 | 5.77 |
+| 41 | gpu: prefix + sphere + composite + raycast + direct | 0.63 | 235.2 | 15.36 | 2.64 | 0.09 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 42 | gpu: distance + sphere + beam + composite + raycast + direct | 0.62 | 232.9 | 30.51 | 1.06 | 0.09 | 56.7 | 0.01 | 1557 | 2231 | 907 | 5.98 |
+| 43 | gpu: hier + sphere + beam + composite + raycast + direct | 0.62 | 231.2 | 15.93 | 2.62 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 914 | 5.29 |
+| 44 | gpu: tree64 + refloor + quadtree + visbuffer + direct | 0.62 | 231.1 | 11.26 | 3.32 | 1.23 | 48.0 | 0.02 | 381 | 669 | 1135 | 3.43 |
+| 45 | gpu: bricks + refloor + beam + composite + raycast + pathtrace | 0.61 | 230.1 | 11.48 | 3.56 | 0.10 | 32.2 | 7.12 | 1076 | 1894 | 904 | 5.33 |
+| 46 | gpu: hier + refloor + quadtree + visbuffer + direct | 0.61 | 229.9 | 15.15 | 2.71 | 0.16 | 48.0 | 0.02 | 1235 | 2086 | 932 | 5.75 |
+| 47 | gpu: prefix + refloor + quadtree + gbuffer + direct | 0.61 | 229.6 | 13.56 | 2.67 | 0.17 | 48.0 | 0.02 | 1323 | 2139 | 929 | 5.84 |
+| 48 | gpu: rows + sphere + composite + raycast + direct | 0.61 | 228.0 | 16.73 | 2.63 | 0.09 | 56.7 | 0.01 | 1109 | 1895 | 907 | 5.34 |
+| 49 | gpu: prefix + refloor + composite + raycast + pathtrace | 0.61 | 227.4 | 15.49 | 2.90 | 0.09 | 32.2 | 7.12 | 1157 | 1939 | 908 | 5.42 |
+| 50 | gpu: tree64 + refloor + composite + raycast + pathtrace | 0.61 | 227.0 | 9.81 | 3.71 | 1.14 | 32.2 | 7.12 | 223 | 482 | 1073 | 2.96 |
+| 51 | gpu: clipmap + incremental + beam + composite + raycast + direct | 0.60 | 226.7 | 12.89 | 3.46 | 0.03 | 56.7 | 0.01 | 1239 | 1611 | 1021 | 5.01 |
+| 52 | gpu: prefix + refloor + quadtree + visbuffer + direct | 0.60 | 226.4 | 15.19 | 2.79 | 0.16 | 48.0 | 0.02 | 1315 | 2130 | 929 | 5.83 |
+| 53 | gpu: hier + refloor + composite + raycast + pathtrace | 0.60 | 225.3 | 15.33 | 2.90 | 0.09 | 32.2 | 7.12 | 1077 | 1894 | 914 | 5.35 |
+| 54 | gpu: distance + refloor + beam + composite + raycast + direct | 0.60 | 223.4 | 31.64 | 1.21 | 0.09 | 56.7 | 0.01 | 1557 | 2231 | 908 | 5.98 |
+| 55 | gpu: hier + refloor + quadtree + gbuffer + direct | 0.60 | 223.3 | 14.79 | 2.71 | 0.16 | 48.0 | 0.02 | 1243 | 2095 | 931 | 5.76 |
+| 56 | gpu: distance + rowrun + composite + raycast + direct | 0.59 | 222.9 | 30.95 | 1.29 | 0.09 | 56.7 | 0.01 | 1557 | 2231 | 908 | 5.98 |
+| 57 | gpu: tree64 + sphere + composite + raycast + direct | 0.59 | 222.6 | 9.26 | 3.80 | 1.15 | 56.7 | 0.01 | 191 | 453 | 1072 | 2.90 |
+| 58 | gpu: prefix + sphere + beam + composite + raycast + direct | 0.59 | 221.5 | 15.46 | 2.91 | 0.10 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 59 | gpu: clipmap + refloor + quadtree + gbuffer + direct | 0.58 | 219.2 | 12.20 | 3.55 | 0.11 | 48.0 | 0.02 | 1437 | 1846 | 1043 | 5.50 |
+| 60 | gpu: hier + incremental + composite + raycast + direct | 0.58 | 217.9 | 16.36 | 3.10 | 0.09 | 56.7 | 0.01 | 1045 | 1863 | 913 | 5.29 |
+| 61 | gpu: clipmap + refloor + quadtree + visbuffer + direct | 0.58 | 217.8 | 11.99 | 3.53 | 0.11 | 48.0 | 0.02 | 1429 | 1837 | 1043 | 5.49 |
+| 62 | gpu: bricks + rowrun + quadtree + gbuffer + direct | 0.58 | 217.0 | 9.96 | 3.94 | 0.18 | 48.0 | 0.02 | 1243 | 2095 | 935 | 5.77 |
+| 63 | gpu: rows + sphere + beam + composite + raycast + direct | 0.58 | 217.0 | 16.35 | 2.85 | 0.09 | 56.7 | 0.01 | 1109 | 1895 | 907 | 5.34 |
+| 64 | gpu: prefix + refloor + beam + composite + raycast + pathtrace | 0.58 | 216.6 | 16.47 | 3.09 | 0.10 | 32.2 | 7.12 | 1157 | 1939 | 908 | 5.42 |
+| 65 | gpu: rows + refloor + quadtree + gbuffer + direct | 0.58 | 216.5 | 14.48 | 2.80 | 0.16 | 48.0 | 0.02 | 1307 | 2127 | 929 | 5.82 |
+| 66 | gpu: prefix + incremental + composite + raycast + direct | 0.57 | 214.2 | 15.77 | 3.16 | 0.09 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 67 | gpu: hier + refloor + beam + composite + raycast + pathtrace | 0.57 | 213.8 | 15.29 | 3.16 | 0.10 | 32.2 | 7.12 | 1077 | 1894 | 914 | 5.35 |
+| 68 | gpu: bricks + rowrun + quadtree + visbuffer + direct | 0.57 | 212.6 | 10.93 | 3.93 | 0.18 | 48.0 | 0.02 | 1235 | 2086 | 935 | 5.75 |
+| 69 | gpu: distance + rowrun + beam + composite + raycast + direct | 0.57 | 212.3 | 30.29 | 1.54 | 0.09 | 56.7 | 0.01 | 1557 | 2231 | 907 | 5.98 |
+| 70 | gpu: clipmap + sphere + composite + raycast + direct | 0.56 | 209.7 | 13.26 | 3.76 | 0.03 | 56.7 | 0.01 | 1239 | 1611 | 1020 | 5.01 |
+| 71 | gpu: svo_dag + sphere + composite + raycast + direct | 0.56 | 208.9 | 22.50 | 3.00 | 2.09 | 56.7 | 0.01 | 45 | 145 | 1191 | 2.54 |
+| 72 | gpu: prefix + rowrun + quadtree + visbuffer + direct | 0.56 | 208.5 | 15.48 | 3.22 | 0.16 | 48.0 | 0.02 | 1315 | 2130 | 930 | 5.83 |
+| 73 | gpu: rows + refloor + quadtree + visbuffer + direct | 0.56 | 208.5 | 15.63 | 2.89 | 0.17 | 48.0 | 0.02 | 1299 | 2118 | 929 | 5.80 |
+| 74 | gpu: prefix + rowrun + quadtree + gbuffer + direct | 0.55 | 208.1 | 14.29 | 3.30 | 0.17 | 48.0 | 0.02 | 1323 | 2139 | 932 | 5.85 |
+| 75 | gpu: rows + rowrun + quadtree + gbuffer + direct | 0.55 | 207.5 | 16.40 | 3.17 | 0.16 | 48.0 | 0.02 | 1307 | 2127 | 930 | 5.82 |
+| 76 | gpu: boxes@cpu + rayquery + raycast + direct | 0.55 | 207.2 | 22.53 | 1.45 | 1.79 | 56.6 | 0.01 | 1138 | 1833 | 1608 | 6.55 |
+| 77 | gpu: bricks + sphere + quadtree + visbuffer + direct | 0.55 | 205.6 | 9.85 | 4.35 | 0.17 | 48.0 | 0.02 | 1235 | 2086 | 935 | 5.75 |
+| 78 | gpu: tree64 + refloor + beam + composite + raycast + pathtrace | 0.55 | 205.2 | 9.25 | 4.29 | 1.16 | 32.2 | 7.12 | 223 | 466 | 1075 | 2.93 |
+| 79 | gpu: rows + refloor + composite + raycast + pathtrace | 0.55 | 204.8 | 16.64 | 3.23 | 0.09 | 32.2 | 7.12 | 1140 | 1926 | 908 | 5.40 |
+| 80 | gpu: hier + incremental + beam + composite + raycast + direct | 0.55 | 204.4 | 16.26 | 3.34 | 0.10 | 56.7 | 0.01 | 1045 | 1863 | 913 | 5.29 |
+| 81 | gpu: bricks + sphere + quadtree + gbuffer + direct | 0.54 | 203.9 | 10.07 | 4.34 | 0.18 | 48.0 | 0.02 | 1243 | 2095 | 934 | 5.77 |
+| 82 | gpu: rows + rowrun + quadtree + visbuffer + direct | 0.54 | 201.2 | 16.66 | 3.17 | 0.17 | 48.0 | 0.02 | 1299 | 2118 | 929 | 5.80 |
+| 83 | gpu: clipmap + rowrun + quadtree + visbuffer + direct | 0.54 | 200.7 | 11.67 | 4.24 | 0.11 | 48.0 | 0.02 | 1429 | 1837 | 1048 | 5.49 |
+| 84 | gpu: svo_dag + rowrun + composite + raycast + direct ◆ | 0.54 | 200.7 | 21.93 | 3.28 | 2.09 | 56.7 | 0.01 | 45 | 145 | 1191 | 2.54 |
+| 85 | gpu: rows + refloor + beam + composite + raycast + pathtrace | 0.53 | 200.3 | 16.84 | 3.58 | 0.09 | 32.2 | 7.12 | 1140 | 1926 | 908 | 5.40 |
+| 86 | gpu: prefix + incremental + beam + composite + raycast + direct | 0.53 | 200.2 | 15.67 | 3.58 | 0.10 | 56.7 | 0.01 | 1125 | 1907 | 907 | 5.36 |
+| 87 | gpu: tree64 + rowrun + composite + raycast + direct | 0.53 | 199.8 | 8.92 | 4.41 | 1.14 | 56.7 | 0.01 | 191 | 568 | 1077 | 3.13 |
+| 88 | gpu: tree64 + sphere + beam + composite + raycast + direct | 0.53 | 199.7 | 9.42 | 4.44 | 1.15 | 56.7 | 0.01 | 191 | 456 | 1076 | 2.92 |
+| 89 | gpu: rows + incremental + composite + raycast + direct | 0.53 | 198.5 | 17.72 | 3.26 | 0.10 | 56.7 | 0.01 | 1109 | 1895 | 907 | 5.34 |
+| 90 | gpu: clipmap + rowrun + quadtree + gbuffer + direct | 0.53 | 198.2 | 11.93 | 4.23 | 0.11 | 48.0 | 0.02 | 1437 | 1846 | 1048 | 5.51 |
+| 91 | gpu: distance + sphere + composite + raycast + pathtrace | 0.52 | 195.0 | 23.46 | 2.35 | 0.09 | 32.2 | 7.12 | 1588 | 2262 | 908 | 6.04 |
+| 92 | gpu: clipmap + incremental + quadtree + visbuffer + direct | 0.52 | 193.3 | 11.37 | 4.53 | 0.11 | 48.0 | 0.02 | 1429 | 1837 | 1049 | 5.50 |
+| 93 | gpu: clipmap + sphere + beam + composite + raycast + direct | 0.51 | 191.7 | 11.68 | 4.64 | 0.04 | 56.7 | 0.01 | 1239 | 1611 | 1025 | 5.02 |
+| 94 | gpu: svo_dag + refloor + quadtree + gbuffer + direct | 0.51 | 191.0 | 22.41 | 3.42 | 2.16 | 48.0 | 0.02 | 243 | 378 | 1224 | 3.05 |
+| 95 | gpu: svo_dag + refloor + quadtree + visbuffer + direct | 0.51 | 190.6 | 23.11 | 3.42 | 2.17 | 48.0 | 0.02 | 235 | 370 | 1227 | 3.04 |
+| 96 | gpu: tree64 + incremental + quadtree + gbuffer + direct | 0.51 | 190.5 | 9.30 | 4.64 | 1.24 | 48.0 | 0.02 | 389 | 680 | 1131 | 3.45 |
+| 97 | gpu: svo_dag + sphere + beam + composite + raycast + direct | 0.51 | 190.3 | 22.48 | 3.62 | 2.12 | 56.7 | 0.01 | 45 | 145 | 1191 | 2.54 |
+| 98 | gpu: clipmap + incremental + quadtree + gbuffer + direct | 0.51 | 190.0 | 11.54 | 4.53 | 0.12 | 48.0 | 0.02 | 1437 | 1846 | 1048 | 5.51 |
+| 99 | gpu: tree64 + incremental + quadtree + visbuffer + direct | 0.51 | 189.7 | 9.45 | 4.64 | 1.24 | 48.0 | 0.02 | 381 | 652 | 1131 | 3.40 |
+| 100 | gpu: svo_dag + refloor + composite + raycast + pathtrace | 0.51 | 189.6 | 21.91 | 3.68 | 2.12 | 32.2 | 7.12 | 77 | 176 | 1194 | 2.61 |
+| 101 | gpu: rows + incremental + beam + composite + raycast + direct | 0.50 | 189.2 | 16.93 | 3.63 | 0.12 | 56.7 | 0.01 | 1109 | 1895 | 911 | 5.34 |
+| 102 | gpu: distance + sphere + quadtree + gbuffer + direct | 0.50 | 189.1 | 20.71 | 2.48 | 0.17 | 48.0 | 0.02 | 1755 | 2463 | 929 | 6.46 |
+| 103 | gpu: distance + sphere + beam + composite + raycast + pathtrace | 0.50 | 188.7 | 24.09 | 2.59 | 0.09 | 32.2 | 7.12 | 1588 | 2262 | 912 | 6.05 |
+| 104 | gpu: distance + sphere + quadtree + visbuffer + direct | 0.49 | 185.5 | 21.38 | 2.47 | 0.17 | 48.0 | 0.02 | 1747 | 2454 | 929 | 6.44 |
+| 105 | gpu: hier + sphere + quadtree + gbuffer + direct | 0.49 | 185.4 | 15.16 | 4.14 | 0.18 | 48.0 | 0.02 | 1243 | 2095 | 939 | 5.78 |
+| 106 | gpu: bricks + refloor + quadtree + raster + direct | 0.49 | 185.2 | 10.83 | 5.00 | 0.17 | 48.0 | 0.02 | 1227 | 2078 | 923 | 5.71 |
+| 107 | gpu: bricks + refloor + quadtree + visbuffer + pathtrace | 0.49 | 185.0 | 11.72 | 4.91 | 0.18 | 32.1 | 7.13 | 1266 | 2118 | 922 | 5.79 |
+| 108 | gpu: hier + rowrun + quadtree + visbuffer + direct | 0.49 | 184.5 | 14.17 | 4.19 | 0.17 | 48.0 | 0.02 | 1235 | 2086 | 935 | 5.75 |
+| 109 | gpu: svo_dag + incremental + composite + raycast + direct | 0.49 | 184.2 | 21.65 | 3.95 | 2.09 | 56.7 | 0.01 | 45 | 145 | 1195 | 2.55 |
+| 110 | gpu: bricks + refloor + quadtree + gbuffer + pathtrace | 0.49 | 184.0 | 9.86 | 5.07 | 0.17 | 32.1 | 7.13 | 1274 | 2126 | 927 | 5.81 |
+| 111 | gpu: distance + refloor + quadtree + visbuffer + direct | 0.49 | 183.4 | 23.84 | 2.71 | 0.17 | 48.0 | 0.02 | 1747 | 2454 | 930 | 6.44 |
+| 112 | gpu: hier + sphere + quadtree + visbuffer + direct | 0.49 | 181.9 | 16.11 | 4.15 | 0.17 | 48.0 | 0.02 | 1235 | 2086 | 935 | 5.75 |
+| 113 | gpu: bricks + incremental + quadtree + gbuffer + direct | 0.48 | 181.1 | 11.12 | 5.09 | 0.20 | 48.0 | 0.02 | 1243 | 2095 | 939 | 5.78 |
+| 114 | gpu: tree64 + rowrun + beam + composite + raycast + direct | 0.48 | 180.9 | 9.08 | 5.06 | 1.16 | 56.7 | 0.01 | 191 | 433 | 1074 | 2.87 |
+| 115 | gpu: distance + refloor + quadtree + gbuffer + direct | 0.48 | 180.8 | 23.08 | 2.71 | 0.17 | 48.0 | 0.02 | 1755 | 2463 | 929 | 6.46 |
+| 116 | gpu: prefix + rowrun + composite + raycast + pathtrace | 0.48 | 180.7 | 14.43 | 4.31 | 0.11 | 32.2 | 7.12 | 1157 | 1939 | 912 | 5.43 |
+| 117 | gpu: hier + rowrun + quadtree + gbuffer + direct | 0.48 | 180.0 | 15.31 | 4.19 | 0.17 | 48.0 | 0.02 | 1243 | 2095 | 935 | 5.77 |
+| 118 | gpu: prefix + rowrun + beam + composite + raycast + pathtrace | 0.48 | 179.4 | 13.86 | 4.54 | 0.10 | 32.2 | 7.12 | 1157 | 1939 | 912 | 5.43 |
+| 119 | gpu: prefix + sphere + quadtree + gbuffer + direct | 0.48 | 179.3 | 13.83 | 4.48 | 0.18 | 48.0 | 0.02 | 1323 | 2139 | 931 | 5.85 |
+| 120 | gpu: bricks + incremental + quadtree + visbuffer + direct | 0.48 | 179.1 | 13.87 | 5.15 | 0.17 | 48.0 | 0.02 | 1235 | 2086 | 935 | 5.75 |
+| 121 | gpu: svo_dag + rowrun + beam + composite + raycast + direct | 0.48 | 178.7 | 21.82 | 4.10 | 2.12 | 56.7 | 0.01 | 45 | 145 | 1195 | 2.55 |
+| 122 | gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 0.48 | 178.5 | 35.73 | 1.86 | 3.53 | 50.3 | 0.02 | 456 | 681 | 1127 | 3.44 |
+| 123 | gpu: prefix + sphere + quadtree + visbuffer + direct | 0.47 | 178.1 | 13.46 | 4.49 | 0.18 | 48.0 | 0.02 | 1315 | 2130 | 959 | 5.88 |
+| 124 | gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 0.47 | 178.0 | 34.72 | 1.85 | 3.53 | 50.3 | 0.02 | 464 | 679 | 1132 | 3.45 |
+| 125 | gpu: distance + refloor + composite + raycast + pathtrace | 0.47 | 177.9 | 24.96 | 2.87 | 0.10 | 32.2 | 7.12 | 1588 | 2262 | 920 | 6.06 |
+| 126 | gpu: prefix + refloor + quadtree + visbuffer + pathtrace | 0.47 | 177.9 | 14.05 | 4.55 | 0.18 | 32.1 | 7.13 | 1346 | 2162 | 950 | 5.93 |
+| 127 | gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + direct | 0.47 | 177.8 | 25.27 | 1.80 | 2.54 | 50.3 | 0.02 | 1318 | 1857 | 1133 | 5.69 |
+| 128 | gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + direct | 0.47 | 177.1 | 24.91 | 1.81 | 2.55 | 50.3 | 0.02 | 1310 | 1849 | 1133 | 5.68 |
+| 129 | gpu: hier + refloor + quadtree + visbuffer + pathtrace | 0.47 | 176.9 | 13.74 | 4.59 | 0.18 | 32.1 | 7.13 | 1267 | 2118 | 976 | 5.89 |
+| 130 | gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 0.47 | 176.4 | 34.08 | 1.91 | 3.55 | 50.3 | 0.02 | 464 | 674 | 1124 | 3.43 |
+| 131 | gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 0.47 | 175.9 | 24.53 | 1.88 | 2.55 | 50.3 | 0.02 | 1310 | 1849 | 1133 | 5.68 |
+| 132 | gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 0.47 | 175.1 | 34.58 | 1.99 | 3.51 | 50.3 | 0.02 | 456 | 664 | 1136 | 3.43 |
+| 133 | gpu: clipmap + refloor + composite + raycast + pathtrace | 0.47 | 174.5 | 12.13 | 5.35 | 0.03 | 32.2 | 7.12 | 1271 | 1643 | 1021 | 5.07 |
+| 134 | gpu: rows + sphere + quadtree + visbuffer + direct | 0.47 | 174.4 | 14.79 | 4.41 | 0.18 | 48.0 | 0.02 | 1299 | 2118 | 972 | 5.88 |
+| 135 | gpu: distance + refloor + beam + composite + raycast + pathtrace | 0.46 | 174.1 | 23.93 | 3.18 | 0.10 | 32.2 | 7.12 | 1588 | 2262 | 962 | 6.14 |
+| 136 | gpu: prefix + refloor + quadtree + gbuffer + pathtrace | 0.46 | 174.0 | 14.04 | 4.61 | 0.18 | 32.1 | 7.13 | 1354 | 2170 | 971 | 5.98 |
+| 137 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + pathtrace | 0.46 | 172.9 | 11.93 | 5.36 | 0.19 | 32.1 | 7.13 | 1266 | 2118 | 928 | 5.80 |
+| 138 | gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 0.46 | 172.7 | 26.20 | 1.87 | 2.58 | 50.3 | 0.02 | 1318 | 1857 | 1134 | 5.70 |
+| 139 | gpu: rows + sphere + quadtree + gbuffer + direct | 0.46 | 172.4 | 15.20 | 4.40 | 0.18 | 48.0 | 0.02 | 1307 | 2127 | 972 | 5.90 |
+| 140 | gpu: distance + rowrun + quadtree + visbuffer + direct | 0.46 | 172.4 | 24.13 | 3.17 | 0.17 | 48.0 | 0.02 | 1747 | 2454 | 971 | 6.52 |
+| 141 | gpu: prefix + refloor + quadtree + raster + direct | 0.46 | 172.1 | 15.07 | 4.69 | 0.17 | 48.0 | 0.02 | 1307 | 2122 | 975 | 5.90 |
+| 142 | gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 0.46 | 172.0 | 33.87 | 2.14 | 3.54 | 50.3 | 0.02 | 464 | 775 | 1135 | 3.64 |
+| 143 | gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 0.46 | 171.5 | 33.83 | 2.15 | 3.56 | 50.3 | 0.02 | 456 | 705 | 1133 | 3.50 |
+| 144 | gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 0.46 | 171.5 | 24.46 | 1.99 | 2.46 | 50.3 | 0.02 | 1512 | 1759 | 1298 | 5.82 |
+| 145 | gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 0.46 | 171.3 | 25.63 | 2.00 | 2.44 | 50.3 | 0.02 | 1505 | 1750 | 1298 | 5.80 |
+| 146 | gpu: svo_dag + refloor + beam + composite + raycast + pathtrace | 0.46 | 171.0 | 21.40 | 4.50 | 2.09 | 32.2 | 7.12 | 77 | 176 | 1196 | 2.61 |
+| 147 | gpu: hier + refloor + quadtree + gbuffer + pathtrace | 0.46 | 170.9 | 14.77 | 4.64 | 0.18 | 32.1 | 7.13 | 1274 | 2126 | 977 | 5.91 |
+| 148 | gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + direct | 0.45 | 170.5 | 22.87 | 2.18 | 2.58 | 50.3 | 0.02 | 1310 | 1849 | 1134 | 5.68 |
+| 149 | gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 0.45 | 170.0 | 24.38 | 2.06 | 2.44 | 50.3 | 0.02 | 1505 | 1750 | 1298 | 5.80 |
+| 150 | gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 0.45 | 169.9 | 24.40 | 2.04 | 2.46 | 50.3 | 0.02 | 1512 | 1759 | 1299 | 5.82 |
+| 151 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + direct | 0.45 | 169.7 | 10.67 | 5.49 | 0.17 | 48.5 | 0.02 | 1227 | 2078 | 928 | 5.72 |
+| 152 | gpu: clipmap + sphere + quadtree + gbuffer + direct | 0.45 | 169.3 | 13.56 | 5.40 | 0.11 | 48.0 | 0.02 | 1437 | 1846 | 1052 | 5.52 |
+| 153 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + pathtrace | 0.45 | 169.1 | 10.87 | 5.52 | 0.19 | 32.1 | 7.13 | 1274 | 2126 | 924 | 5.81 |
+| 154 | gpu: hier + refloor + quadtree + raster + direct | 0.45 | 169.0 | 14.66 | 4.81 | 0.17 | 48.0 | 0.02 | 1227 | 2078 | 977 | 5.82 |
+| 155 | gpu: distance + rowrun + quadtree + gbuffer + direct | 0.45 | 169.0 | 23.72 | 3.17 | 0.17 | 48.0 | 0.02 | 1755 | 2463 | 971 | 6.54 |
+| 156 | gpu: clipmap + sphere + quadtree + visbuffer + direct | 0.45 | 168.5 | 13.99 | 5.41 | 0.11 | 48.0 | 0.02 | 1429 | 1837 | 1048 | 5.49 |
+| 157 | gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + direct | 0.45 | 167.4 | 24.30 | 2.16 | 2.61 | 50.3 | 0.02 | 1318 | 1857 | 1134 | 5.70 |
+| 158 | gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 0.45 | 167.3 | 23.98 | 2.23 | 2.45 | 50.3 | 0.02 | 1505 | 1750 | 1302 | 5.81 |
+| 159 | gpu: svo_dag + incremental + beam + composite + raycast + direct | 0.45 | 167.1 | 21.98 | 4.63 | 2.13 | 56.7 | 0.01 | 45 | 145 | 1195 | 2.55 |
+| 160 | gpu: rows + rowrun + composite + raycast + pathtrace | 0.44 | 166.8 | 17.27 | 4.59 | 0.11 | 32.2 | 7.12 | 1140 | 1926 | 975 | 5.52 |
+| 161 | gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 0.44 | 166.8 | 25.08 | 2.22 | 2.47 | 50.3 | 0.02 | 1512 | 1759 | 1298 | 5.82 |
+| 162 | gpu: distance + incremental + composite + raycast + direct | 0.44 | 166.6 | 22.71 | 3.62 | 0.09 | 56.7 | 0.01 | 1557 | 2231 | 967 | 6.09 |
+| 163 | gpu: rows + rowrun + beam + composite + raycast + pathtrace | 0.44 | 166.2 | 16.23 | 4.84 | 0.10 | 32.2 | 7.12 | 1140 | 1926 | 963 | 5.50 |
+| 164 | gpu: prefix + incremental + quadtree + visbuffer + direct | 0.44 | 166.1 | 14.36 | 5.13 | 0.20 | 48.0 | 0.02 | 1315 | 2130 | 984 | 5.93 |
+| 165 | gpu: tree64 + refloor + quadtree + visbuffer + pathtrace | 0.44 | 166.1 | 9.65 | 5.53 | 1.27 | 32.1 | 7.13 | 413 | 684 | 1127 | 3.45 |
+| 166 | gpu: tree64 + refloor + quadtree + raster + direct | 0.44 | 165.9 | 10.27 | 5.55 | 1.24 | 48.0 | 0.02 | 373 | 638 | 1123 | 3.35 |
+| 167 | gpu: hier + incremental + quadtree + visbuffer + direct | 0.44 | 165.8 | 13.70 | 5.02 | 0.18 | 48.0 | 0.02 | 1235 | 2086 | 982 | 5.84 |
+| 168 | gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 0.44 | 165.6 | 23.33 | 2.50 | 3.57 | 50.3 | 0.02 | 464 | 899 | 1151 | 3.90 |
+| 169 | gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 0.44 | 165.2 | 26.49 | 2.45 | 3.59 | 50.3 | 0.02 | 456 | 688 | 1142 | 3.49 |
+| 170 | gpu: rows + refloor + quadtree + visbuffer + pathtrace | 0.44 | 165.0 | 15.41 | 4.89 | 0.17 | 32.1 | 7.13 | 1330 | 2150 | 970 | 5.94 |
+| 171 | gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + direct | 0.44 | 164.2 | 28.42 | 1.77 | 2.51 | 50.3 | 0.02 | 1398 | 1901 | 1129 | 5.77 |
+| 172 | gpu: tree64 + refloor + quadtree + gbuffer + pathtrace | 0.44 | 163.9 | 9.82 | 5.62 | 1.26 | 32.1 | 7.13 | 421 | 705 | 1127 | 3.49 |
+| 173 | gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 0.44 | 163.8 | 23.11 | 2.44 | 2.48 | 50.3 | 0.02 | 1512 | 1759 | 1297 | 5.82 |
+| 174 | gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + direct | 0.44 | 163.6 | 27.99 | 1.78 | 2.50 | 50.3 | 0.02 | 1390 | 1893 | 1134 | 5.76 |
+| 175 | gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 0.44 | 163.5 | 23.68 | 2.45 | 2.46 | 50.3 | 0.02 | 1505 | 1750 | 1302 | 5.81 |
+| 176 | gpu: hier + incremental + quadtree + gbuffer + direct | 0.44 | 163.3 | 14.82 | 5.08 | 0.19 | 48.0 | 0.02 | 1243 | 2095 | 982 | 5.86 |
+| 177 | gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 0.43 | 163.0 | 28.17 | 1.83 | 2.50 | 50.3 | 0.02 | 1390 | 1893 | 1129 | 5.75 |
+| 178 | gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 0.43 | 163.0 | 28.86 | 1.82 | 2.54 | 50.3 | 0.02 | 1398 | 1901 | 1129 | 5.77 |
+| 179 | gpu: rows + refloor + quadtree + raster + direct | 0.43 | 162.4 | 14.91 | 5.02 | 0.18 | 48.0 | 0.02 | 1291 | 2110 | 976 | 5.88 |
+| 180 | gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + direct | 0.43 | 161.7 | 29.83 | 1.80 | 2.48 | 50.3 | 0.02 | 1310 | 1849 | 1134 | 5.68 |
+| 181 | gpu: prefix + incremental + quadtree + gbuffer + direct | 0.43 | 161.6 | 15.07 | 5.21 | 0.18 | 48.0 | 0.02 | 1323 | 2139 | 981 | 5.94 |
+| 182 | gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + direct | 0.43 | 161.3 | 29.63 | 1.79 | 2.53 | 50.3 | 0.02 | 1318 | 1857 | 1134 | 5.70 |
+| 183 | gpu: rows + refloor + quadtree + gbuffer + pathtrace | 0.43 | 161.1 | 15.56 | 5.01 | 0.19 | 32.1 | 7.13 | 1338 | 2158 | 977 | 5.97 |
+| 184 | gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + direct | 0.43 | 160.7 | 28.27 | 1.86 | 2.50 | 50.3 | 0.02 | 1318 | 1857 | 1143 | 5.71 |
+| 185 | gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + direct | 0.43 | 160.5 | 28.88 | 1.87 | 2.52 | 50.3 | 0.02 | 1310 | 1849 | 1134 | 5.68 |
+| 186 | gpu: prefix + rowrun + quadtree + raster + direct | 0.43 | 160.0 | 16.63 | 5.41 | 0.17 | 48.0 | 0.02 | 1307 | 2122 | 981 | 5.91 |
+| 187 | gpu: tree64 + sphere + quadtree + visbuffer + direct | 0.43 | 159.9 | 10.47 | 5.76 | 1.27 | 48.0 | 0.02 | 381 | 788 | 1120 | 3.63 |
+| 188 | gpu: rows + incremental + quadtree + gbuffer + direct | 0.43 | 159.6 | 15.31 | 5.13 | 0.18 | 48.0 | 0.02 | 1307 | 2127 | 973 | 5.90 |
+| 189 | gpu: tree64 + sphere + quadtree + gbuffer + direct | 0.42 | 158.7 | 10.56 | 5.81 | 1.27 | 48.0 | 0.02 | 389 | 674 | 1140 | 3.45 |
+| 190 | gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + direct | 0.42 | 158.1 | 29.31 | 1.80 | 2.50 | 50.3 | 0.02 | 1382 | 1889 | 1127 | 5.75 |
+| 191 | gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + direct | 0.42 | 157.3 | 30.00 | 1.85 | 2.50 | 50.3 | 0.02 | 1382 | 1889 | 1128 | 5.75 |
+| 192 | gpu: bricks + rowrun + beam + composite + raycast + pathtrace | 0.42 | 157.3 | 12.82 | 6.07 | 0.10 | 32.2 | 7.12 | 1076 | 1894 | 960 | 5.44 |
+| 193 | gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + direct | 0.42 | 157.3 | 31.82 | 1.81 | 2.51 | 50.3 | 0.02 | 1374 | 1881 | 1127 | 5.73 |
+| 194 | gpu: rows + incremental + quadtree + visbuffer + direct | 0.42 | 157.1 | 15.82 | 5.21 | 0.18 | 48.0 | 0.02 | 1299 | 2118 | 977 | 5.89 |
+| 195 | gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + direct | 0.42 | 157.0 | 27.98 | 2.09 | 2.53 | 50.3 | 0.02 | 1318 | 1857 | 1136 | 5.70 |
+| 196 | gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + direct | 0.42 | 156.7 | 28.28 | 2.20 | 2.55 | 50.3 | 0.02 | 1390 | 1893 | 1132 | 5.76 |
+| 197 | gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + direct | 0.42 | 156.6 | 28.44 | 2.11 | 2.54 | 50.3 | 0.02 | 1310 | 1849 | 1134 | 5.68 |
+| 198 | gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + direct | 0.42 | 156.4 | 28.00 | 2.21 | 2.54 | 50.3 | 0.02 | 1398 | 1901 | 1129 | 5.77 |
+| 199 | gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + direct | 0.42 | 156.0 | 29.89 | 1.86 | 2.54 | 50.3 | 0.02 | 1374 | 1881 | 1127 | 5.73 |
+| 200 | gpu: distance + incremental + beam + composite + raycast + direct | 0.41 | 155.1 | 23.41 | 4.03 | 0.10 | 56.7 | 0.01 | 1557 | 2231 | 964 | 6.08 |
+| 201 | gpu: distance + sphere + quadtree + visbuffer + pathtrace | 0.41 | 154.1 | 21.83 | 4.00 | 0.18 | 32.1 | 7.13 | 1778 | 2486 | 973 | 6.59 |
+| 202 | gpu: clipmap + refloor + beam + composite + raycast + pathtrace | 0.41 | 154.1 | 11.20 | 6.20 | 0.04 | 32.2 | 7.12 | 1271 | 1643 | 1073 | 5.17 |
+| 203 | gpu: bricks + rowrun + composite + raycast + pathtrace | 0.41 | 153.5 | 10.33 | 6.29 | 0.10 | 32.2 | 7.12 | 1076 | 1894 | 977 | 5.47 |
+| 204 | gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 0.41 | 153.4 | 45.09 | 1.84 | 4.52 | 50.3 | 0.02 | 318 | 512 | 1294 | 3.44 |
+| 205 | gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 0.41 | 153.3 | 45.51 | 1.85 | 4.53 | 50.3 | 0.02 | 311 | 503 | 1251 | 3.34 |
+| 206 | gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 0.41 | 153.2 | 43.74 | 1.89 | 4.50 | 50.3 | 0.02 | 311 | 503 | 1274 | 3.38 |
+| 207 | gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 0.41 | 152.9 | 44.39 | 1.88 | 4.52 | 50.3 | 0.02 | 318 | 512 | 1284 | 3.42 |
+| 208 | gpu: distance + sphere + quadtree + gbuffer + pathtrace | 0.41 | 152.9 | 22.94 | 4.01 | 0.18 | 32.1 | 7.13 | 1786 | 2494 | 971 | 6.60 |
+| 209 | gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + direct | 0.41 | 152.5 | 28.72 | 2.15 | 2.53 | 50.3 | 0.02 | 1382 | 1889 | 1128 | 5.75 |
+| 210 | gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + direct | 0.41 | 152.3 | 28.21 | 3.22 | 2.60 | 50.3 | 0.02 | 1310 | 1849 | 1133 | 5.68 |
+| 211 | gpu: distance + sphere + quadtree + raster + direct | 0.41 | 152.2 | 21.53 | 4.42 | 0.17 | 48.0 | 0.02 | 1739 | 2446 | 971 | 6.51 |
+| 212 | gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + direct | 0.40 | 151.5 | 28.64 | 2.17 | 2.54 | 50.3 | 0.02 | 1374 | 1881 | 1137 | 5.75 |
+| 213 | gpu: naive@cpu + faces + bricks + refloor + depth + raster + direct | 0.40 | 151.4 | 28.90 | 3.32 | 2.60 | 50.4 | 0.02 | 1302 | 1840 | 1135 | 5.67 |
+| 214 | gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + direct | 0.40 | 151.3 | 23.91 | 3.21 | 2.64 | 50.3 | 0.02 | 1318 | 1857 | 1134 | 5.70 |
+| 215 | gpu: bricks + rowrun + quadtree + raster + direct | 0.40 | 150.8 | 10.47 | 6.36 | 0.18 | 48.0 | 0.02 | 1227 | 2078 | 976 | 5.82 |
+| 216 | gpu: rows + rowrun + quadtree + raster + direct | 0.40 | 150.6 | 16.75 | 5.71 | 0.17 | 48.0 | 0.02 | 1291 | 2110 | 983 | 5.89 |
+| 217 | gpu: prefix + rowrun + quadtree + visbuffer + pathtrace | 0.40 | 149.4 | 14.31 | 6.15 | 0.20 | 32.1 | 7.13 | 1346 | 2162 | 987 | 6.00 |
+| 218 | gpu: naive@cpu + faces + tree64 + refloor + depth + raster + direct | 0.40 | 149.4 | 21.51 | 3.52 | 3.57 | 50.4 | 0.02 | 448 | 698 | 1122 | 3.47 |
+| 219 | gpu: svo_dag + sphere + quadtree + visbuffer + direct | 0.40 | 148.9 | 21.68 | 5.41 | 2.17 | 48.0 | 0.02 | 235 | 370 | 1230 | 3.05 |
+| 220 | gpu: svo_dag + sphere + quadtree + gbuffer + direct | 0.40 | 148.4 | 22.27 | 5.40 | 2.19 | 48.0 | 0.02 | 243 | 378 | 1228 | 3.06 |
+| 221 | gpu: tree64 + incremental + composite + raycast + pathtrace | 0.40 | 148.4 | 9.00 | 6.46 | 1.17 | 32.2 | 7.12 | 223 | 606 | 1101 | 3.25 |
+| 222 | gpu: prefix + rowrun + quadtree + gbuffer + pathtrace | 0.39 | 147.8 | 16.87 | 6.15 | 0.18 | 32.1 | 7.13 | 1354 | 2170 | 986 | 6.01 |
+| 223 | gpu: naive@cpu + faces + bricks + rowrun + depth + raster + direct | 0.39 | 147.8 | 28.08 | 3.56 | 2.61 | 50.4 | 0.02 | 1302 | 1840 | 1134 | 5.66 |
+| 224 | gpu: distance + rowrun + composite + raycast + pathtrace | 0.39 | 147.7 | 20.07 | 4.67 | 0.10 | 32.2 | 7.12 | 1588 | 2262 | 977 | 6.17 |
+| 225 | gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + direct | 0.39 | 146.2 | 21.34 | 3.76 | 3.57 | 50.4 | 0.02 | 448 | 681 | 1129 | 3.45 |
+| 226 | gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 0.39 | 146.1 | 41.47 | 2.36 | 4.51 | 50.3 | 0.02 | 318 | 512 | 1317 | 3.48 |
+| 227 | gpu: tree64 + incremental + beam + composite + raycast + pathtrace | 0.39 | 145.4 | 9.32 | 6.59 | 1.19 | 32.2 | 7.12 | 223 | 451 | 1110 | 2.97 |
+| 228 | gpu: distance + refloor + quadtree + visbuffer + pathtrace | 0.39 | 145.3 | 20.68 | 4.57 | 0.18 | 32.1 | 7.13 | 1778 | 2486 | 971 | 6.58 |
+| 229 | gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 0.39 | 145.3 | 41.38 | 2.37 | 4.54 | 50.3 | 0.02 | 311 | 503 | 1264 | 3.37 |
+| 230 | gpu: clipmap + refloor + quadtree + raster + direct | 0.39 | 145.0 | 12.34 | 6.52 | 0.12 | 48.0 | 0.02 | 1421 | 1829 | 1093 | 5.57 |
+| 231 | gpu: distance + refloor + quadtree + gbuffer + pathtrace | 0.39 | 144.6 | 20.91 | 4.70 | 0.20 | 32.1 | 7.13 | 1786 | 2494 | 977 | 6.61 |
+| 232 | gpu: distance + rowrun + beam + composite + raycast + pathtrace | 0.38 | 144.1 | 21.49 | 4.84 | 0.11 | 32.2 | 7.12 | 1588 | 2262 | 970 | 6.16 |
+| 233 | gpu: distance + refloor + quadtree + raster + direct | 0.38 | 144.0 | 21.96 | 4.78 | 0.17 | 48.0 | 0.02 | 1739 | 2446 | 977 | 6.52 |
+| 234 | gpu: naive@cpu + faces + clipmap + refloor + depth + raster + direct | 0.38 | 143.3 | 22.53 | 3.75 | 2.51 | 50.4 | 0.02 | 1497 | 1742 | 1301 | 5.79 |
+| 235 | gpu: naive@cpu + faces + prefix + refloor + depth + raster + direct | 0.38 | 143.0 | 26.06 | 3.17 | 2.55 | 50.4 | 0.02 | 1382 | 1884 | 1129 | 5.74 |
+| 236 | gpu: rows + rowrun + quadtree + visbuffer + pathtrace | 0.38 | 142.6 | 17.33 | 6.25 | 0.21 | 32.1 | 7.13 | 1330 | 2150 | 984 | 5.97 |
+| 237 | gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 0.38 | 141.6 | 29.74 | 3.93 | 2.63 | 32.2 | 7.12 | 1342 | 1880 | 1135 | 5.74 |
+| 238 | gpu: svo_dag + refloor + quadtree + visbuffer + pathtrace | 0.38 | 141.5 | 22.39 | 5.83 | 2.20 | 32.1 | 7.13 | 267 | 401 | 1221 | 3.09 |
+| 239 | gpu: naive@cpu + faces + hier + refloor + depth + raster + direct | 0.38 | 141.3 | 26.98 | 3.25 | 2.55 | 50.4 | 0.02 | 1302 | 1840 | 1134 | 5.67 |
+| 240 | gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + direct | 0.38 | 141.3 | 28.11 | 3.25 | 2.57 | 50.3 | 0.02 | 1390 | 1893 | 1142 | 5.78 |
+| 241 | gpu: svo_dag + refloor + quadtree + raster + direct | 0.38 | 141.2 | 22.13 | 5.87 | 2.17 | 48.0 | 0.02 | 227 | 361 | 1229 | 3.03 |
+| 242 | gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 0.38 | 141.1 | 36.18 | 2.73 | 4.56 | 50.3 | 0.02 | 318 | 512 | 1294 | 3.44 |
+| 243 | gpu: naive@cpu + faces + prefix + rowrun + depth + raster + direct | 0.38 | 141.0 | 26.04 | 3.30 | 2.57 | 50.4 | 0.02 | 1382 | 1884 | 1128 | 5.74 |
+| 244 | gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + direct | 0.38 | 141.0 | 28.54 | 3.94 | 2.51 | 50.4 | 0.02 | 1497 | 1742 | 1302 | 5.80 |
+| 245 | gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 0.38 | 140.7 | 29.26 | 4.06 | 2.62 | 32.2 | 7.12 | 1350 | 1889 | 1134 | 5.76 |
+| 246 | gpu: rows + rowrun + quadtree + gbuffer + pathtrace | 0.38 | 140.7 | 16.70 | 6.33 | 0.19 | 32.1 | 7.13 | 1338 | 2158 | 984 | 5.99 |
+| 247 | gpu: hier + rowrun + quadtree + raster + direct | 0.37 | 140.6 | 18.46 | 6.41 | 0.20 | 48.0 | 0.02 | 1227 | 2078 | 986 | 5.83 |
+| 248 | gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + direct | 0.37 | 140.5 | 26.61 | 3.28 | 2.60 | 50.3 | 0.02 | 1398 | 1901 | 1128 | 5.77 |
+| 249 | gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 0.37 | 140.4 | 37.15 | 2.74 | 4.58 | 50.3 | 0.02 | 311 | 503 | 1270 | 3.38 |
+| 250 | gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + direct | 0.37 | 140.3 | 25.64 | 3.25 | 2.60 | 50.3 | 0.02 | 1318 | 1857 | 1134 | 5.70 |
+| 251 | gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + direct | 0.37 | 140.2 | 25.35 | 3.26 | 2.58 | 50.3 | 0.02 | 1310 | 1849 | 1133 | 5.68 |
+| 252 | gpu: naive@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 0.37 | 140.0 | 21.40 | 4.18 | 3.56 | 32.2 | 7.12 | 496 | 711 | 1133 | 3.51 |
+| 253 | gpu: svo_dag + refloor + quadtree + gbuffer + pathtrace | 0.37 | 139.8 | 21.99 | 5.90 | 2.21 | 32.1 | 7.13 | 275 | 410 | 1221 | 3.10 |
+| 254 | gpu: naive@cpu + faces + hier + rowrun + depth + raster + direct | 0.37 | 139.1 | 26.65 | 3.43 | 2.57 | 50.4 | 0.02 | 1302 | 1840 | 1135 | 5.67 |
+| 255 | gpu: naive@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 0.37 | 138.4 | 21.85 | 4.19 | 3.62 | 32.2 | 7.12 | 488 | 852 | 1134 | 3.78 |
+| 256 | gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + direct | 0.37 | 138.3 | 40.85 | 1.75 | 2.52 | 50.3 | 0.02 | 1830 | 2225 | 1129 | 6.39 |
+| 257 | gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + direct | 0.37 | 138.2 | 39.22 | 1.75 | 2.52 | 50.3 | 0.02 | 1822 | 2217 | 1128 | 6.37 |
+| 258 | gpu: naive@cpu + faces + rows + refloor + depth + raster + direct | 0.37 | 137.4 | 28.28 | 3.29 | 2.54 | 50.4 | 0.02 | 1366 | 1872 | 1129 | 5.72 |
+| 259 | gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + direct | 0.37 | 137.3 | 37.93 | 1.81 | 2.50 | 50.3 | 0.02 | 1830 | 2225 | 1128 | 6.39 |
+| 260 | gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + direct | 0.36 | 136.8 | 38.51 | 1.83 | 2.53 | 50.3 | 0.02 | 1822 | 2217 | 1129 | 6.37 |
+| 261 | gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + direct | 0.36 | 136.8 | 37.38 | 1.86 | 2.53 | 50.3 | 0.02 | 1822 | 2217 | 1128 | 6.37 |
+| 262 | gpu: naive@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 0.36 | 136.2 | 25.30 | 3.65 | 2.58 | 32.2 | 7.12 | 1422 | 1925 | 1129 | 5.82 |
+| 263 | gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + direct | 0.36 | 136.1 | 38.35 | 1.85 | 2.51 | 50.3 | 0.02 | 1830 | 2225 | 1133 | 6.40 |
+| 264 | gpu: clipmap + refloor + quadtree + visbuffer + pathtrace | 0.36 | 136.0 | 12.51 | 7.02 | 0.14 | 32.1 | 7.13 | 1461 | 1869 | 1094 | 5.64 |
+| 265 | gpu: naive@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 0.36 | 135.7 | 25.34 | 3.70 | 2.60 | 32.2 | 7.12 | 1430 | 1933 | 1129 | 5.83 |
+| 266 | gpu: clipmap + refloor + quadtree + gbuffer + pathtrace | 0.36 | 135.3 | 13.24 | 7.06 | 0.12 | 32.1 | 7.13 | 1469 | 1877 | 1089 | 5.65 |
+| 267 | gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + direct | 0.36 | 135.0 | 26.22 | 3.46 | 2.58 | 50.3 | 0.02 | 1382 | 1889 | 1129 | 5.75 |
+| 268 | gpu: naive@cpu + faces + rows + rowrun + depth + raster + direct | 0.36 | 134.9 | 27.97 | 3.50 | 2.56 | 50.4 | 0.02 | 1366 | 1872 | 1128 | 5.71 |
+| 269 | gpu: naive@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 0.36 | 134.7 | 26.67 | 3.71 | 2.59 | 32.2 | 7.12 | 1350 | 1889 | 1134 | 5.76 |
+| 270 | gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 0.36 | 134.6 | 59.68 | 0.97 | 5.96 | 48.8 | 0.02 | 336 | 582 | 1165 | 3.33 |
+| 271 | gpu: naive@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 0.36 | 134.4 | 26.83 | 3.66 | 2.61 | 32.2 | 7.12 | 1342 | 1880 | 1134 | 5.74 |
+| 272 | gpu: distance + rowrun + quadtree + raster + direct | 0.36 | 134.3 | 21.47 | 5.53 | 0.19 | 48.0 | 0.02 | 1739 | 2446 | 974 | 6.51 |
+| 273 | gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + direct | 0.36 | 134.0 | 27.50 | 3.48 | 2.58 | 50.3 | 0.02 | 1374 | 1881 | 1128 | 5.73 |
+| 274 | gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 0.36 | 133.8 | 58.57 | 1.02 | 5.95 | 48.8 | 0.02 | 336 | 565 | 1139 | 3.25 |
+| 275 | gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 0.36 | 133.8 | 59.58 | 1.03 | 5.95 | 48.7 | 0.02 | 328 | 569 | 1173 | 3.32 |
+| 276 | gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 0.36 | 133.2 | 60.69 | 0.99 | 6.01 | 48.7 | 0.02 | 328 | 554 | 1136 | 3.22 |
+| 277 | gpu: hier + rowrun + composite + raycast + pathtrace | 0.35 | 132.3 | 15.74 | 7.07 | 0.12 | 32.2 | 7.12 | 1077 | 1894 | 981 | 5.48 |
+| 278 | gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + direct | 0.35 | 131.8 | 40.16 | 0.93 | 5.07 | 48.8 | 0.02 | 1190 | 1857 | 1078 | 5.59 |
+| 279 | gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + direct | 0.35 | 131.6 | 41.32 | 0.93 | 5.07 | 48.7 | 0.02 | 1182 | 1849 | 1083 | 5.58 |
+| 280 | gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 0.35 | 131.3 | 40.96 | 1.00 | 5.08 | 48.8 | 0.02 | 1190 | 1857 | 1084 | 5.60 |
+| 281 | gpu: distance + incremental + quadtree + gbuffer + direct | 0.35 | 131.3 | 20.21 | 5.82 | 0.19 | 48.0 | 0.02 | 1755 | 2463 | 978 | 6.55 |
+| 282 | gpu: hier + sphere + composite + raycast + pathtrace | 0.35 | 131.3 | 16.10 | 7.21 | 0.10 | 32.2 | 7.12 | 1077 | 1894 | 978 | 5.47 |
+| 283 | gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + direct | 0.35 | 131.2 | 38.51 | 1.28 | 4.95 | 48.8 | 0.02 | 1190 | 1857 | 1078 | 5.59 |
+| 284 | gpu: naive@cpu + faces + bricks + sphere + depth + raster + direct | 0.35 | 131.1 | 22.63 | 4.86 | 2.62 | 50.4 | 0.02 | 1302 | 1840 | 1132 | 5.66 |
+| 285 | gpu: svo_dag + incremental + quadtree + gbuffer + direct | 0.35 | 130.6 | 22.25 | 6.52 | 2.21 | 48.0 | 0.02 | 243 | 378 | 1276 | 3.15 |
+| 286 | gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 0.35 | 130.6 | 58.35 | 1.27 | 5.98 | 48.7 | 0.02 | 328 | 585 | 1139 | 3.28 |
+| 287 | gpu: svo_dag + incremental + quadtree + visbuffer + direct | 0.35 | 130.5 | 22.62 | 6.57 | 2.18 | 48.0 | 0.02 | 235 | 370 | 1275 | 3.13 |
+| 288 | gpu: distance + rowrun + quadtree + visbuffer + pathtrace | 0.35 | 130.4 | 20.53 | 5.95 | 0.20 | 32.1 | 7.13 | 1778 | 2486 | 975 | 6.59 |
+| 289 | gpu: distance + incremental + quadtree + visbuffer + direct | 0.35 | 130.4 | 19.94 | 5.84 | 0.19 | 48.0 | 0.02 | 1747 | 2454 | 977 | 6.54 |
+| 290 | gpu: naive@cpu + faces + bricks + incremental + depth + raster + direct | 0.35 | 130.3 | 28.75 | 4.89 | 2.63 | 50.4 | 0.02 | 1302 | 1840 | 1134 | 5.66 |
+| 291 | gpu: rows + incremental + quadtree + raster + direct | 0.35 | 130.0 | 15.96 | 7.15 | 0.20 | 48.0 | 0.02 | 1291 | 2110 | 988 | 5.90 |
+| 292 | gpu: clipmap + rowrun + composite + raycast + pathtrace | 0.35 | 130.0 | 14.36 | 7.38 | 0.03 | 32.2 | 7.12 | 1271 | 1643 | 1094 | 5.21 |
+| 293 | gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 0.35 | 129.9 | 60.30 | 1.30 | 5.98 | 48.8 | 0.02 | 336 | 554 | 1156 | 3.26 |
+| 294 | gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 0.35 | 129.8 | 41.71 | 1.00 | 5.12 | 48.7 | 0.02 | 1182 | 1849 | 1084 | 5.59 |
+| 295 | gpu: svo_dag + rowrun + quadtree + visbuffer + direct | 0.35 | 129.7 | 22.33 | 6.58 | 2.22 | 48.0 | 0.02 | 235 | 370 | 1275 | 3.13 |
+| 296 | gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + direct | 0.35 | 129.5 | 36.91 | 3.67 | 4.57 | 50.4 | 0.02 | 303 | 495 | 1276 | 3.37 |
+| 297 | gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 0.34 | 129.2 | 41.18 | 1.16 | 4.87 | 48.8 | 0.02 | 1384 | 1605 | 1204 | 5.35 |
+| 298 | gpu: svo_dag + rowrun + quadtree + gbuffer + direct | 0.34 | 129.1 | 22.03 | 6.59 | 2.24 | 48.0 | 0.02 | 243 | 378 | 1275 | 3.15 |
+| 299 | gpu: naive@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 0.34 | 129.1 | 27.09 | 3.90 | 2.60 | 32.2 | 7.12 | 1406 | 1912 | 1129 | 5.79 |
+| 300 | gpu: naive@cpu + faces + tree64 + incremental + depth + raster + direct | 0.34 | 128.8 | 21.28 | 4.96 | 3.60 | 50.4 | 0.02 | 448 | 711 | 1124 | 3.49 |
+| 301 | gpu: hier + rowrun + beam + composite + raycast + pathtrace | 0.34 | 128.7 | 14.68 | 7.43 | 0.10 | 32.2 | 7.12 | 1077 | 1894 | 988 | 5.49 |
+| 302 | gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 0.34 | 128.5 | 40.81 | 1.20 | 4.89 | 48.8 | 0.02 | 1384 | 1605 | 1207 | 5.35 |
+| 303 | gpu: clipmap + incremental + composite + raycast + pathtrace | 0.34 | 128.3 | 12.99 | 7.53 | 0.05 | 32.2 | 7.12 | 1271 | 1643 | 1095 | 5.21 |
+| 304 | gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 0.34 | 128.3 | 41.14 | 1.18 | 4.90 | 48.7 | 0.02 | 1377 | 1597 | 1206 | 5.34 |
+| 305 | gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 0.34 | 128.2 | 41.13 | 1.19 | 4.90 | 48.7 | 0.02 | 1377 | 1597 | 1208 | 5.34 |
+| 306 | gpu: naive@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 0.34 | 128.2 | 28.24 | 3.99 | 2.60 | 32.2 | 7.12 | 1414 | 1921 | 1128 | 5.81 |
+| 307 | gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 0.34 | 127.8 | 58.54 | 1.56 | 5.95 | 48.7 | 0.02 | 328 | 542 | 1141 | 3.21 |
+| 308 | gpu: hier + sphere + beam + composite + raycast + pathtrace | 0.34 | 127.8 | 17.82 | 7.41 | 0.11 | 32.2 | 7.12 | 1077 | 1894 | 980 | 5.48 |
+| 309 | gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + direct | 0.34 | 127.5 | 35.17 | 3.88 | 4.55 | 50.4 | 0.02 | 303 | 495 | 1303 | 3.42 |
+| 310 | gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 0.34 | 127.2 | 58.68 | 1.58 | 5.98 | 48.8 | 0.02 | 336 | 562 | 1155 | 3.27 |
+| 311 | gpu: naive@cpu + faces + rows + incremental + depth + raster + direct | 0.34 | 127.2 | 26.62 | 4.20 | 2.59 | 50.4 | 0.02 | 1366 | 1872 | 1128 | 5.71 |
+| 312 | gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 0.34 | 127.1 | 39.47 | 1.37 | 4.87 | 48.8 | 0.02 | 1384 | 1605 | 1207 | 5.36 |
+| 313 | gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + direct | 0.34 | 127.0 | 40.21 | 1.31 | 5.08 | 48.7 | 0.02 | 1182 | 1849 | 1078 | 5.57 |
+| 314 | gpu: clipmap + rowrun + quadtree + raster + direct | 0.34 | 126.8 | 12.38 | 7.59 | 0.14 | 48.0 | 0.02 | 1421 | 1829 | 1092 | 5.56 |
+| 315 | gpu: hier + incremental + quadtree + raster + direct | 0.34 | 126.7 | 15.81 | 7.46 | 0.18 | 48.0 | 0.02 | 1227 | 2078 | 984 | 5.83 |
+| 316 | gpu: naive@cpu + faces + clipmap + incremental + depth + raster + direct | 0.34 | 126.7 | 26.93 | 5.15 | 2.52 | 50.4 | 0.02 | 1497 | 1742 | 1302 | 5.80 |
+| 317 | gpu: greedy@cpu + faces + bricks + refloor + depth + raster + direct | 0.34 | 126.4 | 38.12 | 1.60 | 5.03 | 48.8 | 0.02 | 1174 | 1840 | 1024 | 5.46 |
+| 318 | gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 0.34 | 126.4 | 39.93 | 1.40 | 4.88 | 48.7 | 0.02 | 1377 | 1597 | 1209 | 5.34 |
+| 319 | gpu: boxes@cpu + rayquery + raycast + pathtrace | 0.34 | 126.3 | 27.05 | 4.64 | 2.62 | 32.2 | 7.12 | 1169 | 1865 | 1680 | 6.75 |
+| 320 | gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + direct | 0.34 | 126.2 | 58.16 | 1.79 | 5.92 | 48.8 | 0.02 | 320 | 545 | 1101 | 3.13 |
+| 321 | gpu: naive@cpu + faces + hier + incremental + depth + raster + direct | 0.34 | 125.7 | 22.64 | 4.58 | 2.56 | 50.4 | 0.02 | 1302 | 1840 | 1133 | 5.66 |
+| 322 | gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 0.33 | 125.1 | 39.73 | 1.57 | 4.89 | 48.7 | 0.02 | 1377 | 1597 | 1205 | 5.34 |
+| 323 | gpu: naive@cpu + faces + hier + sphere + depth + raster + direct | 0.33 | 125.0 | 23.02 | 4.59 | 2.59 | 50.4 | 0.02 | 1302 | 1840 | 1134 | 5.66 |
+| 324 | gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + direct | 0.33 | 124.9 | 45.15 | 0.89 | 4.97 | 48.8 | 0.02 | 1270 | 1901 | 1077 | 5.67 |
+| 325 | gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + direct | 0.33 | 124.7 | 45.03 | 0.91 | 4.97 | 48.7 | 0.02 | 1262 | 1893 | 1078 | 5.66 |
+| 326 | gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 0.33 | 124.4 | 44.95 | 0.95 | 4.98 | 48.8 | 0.02 | 1270 | 1901 | 1084 | 5.69 |
+| 327 | gpu: naive@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 0.33 | 124.3 | 22.96 | 4.75 | 2.62 | 32.2 | 7.12 | 1430 | 1933 | 1129 | 5.83 |
+| 328 | gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + direct | 0.33 | 124.2 | 45.17 | 0.92 | 4.97 | 48.7 | 0.02 | 1182 | 1849 | 1079 | 5.58 |
+| 329 | gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 0.33 | 124.1 | 44.54 | 0.95 | 4.96 | 48.7 | 0.02 | 1262 | 1893 | 1083 | 5.67 |
+| 330 | gpu: naive@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 0.33 | 124.1 | 24.13 | 4.77 | 2.62 | 32.2 | 7.12 | 1422 | 1925 | 1129 | 5.82 |
+| 331 | gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 0.33 | 123.9 | 39.67 | 1.63 | 4.91 | 48.8 | 0.02 | 1384 | 1605 | 1205 | 5.35 |
+| 332 | gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + direct | 0.33 | 123.8 | 45.74 | 0.92 | 4.97 | 48.8 | 0.02 | 1190 | 1857 | 1078 | 5.59 |
+| 333 | gpu: bricks + incremental + quadtree + raster + direct | 0.33 | 123.6 | 11.38 | 7.84 | 0.20 | 48.0 | 0.02 | 1227 | 2078 | 1019 | 5.90 |
+| 334 | gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + direct | 0.33 | 123.5 | 38.16 | 1.80 | 5.05 | 48.8 | 0.02 | 1174 | 1840 | 1023 | 5.45 |
+| 335 | gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + direct | 0.33 | 123.4 | 57.13 | 2.02 | 5.95 | 48.8 | 0.02 | 320 | 564 | 1092 | 3.15 |
+| 336 | gpu: naive@cpu + faces + distance + sphere + depth + raster + direct | 0.33 | 123.2 | 35.92 | 3.16 | 2.53 | 50.4 | 0.02 | 1814 | 2208 | 1127 | 6.35 |
+| 337 | gpu: distance + rowrun + quadtree + gbuffer + pathtrace | 0.33 | 123.2 | 21.42 | 6.35 | 0.21 | 32.1 | 7.13 | 1786 | 2494 | 989 | 6.63 |
+| 338 | gpu: hier + incremental + composite + raycast + pathtrace | 0.33 | 123.2 | 15.74 | 7.75 | 0.13 | 32.2 | 7.12 | 1077 | 1894 | 988 | 5.49 |
+| 339 | gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + direct | 0.33 | 123.2 | 46.22 | 1.00 | 4.96 | 48.7 | 0.02 | 1182 | 1849 | 1081 | 5.58 |
+| 340 | gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + direct | 0.33 | 123.1 | 45.24 | 1.00 | 4.98 | 48.8 | 0.02 | 1190 | 1857 | 1081 | 5.60 |
+| 341 | gpu: naive@cpu + faces + prefix + sphere + depth + raster + direct | 0.33 | 122.6 | 29.80 | 4.94 | 2.59 | 50.4 | 0.02 | 1382 | 1884 | 1128 | 5.74 |
+| 342 | gpu: naive@cpu + faces + distance + refloor + depth + raster + direct | 0.33 | 122.6 | 36.15 | 3.24 | 2.54 | 50.4 | 0.02 | 1814 | 2208 | 1128 | 6.35 |
+| 343 | gpu: naive@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 0.33 | 122.6 | 21.72 | 5.49 | 2.58 | 32.2 | 7.12 | 1536 | 1782 | 1354 | 5.97 |
+| 344 | gpu: naive@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 0.33 | 122.2 | 21.80 | 5.48 | 2.57 | 32.2 | 7.12 | 1544 | 1790 | 1354 | 5.99 |
+| 345 | gpu: naive@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 0.33 | 122.1 | 34.98 | 4.31 | 4.60 | 32.2 | 7.12 | 342 | 535 | 1331 | 3.55 |
+| 346 | gpu: naive@cpu + faces + prefix + incremental + depth + raster + direct | 0.33 | 122.1 | 23.97 | 5.05 | 2.59 | 50.4 | 0.02 | 1382 | 1884 | 1128 | 5.74 |
+| 347 | gpu: naive@cpu + faces + clipmap + sphere + depth + raster + direct | 0.32 | 121.7 | 21.28 | 5.68 | 2.53 | 50.4 | 0.02 | 1497 | 1742 | 1302 | 5.80 |
+| 348 | gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + direct | 0.32 | 121.7 | 47.18 | 0.93 | 4.96 | 48.8 | 0.02 | 1254 | 1889 | 1077 | 5.65 |
+| 349 | gpu: bricks + rowrun + quadtree + visbuffer + pathtrace | 0.32 | 121.5 | 11.16 | 7.98 | 0.20 | 32.1 | 7.13 | 1266 | 2118 | 975 | 5.89 |
+| 350 | gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + direct | 0.32 | 121.3 | 38.47 | 2.03 | 4.86 | 48.8 | 0.02 | 1369 | 1588 | 1158 | 5.23 |
+| 351 | gpu: hier + incremental + beam + composite + raycast + pathtrace | 0.32 | 121.3 | 15.77 | 7.90 | 0.10 | 32.2 | 7.12 | 1077 | 1894 | 992 | 5.50 |
+| 352 | gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + direct | 0.32 | 121.3 | 44.36 | 1.23 | 4.96 | 48.8 | 0.02 | 1190 | 1857 | 1079 | 5.59 |
+| 353 | gpu: naive@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 0.32 | 121.3 | 35.67 | 4.37 | 4.62 | 32.2 | 7.12 | 350 | 543 | 1326 | 3.56 |
+| 354 | gpu: bricks + rowrun + quadtree + gbuffer + pathtrace | 0.32 | 121.3 | 11.37 | 8.00 | 0.19 | 32.1 | 7.13 | 1274 | 2126 | 975 | 5.91 |
+| 355 | gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + direct | 0.32 | 121.3 | 47.62 | 0.94 | 4.97 | 48.7 | 0.02 | 1246 | 1881 | 1077 | 5.63 |
+| 356 | gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + direct | 0.32 | 121.2 | 44.54 | 1.24 | 4.97 | 48.7 | 0.02 | 1182 | 1849 | 1079 | 5.58 |
+| 357 | gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + direct | 0.32 | 121.1 | 44.80 | 1.35 | 4.96 | 48.8 | 0.02 | 1270 | 1901 | 1077 | 5.67 |
+| 358 | gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + direct | 0.32 | 121.0 | 43.47 | 1.33 | 4.97 | 48.7 | 0.02 | 1262 | 1893 | 1079 | 5.66 |
+| 359 | gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + direct | 0.32 | 120.7 | 47.39 | 0.99 | 4.96 | 48.8 | 0.02 | 1254 | 1889 | 1078 | 5.65 |
+| 360 | gpu: naive@cpu + faces + rows + sphere + depth + raster + direct | 0.32 | 120.6 | 23.46 | 4.81 | 2.59 | 50.4 | 0.02 | 1366 | 1872 | 1129 | 5.72 |
+| 361 | gpu: naive@cpu + faces + distance + rowrun + depth + raster + direct | 0.32 | 120.5 | 36.45 | 3.43 | 2.55 | 50.4 | 0.02 | 1814 | 2208 | 1128 | 6.35 |
+| 362 | gpu: greedy@cpu + faces + prefix + refloor + depth + raster + direct | 0.32 | 120.5 | 42.09 | 1.54 | 4.93 | 48.8 | 0.02 | 1254 | 1884 | 1021 | 5.53 |
+| 363 | gpu: naive@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 0.32 | 120.5 | 36.09 | 3.32 | 2.60 | 32.2 | 7.12 | 1854 | 2248 | 1130 | 6.43 |
+| 364 | gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + direct | 0.32 | 120.5 | 37.65 | 2.16 | 4.84 | 48.8 | 0.02 | 1369 | 1588 | 1158 | 5.23 |
+| 365 | gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + direct | 0.32 | 120.5 | 47.35 | 0.98 | 4.97 | 48.7 | 0.02 | 1246 | 1881 | 1078 | 5.63 |
+| 366 | gpu: naive@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 0.32 | 120.3 | 35.69 | 3.31 | 2.59 | 32.2 | 7.12 | 1862 | 2257 | 1129 | 6.45 |
+| 367 | gpu: bricks + sphere + composite + raycast + pathtrace | 0.32 | 120.3 | 11.67 | 8.10 | 0.13 | 32.2 | 7.12 | 1076 | 1894 | 968 | 5.45 |
+| 368 | gpu: bricks + incremental + composite + raycast + pathtrace | 0.32 | 119.9 | 12.26 | 8.13 | 0.12 | 32.2 | 7.12 | 1076 | 1894 | 977 | 5.47 |
+| 369 | gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + direct | 0.32 | 119.3 | 41.70 | 1.65 | 4.93 | 48.8 | 0.02 | 1254 | 1884 | 1022 | 5.53 |
+| 370 | gpu: greedy@cpu + faces + hier + refloor + depth + raster + direct | 0.32 | 119.0 | 41.84 | 1.59 | 4.94 | 48.8 | 0.02 | 1174 | 1840 | 1023 | 5.45 |
+| 371 | gpu: rows + incremental + beam + composite + raycast + pathtrace | 0.32 | 119.0 | 17.77 | 7.97 | 0.14 | 32.2 | 7.12 | 1140 | 1926 | 988 | 5.55 |
+| 372 | gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + direct | 0.32 | 118.8 | 45.41 | 1.31 | 4.95 | 48.7 | 0.02 | 1246 | 1881 | 1081 | 5.64 |
+| 373 | gpu: clipmap + rowrun + beam + composite + raycast + pathtrace | 0.32 | 118.7 | 15.56 | 8.17 | 0.04 | 32.2 | 7.12 | 1271 | 1643 | 1098 | 5.22 |
+| 374 | gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + direct | 0.32 | 118.6 | 47.15 | 1.28 | 4.97 | 48.8 | 0.02 | 1254 | 1889 | 1077 | 5.65 |
+| 375 | gpu: naive@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 0.32 | 118.4 | 24.59 | 4.95 | 2.64 | 32.2 | 7.12 | 1414 | 1921 | 1129 | 5.81 |
+| 376 | gpu: naive@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 0.32 | 118.3 | 24.38 | 4.96 | 2.67 | 32.2 | 7.12 | 1406 | 1912 | 1146 | 5.82 |
+| 377 | gpu: naive@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 0.32 | 118.2 | 21.77 | 5.97 | 2.68 | 32.2 | 7.12 | 1342 | 1880 | 1133 | 5.74 |
+| 378 | gpu: greedy@cpu + faces + hier + rowrun + depth + raster + direct | 0.32 | 118.1 | 42.11 | 1.73 | 4.91 | 48.8 | 0.02 | 1174 | 1840 | 1023 | 5.45 |
+| 379 | gpu: bricks + incremental + beam + composite + raycast + pathtrace | 0.31 | 117.9 | 12.46 | 8.27 | 0.11 | 32.2 | 7.12 | 1076 | 1894 | 986 | 5.49 |
+| 380 | gpu: rows + sphere + composite + raycast + pathtrace | 0.31 | 117.8 | 17.89 | 8.12 | 0.13 | 32.2 | 7.12 | 1140 | 1926 | 975 | 5.53 |
+| 381 | gpu: naive@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 0.31 | 117.7 | 36.40 | 3.65 | 2.60 | 32.2 | 7.12 | 1854 | 2248 | 1128 | 6.43 |
+| 382 | gpu: naive@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 0.31 | 117.4 | 21.40 | 5.85 | 3.66 | 32.2 | 7.12 | 496 | 751 | 1145 | 3.61 |
+| 383 | gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + direct | 0.31 | 117.4 | 37.58 | 2.34 | 5.13 | 48.7 | 0.02 | 1182 | 1849 | 1081 | 5.58 |
+| 384 | gpu: naive@cpu + faces + tree64 + sphere + depth + raster + direct | 0.31 | 117.2 | 20.96 | 5.93 | 3.63 | 50.4 | 0.02 | 448 | 647 | 1140 | 3.40 |
+| 385 | gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 0.31 | 117.2 | 68.09 | 0.97 | 7.03 | 48.8 | 0.02 | 190 | 288 | 1272 | 2.97 |
+| 386 | gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 0.31 | 117.2 | 70.14 | 1.02 | 7.00 | 48.7 | 0.02 | 183 | 279 | 1275 | 2.96 |
+| 387 | gpu: tree64 + incremental + quadtree + gbuffer + pathtrace | 0.31 | 117.1 | 10.92 | 8.31 | 1.30 | 32.1 | 7.13 | 421 | 709 | 1191 | 3.62 |
+| 388 | gpu: naive@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 0.31 | 117.0 | 22.39 | 5.99 | 2.70 | 32.2 | 7.12 | 1350 | 1889 | 1174 | 5.83 |
+| 389 | gpu: naive@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 0.31 | 116.9 | 21.49 | 5.95 | 3.64 | 32.2 | 7.12 | 488 | 717 | 1155 | 3.57 |
+| 390 | gpu: tree64 + rowrun + quadtree + visbuffer + direct | 0.31 | 116.9 | 11.13 | 8.31 | 1.29 | 48.0 | 0.02 | 381 | 665 | 1181 | 3.51 |
+| 391 | gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 0.31 | 116.8 | 71.11 | 1.01 | 7.02 | 48.8 | 0.02 | 190 | 288 | 1272 | 2.97 |
+| 392 | gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + direct | 0.31 | 116.8 | 34.08 | 3.80 | 2.62 | 50.3 | 0.02 | 1830 | 2225 | 1128 | 6.39 |
+| 393 | gpu: naive@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 0.31 | 116.8 | 33.76 | 3.80 | 2.55 | 32.2 | 7.12 | 1862 | 2257 | 1129 | 6.45 |
+| 394 | gpu: tree64 + rowrun + quadtree + gbuffer + direct | 0.31 | 116.7 | 11.29 | 8.32 | 1.29 | 48.0 | 0.02 | 389 | 692 | 1179 | 3.56 |
+| 395 | gpu: greedy@cpu + faces + rows + refloor + depth + raster + direct | 0.31 | 116.6 | 43.60 | 1.63 | 4.93 | 48.8 | 0.02 | 1238 | 1872 | 1021 | 5.51 |
+| 396 | gpu: bricks + sphere + beam + composite + raycast + pathtrace | 0.31 | 116.5 | 11.19 | 8.38 | 0.12 | 32.2 | 7.12 | 1076 | 1894 | 974 | 5.46 |
+| 397 | gpu: prefix + sphere + composite + raycast + pathtrace | 0.31 | 116.5 | 16.94 | 8.28 | 0.13 | 32.2 | 7.12 | 1157 | 1939 | 978 | 5.56 |
+| 398 | gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + direct | 0.31 | 116.4 | 33.02 | 3.83 | 2.60 | 50.3 | 0.02 | 1822 | 2217 | 1168 | 6.45 |
+| 399 | gpu: prefix + incremental + quadtree + raster + direct | 0.31 | 116.3 | 14.21 | 8.27 | 0.18 | 48.0 | 0.02 | 1307 | 2122 | 994 | 5.93 |
+| 400 | gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 0.31 | 116.1 | 69.55 | 0.97 | 7.08 | 48.7 | 0.02 | 183 | 279 | 1273 | 2.96 |
+| 401 | gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + direct | 0.31 | 115.9 | 38.56 | 2.80 | 5.97 | 48.8 | 0.02 | 320 | 649 | 1089 | 3.31 |
+| 402 | gpu: tree64 + incremental + quadtree + visbuffer + pathtrace | 0.31 | 115.8 | 13.00 | 8.38 | 1.30 | 32.1 | 7.13 | 413 | 851 | 1187 | 3.88 |
+| 403 | gpu: prefix + sphere + beam + composite + raycast + pathtrace | 0.31 | 115.7 | 16.70 | 8.33 | 0.11 | 32.2 | 7.12 | 1157 | 1939 | 980 | 5.56 |
+| 404 | gpu: greedy@cpu + faces + rows + rowrun + depth + raster + direct | 0.31 | 115.1 | 41.62 | 1.80 | 4.93 | 48.8 | 0.02 | 1238 | 1872 | 1021 | 5.51 |
+| 405 | gpu: greedy@cpu + faces + bricks + sphere + depth + raster + direct | 0.31 | 114.9 | 36.70 | 2.73 | 5.09 | 48.8 | 0.02 | 1174 | 1840 | 1022 | 5.45 |
+| 406 | gpu: rows + sphere + beam + composite + raycast + pathtrace | 0.31 | 114.4 | 17.17 | 8.36 | 0.11 | 32.2 | 7.12 | 1140 | 1926 | 979 | 5.53 |
+| 407 | gpu: rows + incremental + composite + raycast + pathtrace | 0.30 | 114.2 | 16.44 | 8.34 | 0.11 | 32.2 | 7.12 | 1140 | 1926 | 982 | 5.54 |
+| 408 | gpu: prefix + incremental + composite + raycast + pathtrace | 0.30 | 114.1 | 15.56 | 8.46 | 0.10 | 32.2 | 7.12 | 1157 | 1939 | 988 | 5.57 |
+| 409 | gpu: prefix + incremental + beam + composite + raycast + pathtrace | 0.30 | 113.6 | 16.28 | 8.51 | 0.10 | 32.2 | 7.12 | 1157 | 1939 | 996 | 5.59 |
+| 410 | gpu: greedy@cpu + faces + bricks + incremental + depth + raster + direct | 0.30 | 113.0 | 42.00 | 2.74 | 5.10 | 48.8 | 0.02 | 1174 | 1840 | 1022 | 5.45 |
+| 411 | gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 0.30 | 112.3 | 68.62 | 1.45 | 7.08 | 48.8 | 0.02 | 190 | 288 | 1274 | 2.97 |
+| 412 | gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 0.30 | 112.3 | 70.16 | 1.45 | 7.06 | 48.7 | 0.02 | 183 | 279 | 1270 | 2.95 |
+| 413 | gpu: clipmap + incremental + beam + composite + raycast + pathtrace | 0.30 | 112.1 | 13.11 | 8.67 | 0.05 | 32.2 | 7.12 | 1271 | 1643 | 1102 | 5.23 |
+| 414 | gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + direct | 0.30 | 112.1 | 41.51 | 2.38 | 5.00 | 48.8 | 0.02 | 1270 | 1901 | 1082 | 5.68 |
+| 415 | gpu: hier + sphere + quadtree + raster + direct | 0.30 | 112.0 | 15.69 | 8.60 | 0.18 | 48.0 | 0.02 | 1227 | 2078 | 1024 | 5.91 |
+| 416 | gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + direct | 0.30 | 112.0 | 40.85 | 2.41 | 5.00 | 48.7 | 0.02 | 1262 | 1893 | 1082 | 5.66 |
+| 417 | gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + direct | 0.30 | 111.9 | 33.76 | 3.07 | 4.92 | 48.8 | 0.02 | 1369 | 1588 | 1158 | 5.23 |
+| 418 | gpu: greedy@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 0.30 | 111.8 | 35.25 | 3.31 | 6.00 | 32.1 | 7.13 | 368 | 625 | 1107 | 3.30 |
+| 419 | gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 0.30 | 111.4 | 38.65 | 3.07 | 5.15 | 32.1 | 7.13 | 1214 | 1880 | 1088 | 5.65 |
+| 420 | gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + direct | 0.30 | 111.4 | 65.22 | 1.87 | 6.95 | 48.8 | 0.02 | 175 | 271 | 1225 | 2.85 |
+| 421 | gpu: greedy@cpu + faces + hier + incremental + depth + raster + direct | 0.30 | 111.4 | 38.43 | 2.52 | 4.95 | 48.8 | 0.02 | 1174 | 1840 | 1023 | 5.45 |
+| 422 | gpu: greedy@cpu + faces + rows + incremental + depth + raster + direct | 0.30 | 111.2 | 41.36 | 2.29 | 4.94 | 48.8 | 0.02 | 1238 | 1872 | 1021 | 5.51 |
+| 423 | gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + direct | 0.30 | 111.1 | 40.74 | 2.38 | 5.02 | 48.7 | 0.02 | 1182 | 1849 | 1083 | 5.58 |
+| 424 | gpu: greedy@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 0.30 | 111.1 | 35.63 | 3.35 | 6.02 | 32.1 | 7.13 | 360 | 583 | 1095 | 3.20 |
+| 425 | gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + direct | 0.30 | 110.9 | 64.82 | 2.01 | 6.93 | 48.8 | 0.02 | 175 | 271 | 1224 | 2.85 |
+| 426 | gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + direct | 0.30 | 110.8 | 42.01 | 2.42 | 4.99 | 48.8 | 0.02 | 1190 | 1857 | 1083 | 5.60 |
+| 427 | gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 0.30 | 110.6 | 67.08 | 1.87 | 7.01 | 48.7 | 0.02 | 183 | 279 | 1278 | 2.97 |
+| 428 | gpu: greedy@cpu + faces + hier + sphere + depth + raster + direct | 0.29 | 110.5 | 39.96 | 2.58 | 4.96 | 48.8 | 0.02 | 1174 | 1840 | 1023 | 5.45 |
+| 429 | gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 0.29 | 110.3 | 70.18 | 1.86 | 7.02 | 48.8 | 0.02 | 190 | 288 | 1277 | 2.98 |
+| 430 | gpu: greedy@cpu + faces + prefix + sphere + depth + raster + direct | 0.29 | 110.0 | 39.77 | 2.81 | 4.94 | 48.8 | 0.02 | 1254 | 1884 | 1021 | 5.53 |
+| 431 | gpu: naive@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 0.29 | 109.9 | 32.17 | 4.62 | 2.62 | 32.2 | 7.12 | 1854 | 2248 | 1131 | 6.44 |
+| 432 | gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 0.29 | 109.8 | 39.68 | 3.21 | 5.17 | 32.1 | 7.13 | 1222 | 1889 | 1083 | 5.66 |
+| 433 | gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + direct | 0.29 | 109.8 | 34.47 | 3.38 | 4.90 | 48.8 | 0.02 | 1369 | 1588 | 1158 | 5.23 |
+| 434 | gpu: tree64 + incremental + quadtree + raster + direct | 0.29 | 109.8 | 11.61 | 8.90 | 1.28 | 48.0 | 0.02 | 373 | 913 | 1159 | 3.95 |
+| 435 | gpu: naive@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 0.29 | 109.7 | 20.91 | 6.93 | 2.52 | 32.2 | 7.12 | 1536 | 1782 | 1361 | 5.99 |
+| 436 | gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + direct | 0.29 | 109.5 | 57.40 | 0.88 | 4.97 | 48.7 | 0.02 | 1694 | 2217 | 1078 | 6.28 |
+| 437 | gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + direct | 0.29 | 109.5 | 56.22 | 0.91 | 4.96 | 48.8 | 0.02 | 1702 | 2225 | 1075 | 6.29 |
+| 438 | gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + direct | 0.29 | 109.3 | 35.12 | 3.51 | 6.01 | 48.8 | 0.02 | 320 | 558 | 1100 | 3.16 |
+| 439 | gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + direct | 0.29 | 109.2 | 34.98 | 5.60 | 4.59 | 50.4 | 0.02 | 303 | 495 | 1276 | 3.37 |
+| 440 | gpu: naive@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 0.29 | 109.1 | 20.91 | 6.94 | 2.56 | 32.2 | 7.12 | 1544 | 1790 | 1361 | 6.00 |
+| 441 | gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + direct | 0.29 | 109.0 | 56.43 | 0.96 | 4.97 | 48.8 | 0.02 | 1702 | 2225 | 1080 | 6.29 |
+| 442 | gpu: hier + sphere + quadtree + visbuffer + pathtrace | 0.29 | 108.9 | 15.29 | 8.88 | 0.24 | 32.1 | 7.13 | 1267 | 2118 | 1027 | 5.99 |
+| 443 | gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + direct | 0.29 | 108.8 | 56.60 | 0.87 | 4.99 | 48.8 | 0.02 | 1702 | 2225 | 1076 | 6.29 |
+| 444 | gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + direct | 0.29 | 108.5 | 57.22 | 0.93 | 4.97 | 48.7 | 0.02 | 1694 | 2217 | 1078 | 6.27 |
+| 445 | gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + direct | 0.29 | 108.5 | 56.37 | 0.96 | 4.97 | 48.7 | 0.02 | 1694 | 2217 | 1081 | 6.28 |
+| 446 | gpu: greedy@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 0.29 | 108.5 | 40.56 | 2.84 | 5.02 | 32.1 | 7.13 | 1294 | 1925 | 1022 | 5.61 |
+| 447 | gpu: hier + sphere + quadtree + gbuffer + pathtrace | 0.29 | 108.4 | 14.55 | 8.92 | 0.19 | 32.1 | 7.13 | 1274 | 2126 | 1027 | 6.01 |
+| 448 | gpu: greedy@cpu + faces + prefix + incremental + depth + raster + direct | 0.29 | 108.3 | 38.90 | 2.85 | 4.97 | 48.8 | 0.02 | 1254 | 1884 | 1021 | 5.53 |
+| 449 | gpu: greedy@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 0.29 | 108.2 | 37.54 | 2.88 | 5.01 | 32.1 | 7.13 | 1302 | 1933 | 1023 | 5.63 |
+| 450 | gpu: naive@cpu + faces + distance + incremental + depth + raster + direct | 0.29 | 107.7 | 30.48 | 4.98 | 2.59 | 50.4 | 0.02 | 1814 | 2208 | 1129 | 6.36 |
+| 451 | gpu: greedy@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 0.29 | 107.6 | 41.90 | 2.87 | 5.01 | 32.1 | 7.13 | 1222 | 1889 | 1083 | 5.66 |
+| 452 | gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + direct | 0.29 | 107.6 | 43.68 | 2.62 | 4.99 | 48.7 | 0.02 | 1246 | 1881 | 1082 | 5.64 |
+| 453 | gpu: clipmap + rowrun + quadtree + visbuffer + pathtrace | 0.29 | 107.1 | 14.41 | 9.05 | 0.15 | 32.1 | 7.13 | 1461 | 1869 | 1134 | 5.72 |
+| 454 | gpu: naive@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 0.28 | 106.7 | 20.53 | 7.29 | 2.56 | 32.2 | 7.12 | 1536 | 1782 | 1362 | 5.99 |
+| 455 | gpu: greedy@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 0.28 | 106.6 | 39.20 | 2.85 | 5.04 | 32.1 | 7.13 | 1214 | 1880 | 1084 | 5.65 |
+| 456 | gpu: naive@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 0.28 | 106.6 | 22.43 | 7.28 | 2.57 | 32.2 | 7.12 | 1544 | 1790 | 1362 | 6.00 |
+| 457 | gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + direct | 0.28 | 106.4 | 42.08 | 2.62 | 5.04 | 48.8 | 0.02 | 1254 | 1889 | 1080 | 5.66 |
+| 458 | gpu: clipmap + rowrun + quadtree + gbuffer + pathtrace | 0.28 | 106.3 | 14.74 | 9.13 | 0.14 | 32.1 | 7.13 | 1469 | 1877 | 1144 | 5.75 |
+| 459 | gpu: greedy@cpu + faces + distance + sphere + depth + raster + direct | 0.28 | 106.1 | 53.10 | 1.52 | 4.91 | 48.8 | 0.02 | 1686 | 2208 | 1021 | 6.15 |
+| 460 | gpu: naive@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 0.28 | 105.8 | 32.37 | 5.04 | 2.64 | 32.2 | 7.12 | 1862 | 2257 | 1128 | 6.45 |
+| 461 | gpu: distance + incremental + quadtree + raster + direct | 0.28 | 105.7 | 21.65 | 8.50 | 0.21 | 48.0 | 0.02 | 1739 | 2446 | 1029 | 6.62 |
+| 462 | gpu: hier + rowrun + quadtree + gbuffer + pathtrace | 0.28 | 105.6 | 15.60 | 9.17 | 0.20 | 32.1 | 7.13 | 1274 | 2126 | 1024 | 6.00 |
+| 463 | gpu: greedy@cpu + faces + distance + refloor + depth + raster + direct | 0.28 | 105.4 | 51.49 | 1.58 | 4.92 | 48.8 | 0.02 | 1686 | 2208 | 1022 | 6.15 |
+| 464 | gpu: naive@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 0.28 | 105.3 | 17.49 | 7.58 | 2.67 | 32.2 | 7.12 | 1342 | 1880 | 1133 | 5.74 |
+| 465 | gpu: naive@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 0.28 | 105.3 | 23.84 | 6.82 | 2.64 | 32.2 | 7.12 | 1350 | 1889 | 1135 | 5.76 |
+| 466 | gpu: naive@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 0.28 | 105.2 | 23.45 | 6.81 | 2.66 | 32.2 | 7.12 | 1342 | 1880 | 1134 | 5.74 |
+| 467 | gpu: hier + rowrun + quadtree + visbuffer + pathtrace | 0.28 | 105.1 | 16.19 | 9.19 | 0.21 | 32.1 | 7.13 | 1267 | 2118 | 1024 | 5.98 |
+| 468 | gpu: naive@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 0.28 | 105.0 | 23.51 | 6.86 | 2.65 | 32.2 | 7.12 | 1342 | 1880 | 1137 | 5.75 |
+| 469 | gpu: hier + incremental + quadtree + visbuffer + pathtrace | 0.28 | 105.0 | 14.80 | 9.23 | 0.19 | 32.1 | 7.13 | 1267 | 2118 | 1025 | 5.98 |
+| 470 | gpu: naive@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 0.28 | 104.5 | 25.42 | 6.86 | 2.63 | 32.2 | 7.12 | 1350 | 1889 | 1136 | 5.76 |
+| 471 | gpu: greedy@cpu + faces + rows + sphere + depth + raster + direct | 0.28 | 104.4 | 46.87 | 2.71 | 4.98 | 48.8 | 0.02 | 1238 | 1872 | 1021 | 5.51 |
+| 472 | gpu: hier + incremental + quadtree + gbuffer + pathtrace | 0.28 | 104.3 | 15.47 | 9.29 | 0.22 | 32.1 | 7.13 | 1274 | 2126 | 1024 | 6.00 |
+| 473 | gpu: greedy@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 0.28 | 103.8 | 40.21 | 3.05 | 5.04 | 32.1 | 7.13 | 1278 | 1912 | 1084 | 5.71 |
+| 474 | gpu: greedy@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 0.28 | 103.8 | 41.19 | 3.14 | 5.03 | 32.1 | 7.13 | 1286 | 1921 | 1081 | 5.72 |
+| 475 | gpu: greedy@cpu + faces + distance + rowrun + depth + raster + direct | 0.28 | 103.5 | 51.02 | 1.83 | 4.93 | 48.8 | 0.02 | 1686 | 2208 | 1022 | 6.15 |
+| 476 | gpu: rows + sphere + quadtree + raster + direct | 0.27 | 102.9 | 16.55 | 9.38 | 0.22 | 48.0 | 0.02 | 1291 | 2110 | 1025 | 5.97 |
+| 477 | gpu: clipmap + incremental + quadtree + raster + direct | 0.27 | 102.8 | 15.83 | 9.43 | 0.13 | 48.0 | 0.02 | 1421 | 1829 | 1142 | 5.66 |
+| 478 | gpu: rows + incremental + quadtree + visbuffer + pathtrace | 0.27 | 102.8 | 15.57 | 9.41 | 0.20 | 32.1 | 7.13 | 1330 | 2150 | 1021 | 6.04 |
+| 479 | gpu: svo_dag + sphere + composite + raycast + pathtrace | 0.27 | 102.8 | 21.83 | 9.16 | 2.15 | 32.2 | 7.12 | 77 | 176 | 1266 | 2.75 |
+| 480 | gpu: rows + incremental + quadtree + gbuffer + pathtrace | 0.27 | 102.6 | 15.99 | 9.43 | 0.21 | 32.1 | 7.13 | 1338 | 2158 | 1026 | 6.06 |
+| 481 | gpu: naive@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 0.27 | 102.5 | 17.73 | 8.01 | 2.72 | 32.2 | 7.12 | 1350 | 1889 | 1135 | 5.76 |
+| 482 | gpu: bricks + sphere + quadtree + raster + direct | 0.27 | 102.4 | 13.38 | 9.52 | 0.22 | 48.0 | 0.02 | 1227 | 2078 | 1023 | 5.91 |
+| 483 | gpu: naive@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 0.27 | 102.1 | 18.84 | 7.59 | 2.80 | 32.2 | 7.12 | 1350 | 1889 | 1136 | 5.76 |
+| 484 | gpu: naive@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 0.27 | 101.6 | 17.52 | 8.07 | 2.70 | 32.2 | 7.12 | 1342 | 1880 | 1134 | 5.74 |
+| 485 | gpu: clipmap + incremental + quadtree + gbuffer + pathtrace | 0.27 | 101.2 | 15.34 | 9.59 | 0.15 | 32.1 | 7.13 | 1469 | 1877 | 1144 | 5.75 |
+| 486 | gpu: clipmap + incremental + quadtree + visbuffer + pathtrace | 0.27 | 101.1 | 15.98 | 9.60 | 0.13 | 32.1 | 7.13 | 1461 | 1869 | 1141 | 5.73 |
+| 487 | gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + direct | 0.27 | 101.1 | 49.49 | 3.14 | 7.04 | 48.8 | 0.02 | 175 | 271 | 1231 | 2.86 |
+| 488 | gpu: greedy@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 0.27 | 100.6 | 38.99 | 3.93 | 5.04 | 32.1 | 7.13 | 1302 | 1933 | 1025 | 5.63 |
+| 489 | gpu: greedy@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 0.27 | 100.6 | 37.96 | 3.94 | 5.03 | 32.1 | 7.13 | 1294 | 1925 | 1026 | 5.62 |
+| 490 | gpu: naive@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 0.27 | 100.6 | 23.33 | 7.48 | 2.64 | 32.2 | 7.12 | 1342 | 1880 | 1138 | 5.75 |
+| 491 | gpu: naive@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 0.27 | 100.5 | 19.60 | 7.68 | 2.63 | 32.2 | 7.12 | 1430 | 1933 | 1128 | 5.83 |
+| 492 | gpu: naive@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 0.27 | 100.2 | 23.12 | 7.63 | 2.64 | 32.2 | 7.12 | 1422 | 1925 | 1130 | 5.82 |
+| 493 | gpu: naive@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 0.27 | 100.1 | 23.44 | 7.52 | 2.66 | 32.2 | 7.12 | 1350 | 1889 | 1138 | 5.76 |
+| 494 | gpu: greedy@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 0.27 | 99.6 | 49.85 | 3.47 | 7.06 | 32.1 | 7.13 | 222 | 319 | 1275 | 3.04 |
+| 495 | gpu: rows + sphere + quadtree + visbuffer + pathtrace | 0.27 | 99.6 | 16.43 | 9.73 | 0.20 | 32.1 | 7.13 | 1330 | 2150 | 1021 | 6.04 |
+| 496 | gpu: bricks + sphere + quadtree + visbuffer + pathtrace | 0.26 | 99.3 | 13.32 | 9.82 | 0.23 | 32.1 | 7.13 | 1266 | 2118 | 1023 | 5.98 |
+| 497 | gpu: greedy@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 0.26 | 99.3 | 50.57 | 3.45 | 7.06 | 32.1 | 7.13 | 214 | 311 | 1278 | 3.03 |
+| 498 | gpu: prefix + sphere + quadtree + raster + direct | 0.26 | 99.2 | 15.16 | 9.78 | 0.19 | 48.0 | 0.02 | 1307 | 2122 | 1022 | 5.99 |
+| 499 | gpu: bricks + sphere + quadtree + gbuffer + pathtrace | 0.26 | 99.2 | 13.79 | 9.84 | 0.23 | 32.1 | 7.13 | 1274 | 2126 | 1025 | 6.00 |
+| 500 | gpu: rows + sphere + quadtree + gbuffer + pathtrace | 0.26 | 99.1 | 16.78 | 9.76 | 0.20 | 32.1 | 7.13 | 1338 | 2158 | 1021 | 6.06 |
+| 501 | gpu: svo_dag + rowrun + quadtree + raster + direct | 0.26 | 99.1 | 22.21 | 9.41 | 2.24 | 48.0 | 0.02 | 227 | 361 | 1309 | 3.18 |
+| 502 | gpu: greedy@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 0.26 | 99.0 | 35.52 | 4.68 | 4.99 | 32.1 | 7.13 | 1416 | 1637 | 1212 | 5.42 |
+| 503 | gpu: greedy@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 0.26 | 98.8 | 38.05 | 4.69 | 5.01 | 32.1 | 7.13 | 1408 | 1628 | 1212 | 5.41 |
+| 504 | gpu: naive@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 0.26 | 98.8 | 24.50 | 7.51 | 2.65 | 32.2 | 7.12 | 1414 | 1921 | 1129 | 5.81 |
+| 505 | gpu: naive@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 0.26 | 98.7 | 24.43 | 7.51 | 2.64 | 32.2 | 7.12 | 1406 | 1912 | 1128 | 5.79 |
+| 506 | gpu: bricks + incremental + quadtree + gbuffer + pathtrace | 0.26 | 98.7 | 13.21 | 9.89 | 0.22 | 32.1 | 7.13 | 1274 | 2126 | 1023 | 6.00 |
+| 507 | gpu: greedy@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 0.26 | 98.5 | 48.55 | 2.45 | 5.00 | 32.1 | 7.13 | 1726 | 2248 | 1082 | 6.34 |
+| 508 | gpu: bricks + incremental + quadtree + visbuffer + pathtrace | 0.26 | 98.4 | 15.37 | 9.92 | 0.23 | 32.1 | 7.13 | 1266 | 2118 | 1023 | 5.98 |
+| 509 | gpu: greedy@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 0.26 | 98.1 | 51.05 | 2.46 | 5.05 | 32.1 | 7.13 | 1734 | 2257 | 1081 | 6.36 |
+| 510 | gpu: naive@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 0.26 | 98.0 | 23.23 | 8.05 | 2.61 | 32.2 | 7.12 | 1422 | 1925 | 1129 | 5.82 |
+| 511 | gpu: prefix + incremental + quadtree + visbuffer + pathtrace | 0.26 | 97.8 | 16.54 | 9.92 | 0.20 | 32.1 | 7.13 | 1346 | 2162 | 1025 | 6.07 |
+| 512 | gpu: greedy@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 0.26 | 97.7 | 34.56 | 5.06 | 6.05 | 32.1 | 7.13 | 368 | 710 | 1124 | 3.49 |
+| 513 | gpu: naive@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 0.26 | 97.4 | 24.11 | 7.74 | 2.66 | 32.2 | 7.12 | 1414 | 1921 | 1158 | 5.86 |
+| 514 | gpu: naive@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 0.26 | 97.3 | 24.36 | 7.74 | 2.65 | 32.2 | 7.12 | 1406 | 1912 | 1134 | 5.80 |
+| 515 | gpu: prefix + sphere + quadtree + visbuffer + pathtrace | 0.26 | 97.2 | 17.24 | 9.97 | 0.20 | 32.1 | 7.13 | 1346 | 2162 | 1022 | 6.06 |
+| 516 | gpu: naive@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 0.26 | 97.0 | 23.48 | 8.15 | 2.63 | 32.2 | 7.12 | 1430 | 1933 | 1129 | 5.83 |
+| 517 | gpu: prefix + sphere + quadtree + gbuffer + pathtrace | 0.26 | 97.0 | 15.03 | 10.01 | 0.19 | 32.1 | 7.13 | 1354 | 2170 | 1027 | 6.09 |
+| 518 | gpu: greedy@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 0.26 | 96.7 | 34.85 | 5.14 | 6.08 | 32.1 | 7.13 | 360 | 568 | 1108 | 3.19 |
+| 519 | gpu: greedy@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 0.26 | 96.7 | 41.94 | 4.12 | 5.08 | 32.1 | 7.13 | 1286 | 1921 | 1085 | 5.73 |
+| 520 | gpu: greedy@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 0.26 | 96.6 | 48.06 | 2.92 | 4.98 | 32.1 | 7.13 | 1734 | 2257 | 1023 | 6.25 |
+| 521 | gpu: prefix + incremental + quadtree + gbuffer + pathtrace | 0.26 | 96.6 | 17.20 | 10.04 | 0.21 | 32.1 | 7.13 | 1354 | 2170 | 1024 | 6.08 |
+| 522 | gpu: greedy@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 0.26 | 96.5 | 41.77 | 4.14 | 5.10 | 32.1 | 7.13 | 1278 | 1912 | 1087 | 5.71 |
+| 523 | gpu: greedy@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 0.26 | 96.3 | 50.26 | 2.82 | 5.04 | 32.1 | 7.13 | 1726 | 2248 | 1082 | 6.34 |
+| 524 | gpu: svo_dag + sphere + beam + composite + raycast + pathtrace | 0.26 | 96.2 | 22.16 | 9.82 | 2.20 | 32.2 | 7.12 | 77 | 176 | 1268 | 2.75 |
+| 525 | gpu: distance + incremental + composite + raycast + pathtrace | 0.26 | 96.2 | 21.08 | 9.68 | 0.11 | 32.2 | 7.12 | 1588 | 2262 | 984 | 6.18 |
+| 526 | gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + direct | 0.26 | 95.8 | 49.76 | 2.92 | 5.03 | 48.7 | 0.02 | 1694 | 2217 | 1080 | 6.28 |
+| 527 | gpu: greedy@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 0.25 | 95.6 | 37.16 | 5.19 | 5.19 | 32.1 | 7.13 | 1214 | 1880 | 1097 | 5.67 |
+| 528 | gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + direct | 0.25 | 95.5 | 49.48 | 2.99 | 5.02 | 48.8 | 0.02 | 1702 | 2225 | 1080 | 6.29 |
+| 529 | gpu: greedy@cpu + faces + distance + incremental + depth + raster + direct | 0.25 | 95.0 | 51.33 | 2.84 | 4.98 | 48.8 | 0.02 | 1686 | 2208 | 1022 | 6.15 |
+| 530 | gpu: distance + incremental + beam + composite + raycast + pathtrace | 0.25 | 94.7 | 21.99 | 9.86 | 0.11 | 32.2 | 7.12 | 1588 | 2262 | 988 | 6.19 |
+| 531 | gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + direct | 0.25 | 94.0 | 35.28 | 7.40 | 4.63 | 50.4 | 0.02 | 303 | 495 | 1292 | 3.40 |
+| 532 | gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + direct | 0.25 | 93.0 | 48.25 | 4.53 | 7.02 | 48.8 | 0.02 | 175 | 271 | 1230 | 2.86 |
+| 533 | gpu: greedy@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 0.24 | 91.1 | 35.06 | 6.07 | 5.04 | 32.1 | 7.13 | 1408 | 1628 | 1219 | 5.42 |
+| 534 | gpu: greedy@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 0.24 | 90.5 | 50.51 | 3.80 | 5.08 | 32.1 | 7.13 | 1726 | 2248 | 1088 | 6.35 |
+| 535 | gpu: greedy@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 0.24 | 89.8 | 38.51 | 6.20 | 5.06 | 32.1 | 7.13 | 1416 | 1637 | 1219 | 5.44 |
+| 536 | gpu: naive@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 0.24 | 89.7 | 18.72 | 9.92 | 2.60 | 32.2 | 7.12 | 1544 | 1790 | 1357 | 5.99 |
+| 537 | gpu: tree64 + rowrun + quadtree + raster + direct | 0.24 | 89.2 | 15.59 | 11.05 | 1.29 | 48.0 | 0.02 | 373 | 772 | 1235 | 3.82 |
+| 538 | gpu: naive@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 0.24 | 89.2 | 18.75 | 9.96 | 2.58 | 32.2 | 7.12 | 1536 | 1782 | 1358 | 5.98 |
+| 539 | gpu: greedy@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 0.24 | 89.1 | 34.96 | 6.44 | 5.03 | 32.1 | 7.13 | 1416 | 1637 | 1220 | 5.44 |
+| 540 | gpu: greedy@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 0.24 | 89.0 | 35.39 | 6.45 | 5.05 | 32.1 | 7.13 | 1408 | 1628 | 1220 | 5.42 |
+| 541 | gpu: clipmap + sphere + composite + raycast + pathtrace | 0.24 | 88.6 | 14.94 | 11.04 | 0.06 | 32.2 | 7.12 | 1271 | 1643 | 1093 | 5.21 |
+| 542 | gpu: greedy@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 0.24 | 88.5 | 48.93 | 4.20 | 5.09 | 32.1 | 7.13 | 1734 | 2257 | 1093 | 6.38 |
+| 543 | gpu: svo_dag + sphere + quadtree + raster + direct | 0.23 | 88.0 | 22.23 | 10.76 | 2.27 | 48.0 | 0.02 | 227 | 361 | 1325 | 3.21 |
+| 544 | gpu: greedy@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 0.23 | 87.7 | 30.98 | 6.84 | 5.15 | 32.1 | 7.13 | 1222 | 1889 | 1088 | 5.67 |
+| 545 | gpu: svo_dag + rowrun + composite + raycast + pathtrace | 0.23 | 87.6 | 22.41 | 10.91 | 2.20 | 32.2 | 7.12 | 77 | 176 | 1270 | 2.76 |
+| 546 | gpu: greedy@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 0.23 | 87.6 | 37.43 | 6.01 | 5.10 | 32.1 | 7.13 | 1222 | 1889 | 1088 | 5.67 |
+| 547 | gpu: naive@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 0.23 | 87.6 | 36.38 | 8.32 | 4.68 | 32.2 | 7.12 | 350 | 543 | 1343 | 3.59 |
+| 548 | gpu: greedy@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 0.23 | 87.6 | 38.18 | 6.03 | 5.12 | 32.1 | 7.13 | 1214 | 1880 | 1095 | 5.67 |
+| 549 | gpu: greedy@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 0.23 | 87.5 | 39.53 | 6.01 | 5.12 | 32.1 | 7.13 | 1214 | 1880 | 1089 | 5.66 |
+| 550 | gpu: tree64 + sphere + composite + raycast + pathtrace | 0.23 | 87.5 | 14.15 | 11.31 | 1.21 | 32.2 | 7.12 | 223 | 501 | 1111 | 3.07 |
+| 551 | gpu: naive@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 0.23 | 87.2 | 35.74 | 8.33 | 4.72 | 32.2 | 7.12 | 342 | 535 | 1348 | 3.59 |
+| 552 | gpu: greedy@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 0.23 | 87.1 | 30.04 | 6.76 | 5.25 | 32.1 | 7.13 | 1214 | 1880 | 1087 | 5.65 |
+| 553 | gpu: greedy@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 0.23 | 86.9 | 37.24 | 6.10 | 5.11 | 32.1 | 7.13 | 1222 | 1889 | 1094 | 5.68 |
+| 554 | gpu: greedy@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 0.23 | 86.7 | 63.75 | 5.14 | 6.07 | 32.1 | 7.13 | 1222 | 1889 | 1099 | 5.69 |
+| 555 | gpu: naive@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 0.23 | 86.6 | 20.99 | 9.59 | 3.71 | 32.2 | 7.12 | 496 | 711 | 1124 | 3.50 |
+| 556 | gpu: naive@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 0.23 | 86.4 | 21.43 | 9.62 | 3.70 | 32.2 | 7.12 | 488 | 814 | 1125 | 3.69 |
+| 557 | gpu: svo_dag + incremental + composite + raycast + pathtrace | 0.23 | 86.3 | 21.85 | 11.11 | 2.19 | 32.2 | 7.12 | 77 | 176 | 1273 | 2.76 |
+| 558 | gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 0.23 | 85.4 | 29.85 | 7.15 | 5.22 | 32.1 | 7.13 | 1222 | 1889 | 1098 | 5.69 |
+| 559 | gpu: tree64 + sphere + beam + composite + raycast + pathtrace | 0.23 | 85.1 | 14.32 | 11.62 | 1.20 | 32.2 | 7.12 | 223 | 607 | 1139 | 3.33 |
+| 560 | gpu: greedy@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 0.23 | 85.0 | 29.73 | 7.24 | 5.22 | 32.1 | 7.13 | 1214 | 1880 | 1098 | 5.67 |
+| 561 | gpu: greedy@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 0.23 | 84.7 | 36.07 | 6.84 | 5.04 | 32.1 | 7.13 | 1294 | 1925 | 1023 | 5.61 |
+| 562 | gpu: greedy@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 0.23 | 84.5 | 35.75 | 6.68 | 5.09 | 32.1 | 7.13 | 1222 | 1889 | 1095 | 5.68 |
+| 563 | gpu: greedy@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 0.23 | 84.4 | 37.19 | 6.64 | 5.14 | 32.1 | 7.13 | 1214 | 1880 | 1097 | 5.67 |
+| 564 | gpu: greedy@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 0.22 | 83.9 | 36.74 | 6.94 | 5.05 | 32.1 | 7.13 | 1302 | 1933 | 1023 | 5.63 |
+| 565 | gpu: svo_dag + rowrun + beam + composite + raycast + pathtrace | 0.22 | 83.7 | 23.43 | 11.46 | 2.20 | 32.2 | 7.12 | 77 | 176 | 1273 | 2.76 |
+| 566 | gpu: svo_dag + sphere + quadtree + visbuffer + pathtrace | 0.22 | 83.6 | 22.39 | 11.40 | 2.27 | 32.1 | 7.13 | 267 | 401 | 1324 | 3.29 |
+| 567 | gpu: distance + incremental + quadtree + gbuffer + pathtrace | 0.22 | 83.6 | 23.64 | 11.50 | 0.20 | 32.1 | 7.13 | 1786 | 2494 | 1056 | 6.76 |
+| 568 | gpu: distance + incremental + quadtree + visbuffer + pathtrace | 0.22 | 83.6 | 23.02 | 11.51 | 0.21 | 32.1 | 7.13 | 1778 | 2486 | 1059 | 6.75 |
+| 569 | gpu: svo_dag + sphere + quadtree + gbuffer + pathtrace | 0.22 | 83.5 | 22.71 | 11.41 | 2.29 | 32.1 | 7.13 | 275 | 410 | 1323 | 3.30 |
+| 570 | gpu: greedy@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 0.22 | 83.3 | 39.47 | 6.67 | 5.11 | 32.1 | 7.13 | 1278 | 1912 | 1087 | 5.71 |
+| 571 | gpu: greedy@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 0.22 | 83.2 | 38.26 | 6.70 | 5.12 | 32.1 | 7.13 | 1286 | 1921 | 1083 | 5.72 |
+| 572 | gpu: greedy@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 0.22 | 82.6 | 36.07 | 7.23 | 5.06 | 32.1 | 7.13 | 1294 | 1925 | 1025 | 5.62 |
+| 573 | gpu: greedy@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 0.22 | 82.6 | 36.45 | 7.25 | 5.07 | 32.1 | 7.13 | 1302 | 1933 | 1025 | 5.63 |
+| 574 | gpu: svo_dag + incremental + beam + composite + raycast + pathtrace | 0.22 | 82.6 | 23.34 | 11.61 | 2.20 | 32.2 | 7.12 | 77 | 176 | 1281 | 2.78 |
+| 575 | gpu: naive@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 0.22 | 82.6 | 35.75 | 9.12 | 4.71 | 32.2 | 7.12 | 350 | 543 | 1358 | 3.62 |
+| 576 | gpu: naive@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 0.22 | 82.5 | 35.71 | 9.15 | 4.71 | 32.2 | 7.12 | 342 | 535 | 1304 | 3.50 |
+| 577 | gpu: greedy@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 0.22 | 82.2 | 38.29 | 6.94 | 5.11 | 32.1 | 7.13 | 1278 | 1912 | 1094 | 5.73 |
+| 578 | gpu: greedy@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 0.22 | 82.2 | 38.36 | 6.94 | 5.12 | 32.1 | 7.13 | 1286 | 1921 | 1093 | 5.74 |
+| 579 | gpu: clipmap + sphere + beam + composite + raycast + pathtrace | 0.22 | 81.9 | 15.56 | 11.96 | 0.06 | 32.2 | 7.12 | 1271 | 1643 | 1096 | 5.22 |
+| 580 | gpu: naive@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 0.22 | 81.1 | 29.74 | 9.47 | 2.68 | 32.2 | 7.12 | 1862 | 2257 | 1141 | 6.47 |
+| 581 | gpu: naive@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 0.22 | 81.0 | 29.12 | 9.51 | 2.68 | 32.2 | 7.12 | 1854 | 2248 | 1129 | 6.43 |
+| 582 | gpu: greedy@cpu + faces + hier + refloor + depth + raster + pathtrace | 0.22 | 80.8 | 36.76 | 7.68 | 5.01 | 32.1 | 7.13 | 1206 | 1872 | 1029 | 5.52 |
+| 583 | gpu: greedy@cpu + faces + bricks + refloor + depth + raster + pathtrace | 0.22 | 80.8 | 29.63 | 8.31 | 5.17 | 32.1 | 7.13 | 1206 | 1872 | 1028 | 5.52 |
+| 584 | gpu: tree64 + sphere + quadtree + raster + direct | 0.21 | 80.5 | 17.06 | 12.26 | 1.31 | 48.0 | 0.02 | 373 | 674 | 1232 | 3.63 |
+| 585 | gpu: greedy@cpu + faces + prefix + refloor + depth + raster + pathtrace | 0.21 | 80.3 | 32.01 | 7.87 | 5.03 | 32.1 | 7.13 | 1286 | 1916 | 1027 | 5.60 |
+| 586 | gpu: clipmap + sphere + quadtree + raster + direct | 0.21 | 79.9 | 18.37 | 12.24 | 0.15 | 48.0 | 0.02 | 1421 | 1829 | 1152 | 5.68 |
+| 587 | gpu: naive@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 0.21 | 79.4 | 36.36 | 9.74 | 4.70 | 32.2 | 7.12 | 350 | 543 | 1337 | 3.58 |
+| 588 | gpu: naive@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 0.21 | 79.2 | 36.62 | 9.75 | 4.73 | 32.2 | 7.12 | 342 | 535 | 1317 | 3.53 |
+| 589 | gpu: greedy@cpu + faces + distance + sphere + depth + raster + pathtrace | 0.21 | 78.3 | 41.55 | 6.72 | 5.04 | 32.1 | 7.13 | 1718 | 2240 | 1027 | 6.22 |
+| 590 | gpu: greedy@cpu + faces + bricks + incremental + depth + gbuffer + direct | 0.21 | 78.3 | 93.95 | 2.43 | 7.88 | 48.8 | 0.02 | 1190 | 1857 | 1090 | 5.61 |
+| 591 | gpu: naive@cpu + faces + hier + refloor + depth + raster + pathtrace | 0.21 | 78.2 | 20.48 | 11.77 | 2.63 | 32.2 | 7.12 | 1334 | 1872 | 1136 | 5.73 |
+| 592 | gpu: naive@cpu + faces + distance + sphere + depth + raster + pathtrace | 0.21 | 77.7 | 29.40 | 10.51 | 2.60 | 32.2 | 7.12 | 1846 | 2240 | 1129 | 6.42 |
+| 593 | gpu: naive@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 0.21 | 77.5 | 21.11 | 11.28 | 3.70 | 32.2 | 7.12 | 496 | 836 | 1140 | 3.76 |
+| 594 | gpu: greedy@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 0.21 | 77.0 | 30.20 | 9.07 | 5.06 | 32.1 | 7.13 | 1416 | 1637 | 1221 | 5.44 |
+| 595 | gpu: greedy@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 0.21 | 77.0 | 30.13 | 9.09 | 5.05 | 32.1 | 7.13 | 1408 | 1628 | 1222 | 5.43 |
+| 596 | gpu: greedy@cpu + faces + rows + refloor + depth + raster + pathtrace | 0.21 | 76.9 | 33.43 | 8.37 | 5.03 | 32.1 | 7.13 | 1270 | 1904 | 1027 | 5.58 |
+| 597 | gpu: naive@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 0.20 | 76.3 | 21.23 | 11.50 | 3.73 | 32.2 | 7.12 | 488 | 742 | 1138 | 3.58 |
+| 598 | gpu: tree64 + sphere + quadtree + visbuffer + pathtrace | 0.20 | 76.3 | 16.89 | 12.95 | 1.32 | 32.1 | 7.13 | 413 | 904 | 1252 | 4.11 |
+| 599 | gpu: greedy@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 0.20 | 76.2 | 34.44 | 8.62 | 6.08 | 32.1 | 7.13 | 352 | 808 | 1103 | 3.64 |
+| 600 | gpu: tree64 + sphere + quadtree + gbuffer + pathtrace | 0.20 | 76.1 | 17.32 | 12.96 | 1.36 | 32.1 | 7.13 | 421 | 915 | 1247 | 4.12 |
+| 601 | gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + direct | 0.20 | 76.0 | 18.62 | 12.61 | 1.75 | 50.2 | 0.02 | 1398 | 1901 | 1059 | 5.64 |
+| 602 | gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + direct | 0.20 | 76.0 | 16.95 | 12.70 | 1.77 | 50.2 | 0.02 | 1318 | 1857 | 1087 | 5.61 |
+| 603 | gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + direct | 0.20 | 76.0 | 18.99 | 12.62 | 1.76 | 50.2 | 0.02 | 1390 | 1893 | 1060 | 5.62 |
+| 604 | gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + direct | 0.20 | 76.0 | 17.01 | 12.71 | 1.78 | 50.2 | 0.02 | 1310 | 1849 | 1078 | 5.57 |
+| 605 | gpu: clipmap + sphere + quadtree + visbuffer + pathtrace | 0.20 | 75.9 | 17.97 | 12.89 | 0.16 | 32.1 | 7.13 | 1461 | 1869 | 1164 | 5.78 |
+| 606 | gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + direct | 0.20 | 75.7 | 18.47 | 12.68 | 1.78 | 50.2 | 0.02 | 1390 | 1893 | 1060 | 5.62 |
+| 607 | gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + direct | 0.20 | 75.7 | 18.53 | 12.67 | 1.75 | 50.2 | 0.02 | 1398 | 1901 | 1060 | 5.64 |
+| 608 | gpu: naive@cpu + faces + prefix + refloor + depth + raster + pathtrace | 0.20 | 75.6 | 21.58 | 12.35 | 2.67 | 32.2 | 7.12 | 1414 | 1916 | 1130 | 5.80 |
+| 609 | gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + direct | 0.20 | 75.6 | 17.33 | 12.77 | 1.77 | 50.2 | 0.02 | 1310 | 1849 | 1096 | 5.61 |
+| 610 | gpu: clipmap + sphere + quadtree + gbuffer + pathtrace | 0.20 | 75.6 | 17.66 | 12.94 | 0.16 | 32.1 | 7.13 | 1469 | 1877 | 1162 | 5.79 |
+| 611 | gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + direct | 0.20 | 75.6 | 18.65 | 12.70 | 1.77 | 50.2 | 0.02 | 1310 | 1849 | 1075 | 5.57 |
+| 612 | gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + direct | 0.20 | 75.6 | 17.01 | 12.76 | 1.78 | 50.2 | 0.02 | 1318 | 1857 | 1104 | 5.64 |
+| 613 | gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + direct | 0.20 | 75.6 | 18.39 | 12.69 | 1.75 | 50.2 | 0.02 | 1318 | 1857 | 1113 | 5.66 |
+| 614 | gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + direct | 0.20 | 75.5 | 19.03 | 12.70 | 1.76 | 50.2 | 0.02 | 1382 | 1889 | 1066 | 5.63 |
+| 615 | gpu: greedy@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 0.20 | 75.4 | 49.15 | 7.58 | 7.16 | 32.1 | 7.13 | 222 | 319 | 1284 | 3.05 |
+| 616 | gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + direct | 0.20 | 75.4 | 18.48 | 12.71 | 1.75 | 50.2 | 0.02 | 1374 | 1881 | 1105 | 5.69 |
+| 617 | gpu: greedy@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 0.20 | 75.3 | 34.62 | 8.79 | 6.12 | 32.1 | 7.13 | 368 | 593 | 1097 | 3.22 |
+| 618 | gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + direct | 0.20 | 75.3 | 16.78 | 12.69 | 2.80 | 50.2 | 0.02 | 464 | 695 | 1092 | 3.40 |
+| 619 | gpu: greedy@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 0.20 | 75.3 | 49.71 | 7.56 | 7.16 | 32.1 | 7.13 | 214 | 311 | 1283 | 3.04 |
+| 620 | gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + direct | 0.20 | 75.2 | 18.74 | 12.76 | 1.75 | 50.2 | 0.02 | 1318 | 1857 | 1095 | 5.62 |
+| 621 | gpu: greedy@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 0.20 | 75.2 | 34.46 | 8.81 | 6.12 | 32.1 | 7.13 | 360 | 688 | 1100 | 3.41 |
+| 622 | gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + direct | 0.20 | 75.1 | 19.87 | 12.75 | 1.75 | 50.2 | 0.02 | 1374 | 1881 | 1110 | 5.70 |
+| 623 | gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + direct | 0.20 | 75.1 | 19.14 | 12.75 | 1.75 | 50.2 | 0.02 | 1382 | 1889 | 1111 | 5.71 |
+| 624 | gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + direct | 0.20 | 75.0 | 18.67 | 12.82 | 1.75 | 50.2 | 0.02 | 1310 | 1849 | 1064 | 5.55 |
+| 625 | gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + direct | 0.20 | 75.0 | 16.85 | 12.74 | 2.81 | 50.2 | 0.02 | 456 | 659 | 1173 | 3.49 |
+| 626 | gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + direct | 0.20 | 74.7 | 18.18 | 12.88 | 1.69 | 50.2 | 0.02 | 1512 | 1759 | 1279 | 5.78 |
+| 627 | gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + direct | 0.20 | 74.7 | 17.07 | 12.79 | 2.81 | 50.2 | 0.02 | 464 | 681 | 1160 | 3.50 |
+| 628 | gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + direct | 0.20 | 74.7 | 17.02 | 12.80 | 2.81 | 50.2 | 0.02 | 456 | 748 | 1170 | 3.65 |
+| 629 | gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + direct | 0.20 | 74.6 | 18.43 | 12.89 | 1.70 | 50.2 | 0.02 | 1505 | 1750 | 1283 | 5.78 |
+| 630 | gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + direct | 0.20 | 74.5 | 18.54 | 12.93 | 1.73 | 50.2 | 0.02 | 1512 | 1759 | 1287 | 5.80 |
+| 631 | gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + direct | 0.20 | 74.4 | 17.96 | 12.94 | 1.72 | 50.2 | 0.02 | 1505 | 1750 | 1288 | 5.79 |
+| 632 | gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace | 0.20 | 74.1 | 19.97 | 12.84 | 2.73 | 32.2 | 7.12 | 1334 | 1872 | 1134 | 5.73 |
+| 633 | gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + direct | 0.20 | 74.0 | 17.37 | 13.05 | 1.77 | 50.2 | 0.02 | 1318 | 1857 | 1072 | 5.58 |
+| 634 | gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + direct | 0.20 | 74.0 | 19.04 | 12.99 | 1.73 | 50.2 | 0.02 | 1318 | 1857 | 1082 | 5.60 |
+| 635 | gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + direct | 0.20 | 74.0 | 17.23 | 13.07 | 1.77 | 50.2 | 0.02 | 1310 | 1849 | 1090 | 5.60 |
+| 636 | gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + direct | 0.20 | 73.9 | 25.48 | 12.64 | 1.72 | 50.2 | 0.02 | 1822 | 2217 | 1116 | 6.35 |
+| 637 | gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + direct | 0.20 | 73.8 | 17.14 | 12.99 | 2.82 | 50.2 | 0.02 | 464 | 669 | 1092 | 3.35 |
+| 638 | gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + direct | 0.20 | 73.7 | 18.51 | 13.04 | 1.76 | 50.2 | 0.02 | 1390 | 1893 | 1059 | 5.62 |
+| 639 | gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + direct | 0.20 | 73.6 | 25.59 | 12.64 | 1.74 | 50.2 | 0.02 | 1830 | 2225 | 1075 | 6.28 |
+| 640 | gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + direct | 0.20 | 73.6 | 18.91 | 13.04 | 1.77 | 50.2 | 0.02 | 1398 | 1901 | 1059 | 5.64 |
+| 641 | gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + direct | 0.20 | 73.6 | 16.68 | 13.03 | 2.82 | 50.2 | 0.02 | 456 | 878 | 1168 | 3.90 |
+| 642 | gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + direct | 0.20 | 73.6 | 18.95 | 13.08 | 1.74 | 50.2 | 0.02 | 1310 | 1849 | 1065 | 5.55 |
+| 643 | gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + direct | 0.20 | 73.5 | 19.21 | 13.05 | 1.75 | 50.2 | 0.02 | 1382 | 1889 | 1084 | 5.66 |
+| 644 | gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + direct | 0.20 | 73.5 | 18.33 | 13.11 | 1.70 | 50.2 | 0.02 | 1512 | 1759 | 1288 | 5.80 |
+| 645 | gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + direct | 0.20 | 73.5 | 28.80 | 12.68 | 1.72 | 50.2 | 0.02 | 1830 | 2225 | 1091 | 6.32 |
+| 646 | gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + direct | 0.20 | 73.5 | 19.56 | 13.06 | 1.76 | 50.2 | 0.02 | 1374 | 1881 | 1116 | 5.71 |
+| 647 | gpu: naive@cpu + faces + rows + refloor + depth + raster + pathtrace | 0.20 | 73.5 | 22.94 | 12.70 | 2.66 | 32.2 | 7.12 | 1398 | 1904 | 1129 | 5.78 |
+| 648 | gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + direct | 0.20 | 73.4 | 25.69 | 12.71 | 1.71 | 50.2 | 0.02 | 1830 | 2225 | 1109 | 6.35 |
+| 649 | gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + direct | 0.20 | 73.4 | 25.76 | 12.72 | 1.71 | 50.2 | 0.02 | 1822 | 2217 | 1103 | 6.32 |
+| 650 | gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + direct | 0.20 | 73.4 | 18.26 | 13.12 | 1.69 | 50.2 | 0.02 | 1505 | 1750 | 1289 | 5.79 |
+| 651 | gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + direct | 0.20 | 73.3 | 25.78 | 12.73 | 1.73 | 50.2 | 0.02 | 1822 | 2217 | 1115 | 6.35 |
+| 652 | gpu: greedy@cpu + faces + distance + refloor + depth + raster + pathtrace | 0.20 | 73.1 | 41.35 | 8.01 | 5.05 | 32.1 | 7.13 | 1718 | 2240 | 1027 | 6.22 |
+| 653 | gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + direct | 0.19 | 72.3 | 18.61 | 13.33 | 1.72 | 50.2 | 0.02 | 1512 | 1759 | 1283 | 5.79 |
+| 654 | gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + direct | 0.19 | 72.3 | 18.23 | 13.34 | 1.72 | 50.2 | 0.02 | 1505 | 1750 | 1283 | 5.78 |
+| 655 | gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + direct | 0.19 | 72.3 | 17.20 | 13.31 | 2.79 | 50.2 | 0.02 | 464 | 798 | 1162 | 3.73 |
+| 656 | gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + direct | 0.19 | 72.2 | 16.94 | 13.33 | 2.82 | 50.2 | 0.02 | 456 | 688 | 1169 | 3.54 |
+| 657 | gpu: greedy@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 0.19 | 71.9 | 49.55 | 8.33 | 7.19 | 32.1 | 7.13 | 222 | 319 | 1289 | 3.06 |
+| 658 | gpu: greedy@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 0.19 | 71.9 | 48.88 | 8.30 | 7.21 | 32.1 | 7.13 | 214 | 311 | 1292 | 3.05 |
+| 659 | gpu: svo_dag + incremental + quadtree + gbuffer + pathtrace | 0.19 | 71.3 | 23.89 | 13.53 | 2.30 | 32.1 | 7.13 | 275 | 410 | 1346 | 3.34 |
+| 660 | gpu: svo_dag + incremental + quadtree + visbuffer + pathtrace | 0.19 | 71.0 | 23.58 | 13.58 | 2.31 | 32.1 | 7.13 | 267 | 401 | 1350 | 3.33 |
+| 661 | gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + direct | 0.19 | 70.9 | 28.43 | 12.74 | 3.77 | 50.2 | 0.02 | 311 | 503 | 1313 | 3.46 |
+| 662 | gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + direct | 0.19 | 70.9 | 28.40 | 12.73 | 3.80 | 50.2 | 0.02 | 318 | 512 | 1314 | 3.48 |
+| 663 | gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + direct | 0.19 | 70.7 | 28.89 | 12.77 | 3.78 | 50.2 | 0.02 | 311 | 503 | 1321 | 3.47 |
+| 664 | gpu: naive@cpu + faces + distance + refloor + depth + raster + pathtrace | 0.19 | 70.6 | 30.36 | 12.40 | 2.65 | 32.2 | 7.12 | 1846 | 2240 | 1130 | 6.42 |
+| 665 | gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + direct | 0.19 | 70.6 | 28.98 | 12.77 | 3.80 | 50.2 | 0.02 | 318 | 512 | 1317 | 3.48 |
+| 666 | gpu: greedy@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 0.19 | 70.5 | 42.55 | 8.67 | 5.13 | 32.1 | 7.13 | 1734 | 2257 | 1091 | 6.38 |
+| 667 | gpu: greedy@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 0.19 | 70.3 | 41.96 | 8.67 | 5.15 | 32.1 | 7.13 | 1726 | 2248 | 1093 | 6.36 |
+| 668 | gpu: greedy@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 0.19 | 70.1 | 29.88 | 11.00 | 4.98 | 32.1 | 7.13 | 1400 | 1620 | 1168 | 5.31 |
+| 669 | gpu: svo_dag + rowrun + quadtree + gbuffer + pathtrace | 0.19 | 69.6 | 23.63 | 13.87 | 2.32 | 32.1 | 7.13 | 275 | 410 | 1352 | 3.36 |
+| 670 | gpu: greedy@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 0.19 | 69.4 | 49.45 | 8.96 | 7.18 | 32.1 | 7.13 | 222 | 319 | 1296 | 3.08 |
+| 671 | gpu: tree64 + rowrun + beam + composite + raycast + pathtrace | 0.18 | 69.3 | 17.89 | 14.30 | 1.22 | 32.2 | 7.12 | 223 | 546 | 1156 | 3.24 |
+| 672 | gpu: greedy@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 0.18 | 69.3 | 49.69 | 8.95 | 7.21 | 32.1 | 7.13 | 214 | 311 | 1297 | 3.06 |
+| 673 | gpu: naive@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 0.18 | 69.1 | 21.37 | 13.21 | 3.70 | 32.2 | 7.12 | 480 | 695 | 1128 | 3.47 |
+| 674 | gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + direct | 0.18 | 69.0 | 29.65 | 13.17 | 3.80 | 50.2 | 0.02 | 318 | 512 | 1314 | 3.48 |
+| 675 | gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + direct | 0.18 | 69.0 | 28.44 | 13.19 | 3.78 | 50.2 | 0.02 | 311 | 503 | 1315 | 3.46 |
+| 676 | gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + direct | 0.18 | 68.8 | 18.63 | 14.10 | 1.78 | 50.2 | 0.02 | 1318 | 1857 | 1099 | 5.63 |
+| 677 | gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + direct | 0.18 | 68.7 | 18.63 | 14.11 | 1.79 | 50.2 | 0.02 | 1310 | 1849 | 1091 | 5.60 |
+| 678 | gpu: svo_dag + rowrun + quadtree + visbuffer + pathtrace | 0.18 | 68.7 | 23.24 | 14.06 | 2.31 | 32.1 | 7.13 | 267 | 401 | 1348 | 3.33 |
+| 679 | gpu: tree64 + rowrun + composite + raycast + pathtrace | 0.18 | 68.6 | 18.31 | 14.47 | 1.23 | 32.2 | 7.12 | 223 | 502 | 1129 | 3.11 |
+| 680 | gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + direct | 0.18 | 68.2 | 19.96 | 14.15 | 1.78 | 50.2 | 0.02 | 1318 | 1857 | 1090 | 5.61 |
+| 681 | gpu: greedy@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 0.18 | 68.2 | 34.59 | 10.47 | 6.14 | 32.1 | 7.13 | 368 | 597 | 1113 | 3.25 |
+| 682 | gpu: distance + sphere + quadtree + raster + pathtrace | 0.18 | 68.1 | 21.85 | 14.36 | 0.22 | 32.1 | 7.13 | 1770 | 2477 | 1042 | 6.70 |
+| 683 | gpu: greedy@cpu + faces + rows + rowrun + depth + raster + pathtrace | 0.18 | 68.1 | 32.21 | 11.01 | 5.03 | 32.1 | 7.13 | 1270 | 1904 | 1027 | 5.58 |
+| 684 | gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + direct | 0.18 | 67.6 | 20.30 | 14.30 | 1.80 | 50.2 | 0.02 | 1310 | 1849 | 1065 | 5.55 |
+| 685 | gpu: greedy@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 0.18 | 67.5 | 34.51 | 10.68 | 6.14 | 32.1 | 7.13 | 360 | 579 | 1091 | 3.18 |
+| 686 | gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + direct | 0.18 | 67.5 | 20.93 | 14.31 | 1.79 | 50.2 | 0.02 | 1398 | 1901 | 1060 | 5.64 |
+| 687 | gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + direct | 0.18 | 67.4 | 20.30 | 14.32 | 1.78 | 50.2 | 0.02 | 1390 | 1893 | 1059 | 5.62 |
+| 688 | gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + direct | 0.18 | 67.4 | 30.27 | 13.62 | 3.80 | 50.2 | 0.02 | 318 | 512 | 1323 | 3.49 |
+| 689 | gpu: cubes@cpu + faces + distance + sphere + depth + gbuffer + pathtrace | 0.18 | 67.3 | 28.13 | 14.16 | 1.75 | 32.2 | 7.12 | 1862 | 2257 | 1098 | 6.39 |
+| 690 | gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + direct | 0.18 | 67.3 | 29.13 | 13.62 | 3.81 | 50.2 | 0.02 | 311 | 503 | 1319 | 3.47 |
+| 691 | gpu: cubes@cpu + faces + distance + sphere + depth + visbuffer + pathtrace | 0.18 | 67.2 | 27.99 | 14.16 | 1.76 | 32.2 | 7.12 | 1854 | 2248 | 1106 | 6.39 |
+| 692 | gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + direct | 0.18 | 67.2 | 20.85 | 14.35 | 1.76 | 50.2 | 0.02 | 1382 | 1889 | 1119 | 5.73 |
+| 693 | gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + direct | 0.18 | 67.2 | 20.46 | 14.37 | 1.76 | 50.2 | 0.02 | 1374 | 1881 | 1092 | 5.66 |
+| 694 | gpu: svo_dag + incremental + quadtree + raster + direct | 0.18 | 67.1 | 24.27 | 14.41 | 2.32 | 48.0 | 0.02 | 227 | 361 | 1354 | 3.27 |
+| 695 | gpu: greedy@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 0.18 | 66.8 | 47.86 | 9.77 | 7.07 | 32.1 | 7.13 | 206 | 302 | 1235 | 2.93 |
+| 696 | gpu: cubes@cpu + faces + prefix + refloor + depth + visbuffer + pathtrace | 0.18 | 66.6 | 20.25 | 14.49 | 1.81 | 32.2 | 7.12 | 1422 | 1925 | 1060 | 5.68 |
+| 697 | gpu: cubes@cpu + faces + prefix + refloor + depth + gbuffer + pathtrace | 0.18 | 66.4 | 20.15 | 14.53 | 1.80 | 32.2 | 7.12 | 1430 | 1933 | 1061 | 5.70 |
+| 698 | gpu: cubes@cpu + faces + hier + refloor + depth + visbuffer + pathtrace | 0.18 | 66.4 | 20.56 | 14.55 | 1.78 | 32.2 | 7.12 | 1342 | 1880 | 1078 | 5.63 |
+| 699 | gpu: cubes@cpu + faces + hier + refloor + depth + gbuffer + pathtrace | 0.18 | 66.3 | 20.88 | 14.59 | 1.79 | 32.2 | 7.12 | 1350 | 1889 | 1104 | 5.70 |
+| 700 | gpu: greedy@cpu + rayquery + raycast + direct | 0.18 | 65.7 | 126.32 | 1.59 | 10.48 | 56.7 | 0.01 | 778 | 2526 | 2502 | 9.58 |
+| 701 | gpu: cubes@cpu + faces + distance + refloor + depth + visbuffer + pathtrace | 0.18 | 65.6 | 28.75 | 14.56 | 1.76 | 32.2 | 7.12 | 1854 | 2248 | 1099 | 6.38 |
+| 702 | gpu: greedy@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 0.17 | 65.6 | 31.70 | 12.01 | 5.04 | 32.1 | 7.13 | 1286 | 1916 | 1027 | 5.61 |
+| 703 | gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 0.17 | 65.6 | 19.08 | 14.81 | 1.81 | 32.2 | 7.12 | 1342 | 1880 | 1106 | 5.69 |
+| 704 | gpu: points@cpu + splat + tree64 + refloor + direct | 0.17 | 65.6 | 86.71 | 3.32 | 1.18 | 56.0 | 0.01 | 886 | 1256 | 1727 | 5.68 |
+| 705 | gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + direct | 0.17 | 65.3 | 28.26 | 14.67 | 1.76 | 50.2 | 0.02 | 1830 | 2225 | 1076 | 6.29 |
+| 706 | gpu: cubes@cpu + faces + rows + refloor + depth + visbuffer + pathtrace | 0.17 | 65.3 | 20.49 | 14.79 | 1.80 | 32.2 | 7.12 | 1406 | 1912 | 1105 | 5.75 |
+| 707 | gpu: cubes@cpu + faces + distance + refloor + depth + gbuffer + pathtrace | 0.17 | 65.3 | 28.74 | 14.65 | 1.77 | 32.2 | 7.12 | 1862 | 2257 | 1082 | 6.36 |
+| 708 | gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + direct | 0.17 | 65.2 | 28.56 | 14.69 | 1.76 | 50.2 | 0.02 | 1822 | 2217 | 1094 | 6.31 |
+| 709 | gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 0.17 | 65.0 | 19.09 | 14.95 | 1.81 | 32.2 | 7.12 | 1350 | 1889 | 1075 | 5.64 |
+| 710 | gpu: cubes@cpu + faces + rows + refloor + depth + gbuffer + pathtrace | 0.17 | 65.0 | 20.29 | 14.88 | 1.79 | 32.2 | 7.12 | 1414 | 1921 | 1095 | 5.74 |
+| 711 | gpu: points@cpu + splat + bricks + rowrun + direct | 0.17 | 64.9 | 87.49 | 3.42 | 0.09 | 56.0 | 0.01 | 1740 | 2194 | 1613 | 7.25 |
+| 712 | gpu: cubes@cpu + faces + tree64 + refloor + depth + gbuffer + pathtrace | 0.17 | 64.8 | 19.03 | 15.04 | 2.80 | 32.2 | 7.12 | 496 | 710 | 1109 | 3.47 |
+| 713 | gpu: points@cpu + splat + tree64 + rowrun + direct | 0.17 | 64.7 | 99.80 | 3.47 | 1.18 | 56.0 | 0.01 | 886 | 1272 | 1756 | 5.77 |
+| 714 | gpu: cubes@cpu + faces + tree64 + refloor + depth + visbuffer + pathtrace | 0.17 | 64.5 | 19.06 | 15.07 | 2.85 | 32.2 | 7.12 | 488 | 932 | 1166 | 4.00 |
+| 715 | gpu: points@cpu + splat + tree64 + incremental + direct | 0.17 | 64.4 | 89.08 | 3.72 | 1.19 | 56.0 | 0.01 | 886 | 1270 | 1769 | 5.79 |
+| 716 | gpu: points@cpu + splat + bricks + refloor + direct | 0.17 | 64.2 | 88.25 | 3.36 | 0.10 | 56.0 | 0.01 | 1740 | 2194 | 1613 | 7.25 |
+| 717 | gpu: points@cpu + splat + tree64 + sphere + direct | 0.17 | 63.8 | 84.57 | 3.96 | 1.19 | 56.0 | 0.01 | 886 | 1262 | 1746 | 5.73 |
+| 718 | gpu: points@cpu + splat + clipmap + refloor + direct | 0.17 | 63.6 | 89.92 | 3.47 | 0.03 | 56.0 | 0.01 | 1934 | 2647 | 1729 | 8.33 |
+| 719 | gpu: points@cpu + splat + clipmap + incremental + direct | 0.17 | 63.2 | 91.91 | 3.65 | 0.03 | 56.0 | 0.01 | 1934 | 2647 | 1728 | 8.33 |
+| 720 | gpu: points@cpu + splat + clipmap + rowrun + direct | 0.17 | 62.9 | 89.53 | 3.60 | 0.03 | 56.0 | 0.01 | 1934 | 2647 | 1729 | 8.33 |
+| 721 | gpu: greedy@cpu + rayquery + raycast + pathtrace | 0.17 | 62.9 | 130.37 | 2.07 | 11.18 | 32.2 | 7.12 | 809 | 2558 | 2538 | 9.70 |
+| 722 | gpu: points@cpu + splat + bricks + sphere + direct | 0.17 | 62.8 | 90.79 | 3.72 | 0.09 | 56.0 | 0.01 | 1740 | 2194 | 1614 | 7.25 |
+| 723 | gpu: points@cpu + splat + hier + refloor + direct | 0.17 | 62.3 | 90.06 | 3.36 | 0.09 | 56.0 | 0.01 | 1740 | 2178 | 1619 | 7.23 |
+| 724 | gpu: cubes@cpu + faces + prefix + rowrun + depth + visbuffer + pathtrace | 0.17 | 62.3 | 20.92 | 15.55 | 1.81 | 32.2 | 7.12 | 1422 | 1925 | 1059 | 5.68 |
+| 725 | gpu: cubes@cpu + faces + distance + rowrun + depth + visbuffer + pathtrace | 0.17 | 62.3 | 30.33 | 15.47 | 1.74 | 32.2 | 7.12 | 1854 | 2248 | 1102 | 6.38 |
+| 726 | gpu: cubes@cpu + faces + prefix + rowrun + depth + gbuffer + pathtrace | 0.17 | 62.3 | 21.41 | 15.55 | 1.81 | 32.2 | 7.12 | 1430 | 1933 | 1059 | 5.70 |
+| 727 | gpu: points@cpu + splat + prefix + rowrun + direct | 0.17 | 62.1 | 97.18 | 3.36 | 0.10 | 55.9 | 0.01 | 1820 | 2263 | 1617 | 7.39 |
+| 728 | gpu: points@cpu + splat + prefix + refloor + direct | 0.17 | 62.0 | 92.76 | 3.36 | 0.10 | 55.9 | 0.01 | 1820 | 2263 | 1617 | 7.39 |
+| 729 | gpu: cubes@cpu + faces + svo_dag + refloor + depth + visbuffer + pathtrace | 0.17 | 61.9 | 30.24 | 15.19 | 3.81 | 32.2 | 7.12 | 342 | 535 | 1316 | 3.52 |
+| 730 | gpu: points@cpu + splat + hier + rowrun + direct | 0.16 | 61.7 | 92.38 | 3.42 | 0.09 | 56.0 | 0.01 | 1740 | 2178 | 1620 | 7.23 |
+| 731 | gpu: cubes@cpu + faces + svo_dag + refloor + depth + gbuffer + pathtrace | 0.16 | 61.7 | 29.53 | 15.23 | 3.83 | 32.2 | 7.12 | 350 | 543 | 1317 | 3.54 |
+| 732 | gpu: points@cpu + splat + clipmap + sphere + direct | 0.16 | 61.7 | 90.50 | 3.98 | 0.03 | 56.0 | 0.01 | 1934 | 2647 | 1728 | 8.33 |
+| 733 | gpu: points@cpu + splat + rows + rowrun + direct | 0.16 | 61.5 | 107.91 | 3.39 | 0.10 | 56.0 | 0.01 | 1804 | 2246 | 1617 | 7.36 |
+| 734 | gpu: points@cpu + splat + svo_dag + rowrun + direct | 0.16 | 61.4 | 94.94 | 3.42 | 2.16 | 55.9 | 0.01 | 740 | 1135 | 1802 | 5.59 |
+| 735 | gpu: points@cpu + splat + prefix + sphere + direct | 0.16 | 61.3 | 92.66 | 3.77 | 0.10 | 56.0 | 0.01 | 1820 | 2263 | 1619 | 7.39 |
+| 736 | gpu: cubes@cpu + faces + rows + rowrun + depth + gbuffer + pathtrace | 0.16 | 61.2 | 21.84 | 15.82 | 1.79 | 32.2 | 7.12 | 1414 | 1921 | 1093 | 5.74 |
+| 737 | gpu: cubes@cpu + faces + rows + rowrun + depth + visbuffer + pathtrace | 0.16 | 61.2 | 21.49 | 15.83 | 1.79 | 32.2 | 7.12 | 1406 | 1912 | 1101 | 5.74 |
+| 738 | gpu: points@cpu + splat + hier + sphere + direct | 0.16 | 61.2 | 93.18 | 3.65 | 0.10 | 56.0 | 0.01 | 1740 | 2178 | 1619 | 7.23 |
+| 739 | gpu: points@cpu + splat + svo_dag + refloor + direct | 0.16 | 61.2 | 104.00 | 3.40 | 2.17 | 55.9 | 0.01 | 740 | 1135 | 1802 | 5.59 |
+| 740 | gpu: points@cpu + splat + rows + refloor + direct | 0.16 | 61.1 | 95.82 | 3.36 | 0.10 | 56.0 | 0.01 | 1804 | 2246 | 1618 | 7.36 |
+| 741 | gpu: points@cpu + splat + rows + sphere + direct | 0.16 | 60.8 | 93.27 | 3.70 | 0.10 | 56.0 | 0.01 | 1804 | 2246 | 1618 | 7.36 |
+| 742 | gpu: cubes@cpu + faces + distance + rowrun + depth + gbuffer + pathtrace | 0.16 | 60.7 | 30.52 | 15.89 | 1.78 | 32.2 | 7.12 | 1862 | 2257 | 1095 | 6.38 |
+| 743 | gpu: greedy@cpu + faces + rows + incremental + depth + raster + pathtrace | 0.16 | 60.6 | 32.45 | 13.54 | 5.09 | 32.1 | 7.13 | 1270 | 1904 | 1027 | 5.58 |
+| 744 | gpu: naive@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 0.16 | 60.4 | 35.53 | 14.65 | 4.69 | 32.2 | 7.12 | 334 | 526 | 1274 | 3.43 |
+| 745 | gpu: points@cpu + splat + svo_dag + sphere + direct | 0.16 | 60.2 | 101.23 | 3.88 | 2.16 | 56.0 | 0.01 | 740 | 1135 | 1801 | 5.59 |
+| 746 | gpu: greedy@cpu + faces + distance + rowrun + depth + raster + pathtrace | 0.16 | 60.0 | 36.86 | 12.65 | 5.06 | 32.1 | 7.13 | 1718 | 2240 | 1027 | 6.22 |
+| 747 | gpu: points@cpu + splat + svo_dag + incremental + direct | 0.16 | 59.8 | 98.62 | 4.22 | 2.16 | 55.9 | 0.01 | 740 | 1135 | 1841 | 5.67 |
+| 748 | gpu: points@cpu + splat + tree64 + refloor + pathtrace | 0.16 | 59.7 | 72.07 | 5.63 | 1.20 | 32.2 | 7.12 | 918 | 1319 | 1761 | 5.87 |
+| 749 | gpu: naive@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 0.16 | 59.7 | 23.40 | 16.24 | 2.65 | 32.2 | 7.12 | 1528 | 1773 | 1307 | 5.87 |
+| 750 | gpu: points@cpu + splat + prefix + incremental + direct | 0.16 | 59.6 | 83.52 | 4.77 | 0.10 | 55.9 | 0.01 | 1820 | 2263 | 1618 | 7.39 |
+| 751 | gpu: cubes@cpu + faces + clipmap + refloor + depth + visbuffer + pathtrace | 0.16 | 59.4 | 20.91 | 16.37 | 1.74 | 32.2 | 7.12 | 1536 | 1782 | 1284 | 5.84 |
+| 752 | gpu: prefix + refloor + quadtree + raster + pathtrace | 0.16 | 59.4 | 22.63 | 16.56 | 0.27 | 32.1 | 7.13 | 1339 | 2154 | 1052 | 6.10 |
+| 753 | gpu: cubes@cpu + faces + clipmap + refloor + depth + gbuffer + pathtrace | 0.16 | 59.4 | 21.53 | 16.37 | 1.74 | 32.2 | 7.12 | 1544 | 1790 | 1284 | 5.85 |
+| 754 | gpu: hier + refloor + quadtree + raster + pathtrace | 0.16 | 59.3 | 22.86 | 16.61 | 0.26 | 32.1 | 7.13 | 1259 | 2110 | 1052 | 6.02 |
+| 755 | gpu: distance + refloor + quadtree + raster + pathtrace | 0.16 | 59.1 | 23.30 | 16.59 | 0.22 | 32.1 | 7.13 | 1770 | 2477 | 1050 | 6.72 |
+| 756 | gpu: naive@cpu + faces + rows + rowrun + depth + raster + pathtrace | 0.16 | 59.1 | 23.29 | 16.33 | 2.73 | 32.2 | 7.12 | 1398 | 1904 | 1130 | 5.78 |
+| 757 | gpu: points@cpu + splat + bricks + incremental + direct | 0.16 | 59.0 | 89.75 | 4.74 | 0.10 | 56.0 | 0.01 | 1740 | 2194 | 1614 | 7.25 |
+| 758 | gpu: points@cpu + splat + distance + rowrun + direct | 0.16 | 58.5 | 100.45 | 3.40 | 0.10 | 56.0 | 0.01 | 2252 | 2720 | 1618 | 8.26 |
+| 759 | gpu: points@cpu + splat + distance + sphere + direct | 0.16 | 58.4 | 104.42 | 3.31 | 0.10 | 56.0 | 0.01 | 2252 | 2720 | 1617 | 8.26 |
+| 760 | gpu: cubes@cpu + faces + tree64 + incremental + depth + gbuffer + pathtrace | 0.16 | 58.3 | 20.87 | 16.81 | 2.85 | 32.2 | 7.12 | 496 | 727 | 1114 | 3.51 |
+| 761 | gpu: cubes@cpu + faces + tree64 + incremental + depth + visbuffer + pathtrace | 0.16 | 58.3 | 20.78 | 16.81 | 2.86 | 32.2 | 7.12 | 488 | 698 | 1171 | 3.56 |
+| 762 | gpu: points@cpu + splat + distance + refloor + direct | 0.16 | 58.2 | 104.77 | 3.36 | 0.09 | 56.0 | 0.01 | 2252 | 2720 | 1618 | 8.26 |
+| 763 | gpu: greedy@cpu + faces + hier + incremental + depth + raster + pathtrace | 0.15 | 58.0 | 31.61 | 14.50 | 5.12 | 32.1 | 7.13 | 1206 | 1872 | 1033 | 5.53 |
+| 764 | gpu: points@cpu + splat + rows + incremental + direct | 0.15 | 58.0 | 90.01 | 4.96 | 0.10 | 56.0 | 0.01 | 1804 | 2246 | 1618 | 7.36 |
+| 765 | gpu: points@cpu + splat + hier + incremental + direct | 0.15 | 58.0 | 86.61 | 4.83 | 0.10 | 56.0 | 0.01 | 1740 | 2178 | 1621 | 7.24 |
+| 766 | gpu: cubes@cpu + faces + bricks + rowrun + depth + visbuffer + pathtrace | 0.15 | 57.9 | 21.19 | 16.83 | 1.81 | 32.2 | 7.12 | 1342 | 1880 | 1098 | 5.67 |
+| 767 | gpu: cubes@cpu + faces + bricks + rowrun + depth + gbuffer + pathtrace | 0.15 | 57.8 | 21.33 | 16.86 | 1.83 | 32.2 | 7.12 | 1350 | 1889 | 1116 | 5.72 |
+| 768 | gpu: points@cpu + splat + prefix + refloor + pathtrace | 0.15 | 57.7 | 78.45 | 5.14 | 0.10 | 32.2 | 7.12 | 1851 | 2295 | 1618 | 7.45 |
+| 769 | gpu: points@cpu + splat + bricks + refloor + pathtrace | 0.15 | 57.7 | 79.72 | 5.95 | 0.10 | 32.2 | 7.12 | 1771 | 2226 | 1619 | 7.32 |
+| 770 | gpu: greedy@cpu + faces + bricks + incremental + depth + raster + pathtrace | 0.15 | 57.4 | 29.99 | 14.76 | 5.25 | 32.1 | 7.13 | 1206 | 1872 | 1032 | 5.53 |
+| 771 | gpu: points@cpu + splat + hier + refloor + pathtrace | 0.15 | 57.4 | 81.16 | 5.23 | 0.10 | 32.2 | 7.12 | 1771 | 2210 | 1620 | 7.29 |
+| 772 | gpu: greedy@cpu + faces + prefix + incremental + depth + raster + pathtrace | 0.15 | 57.1 | 31.33 | 14.88 | 5.11 | 32.1 | 7.13 | 1286 | 1916 | 1027 | 5.61 |
+| 773 | gpu: points@cpu + splat + rows + refloor + pathtrace | 0.15 | 56.4 | 75.78 | 5.38 | 0.10 | 32.2 | 7.12 | 1835 | 2278 | 1619 | 7.42 |
+| 774 | gpu: greedy@cpu + rayquery + raycast + bricks + refloor + pathtrace | 0.15 | 56.3 | 133.42 | 4.34 | 11.07 | 32.2 | 7.12 | 1834 | 3582 | 2483 | 11.55 |
+| 775 | gpu: greedy@cpu + rayquery + raycast + tree64 + refloor + pathtrace | 0.15 | 56.2 | 85.62 | 4.66 | 12.26 | 32.2 | 7.12 | 981 | 2748 | 2512 | 10.02 |
+| 776 | gpu: points@cpu + splat + svo_dag + refloor + pathtrace | 0.15 | 56.1 | 75.70 | 5.80 | 2.18 | 32.2 | 7.12 | 772 | 1166 | 1844 | 5.73 |
+| 777 | gpu: points@cpu + splat + tree64 + incremental + pathtrace | 0.15 | 55.9 | 68.36 | 7.35 | 1.21 | 32.2 | 7.12 | 918 | 1304 | 1753 | 5.82 |
+| 778 | gpu: tree64 + rowrun + quadtree + gbuffer + pathtrace | 0.15 | 55.8 | 21.82 | 17.76 | 1.35 | 32.1 | 7.13 | 421 | 683 | 1252 | 3.68 |
+| 779 | gpu: greedy@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 0.15 | 55.7 | 34.66 | 14.55 | 6.12 | 32.1 | 7.13 | 352 | 590 | 1092 | 3.20 |
+| 780 | gpu: points@cpu + splat + prefix + rowrun + pathtrace | 0.15 | 55.6 | 79.50 | 6.26 | 0.10 | 32.2 | 7.12 | 1851 | 2295 | 1619 | 7.45 |
+| 781 | gpu: points@cpu + splat + clipmap + refloor + pathtrace | 0.15 | 55.5 | 79.74 | 6.88 | 0.04 | 32.2 | 7.12 | 1966 | 2679 | 1731 | 8.40 |
+| 782 | gpu: greedy@cpu + rayquery + raycast + prefix + refloor + pathtrace | 0.15 | 55.5 | 133.58 | 4.09 | 10.92 | 32.2 | 7.12 | 1914 | 3663 | 2538 | 11.81 |
+| 783 | gpu: greedy@cpu + rayquery + raycast + hier + refloor + pathtrace | 0.15 | 55.4 | 136.19 | 4.01 | 11.04 | 32.2 | 7.12 | 1834 | 3583 | 2534 | 11.65 |
+| 784 | gpu: points@cpu + splat + distance + sphere + pathtrace | 0.15 | 55.3 | 85.34 | 4.77 | 0.10 | 32.2 | 7.12 | 2283 | 2752 | 1619 | 8.32 |
+| 785 | gpu: bricks + refloor + quadtree + raster + pathtrace | 0.15 | 55.1 | 24.07 | 17.90 | 0.27 | 32.1 | 7.13 | 1258 | 2109 | 1032 | 5.98 |
+| 786 | gpu: tree64 + rowrun + quadtree + visbuffer + pathtrace | 0.15 | 55.1 | 22.61 | 17.99 | 1.35 | 32.1 | 7.13 | 413 | 679 | 1253 | 3.68 |
+| 787 | gpu: cubes@cpu + faces + hier + sphere + depth + gbuffer + pathtrace | 0.15 | 55.1 | 22.59 | 17.69 | 1.83 | 32.2 | 7.12 | 1350 | 1889 | 1086 | 5.67 |
+| 788 | gpu: points@cpu + splat + bricks + rowrun + pathtrace | 0.15 | 54.9 | 72.00 | 7.35 | 0.10 | 32.2 | 7.12 | 1771 | 2226 | 1615 | 7.31 |
+| 789 | gpu: cubes@cpu + faces + hier + rowrun + depth + gbuffer + pathtrace | 0.15 | 54.9 | 22.90 | 17.74 | 1.83 | 32.2 | 7.12 | 1350 | 1889 | 1094 | 5.68 |
+| 790 | gpu: rows + refloor + quadtree + raster + pathtrace | 0.15 | 54.8 | 24.43 | 17.96 | 0.25 | 32.1 | 7.13 | 1322 | 2141 | 1051 | 6.08 |
+| 791 | gpu: cubes@cpu + faces + clipmap + rowrun + depth + visbuffer + pathtrace | 0.15 | 54.8 | 22.72 | 17.78 | 1.75 | 32.2 | 7.12 | 1536 | 1782 | 1294 | 5.86 |
+| 792 | gpu: cubes@cpu + faces + clipmap + rowrun + depth + gbuffer + pathtrace | 0.15 | 54.7 | 22.42 | 17.82 | 1.77 | 32.2 | 7.12 | 1544 | 1790 | 1294 | 5.87 |
+| 793 | gpu: greedy@cpu + rayquery + raycast + tree64 + incremental + pathtrace | 0.15 | 54.7 | 79.63 | 6.24 | 11.76 | 32.2 | 7.12 | 981 | 2723 | 2510 | 9.97 |
+| 794 | gpu: cubes@cpu + faces + hier + sphere + depth + visbuffer + pathtrace | 0.15 | 54.7 | 22.59 | 17.81 | 1.81 | 32.2 | 7.12 | 1342 | 1880 | 1065 | 5.61 |
+| 795 | gpu: points@cpu + splat + rows + rowrun + pathtrace | 0.15 | 54.6 | 78.26 | 6.38 | 0.10 | 32.2 | 7.12 | 1835 | 2278 | 1618 | 7.42 |
+| 796 | gpu: greedy@cpu + rayquery + raycast + clipmap + refloor + pathtrace | 0.15 | 54.5 | 130.32 | 5.21 | 11.03 | 32.2 | 7.12 | 2029 | 3805 | 2601 | 12.20 |
+| 797 | gpu: points@cpu + splat + distance + refloor + pathtrace | 0.15 | 54.5 | 89.37 | 5.26 | 0.10 | 32.2 | 7.12 | 2283 | 2752 | 1617 | 8.32 |
+| 798 | gpu: greedy@cpu + rayquery + raycast + rows + refloor + pathtrace | 0.14 | 54.3 | 135.97 | 4.18 | 11.12 | 32.2 | 7.12 | 1898 | 3646 | 2514 | 11.73 |
+| 799 | gpu: greedy@cpu + rayquery + raycast + bricks + incremental + pathtrace | 0.14 | 54.2 | 92.47 | 5.76 | 11.13 | 32.2 | 7.12 | 1834 | 3582 | 2521 | 11.62 |
+| 800 | gpu: greedy@cpu + rayquery + raycast + prefix + rowrun + pathtrace | 0.14 | 54.1 | 134.53 | 4.81 | 11.09 | 32.2 | 7.12 | 1914 | 3662 | 2528 | 11.79 |
+| 801 | gpu: points@cpu + splat + distance + incremental + direct | 0.14 | 54.0 | 82.32 | 5.32 | 0.10 | 56.0 | 0.01 | 2252 | 2720 | 1619 | 8.26 |
+| 802 | gpu: naive@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 0.14 | 53.9 | 24.77 | 18.01 | 2.75 | 32.2 | 7.12 | 1414 | 1916 | 1130 | 5.80 |
+| 803 | gpu: cubes@cpu + faces + clipmap + incremental + depth + gbuffer + pathtrace | 0.14 | 53.7 | 22.98 | 18.15 | 1.76 | 32.2 | 7.12 | 1544 | 1790 | 1295 | 5.88 |
+| 804 | gpu: cubes@cpu + faces + clipmap + incremental + depth + visbuffer + pathtrace | 0.14 | 53.7 | 22.60 | 18.17 | 1.76 | 32.2 | 7.12 | 1536 | 1782 | 1295 | 5.86 |
+| 805 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + pathtrace | 0.14 | 53.6 | 24.79 | 18.36 | 0.27 | 32.1 | 7.12 | 1258 | 2109 | 1053 | 6.02 |
+| 806 | gpu: cubes@cpu + faces + hier + rowrun + depth + visbuffer + pathtrace | 0.14 | 53.6 | 26.43 | 18.21 | 1.81 | 32.2 | 7.12 | 1342 | 1880 | 1065 | 5.61 |
+| 807 | gpu: greedy@cpu + rayquery + raycast + svo_dag + refloor + pathtrace | 0.14 | 53.4 | 91.72 | 4.81 | 13.16 | 32.2 | 7.12 | 835 | 2478 | 2700 | 9.86 |
+| 808 | gpu: cubes@cpu + faces + hier + incremental + depth + gbuffer + pathtrace | 0.14 | 53.0 | 23.51 | 18.39 | 1.84 | 32.2 | 7.12 | 1350 | 1889 | 1113 | 5.72 |
+| 809 | gpu: cubes@cpu + faces + rows + sphere + depth + visbuffer + pathtrace | 0.14 | 53.0 | 23.79 | 18.38 | 1.81 | 32.2 | 7.12 | 1406 | 1912 | 1104 | 5.74 |
+| 810 | gpu: cubes@cpu + faces + rows + sphere + depth + gbuffer + pathtrace | 0.14 | 53.0 | 23.23 | 18.39 | 1.83 | 32.2 | 7.12 | 1414 | 1921 | 1096 | 5.75 |
+| 811 | gpu: greedy@cpu + rayquery + raycast + rows + rowrun + pathtrace | 0.14 | 53.0 | 136.13 | 5.13 | 11.05 | 32.2 | 7.12 | 1898 | 3646 | 2561 | 11.82 |
+| 812 | gpu: cubes@cpu + faces + bricks + sphere + depth + visbuffer + pathtrace | 0.14 | 53.0 | 23.23 | 18.45 | 1.82 | 32.2 | 7.12 | 1342 | 1880 | 1080 | 5.64 |
+| 813 | gpu: cubes@cpu + faces + bricks + sphere + depth + gbuffer + pathtrace | 0.14 | 52.9 | 23.12 | 18.47 | 1.85 | 32.2 | 7.12 | 1350 | 1889 | 1118 | 5.73 |
+| 814 | gpu: greedy@cpu + rayquery + raycast + bricks + rowrun + pathtrace | 0.14 | 52.9 | 98.37 | 6.41 | 11.24 | 32.2 | 7.12 | 1834 | 3582 | 2504 | 11.59 |
+| 815 | gpu: greedy@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 0.14 | 52.7 | 29.60 | 16.81 | 5.07 | 32.1 | 7.13 | 1400 | 1620 | 1168 | 5.31 |
+| 816 | gpu: greedy@cpu + rayquery + raycast + distance + sphere + pathtrace | 0.14 | 52.7 | 99.56 | 3.69 | 11.04 | 32.2 | 7.12 | 2346 | 4094 | 2591 | 12.73 |
+| 817 | gpu: cubes@cpu + faces + hier + incremental + depth + visbuffer + pathtrace | 0.14 | 52.7 | 23.53 | 18.53 | 1.82 | 32.2 | 7.12 | 1342 | 1880 | 1066 | 5.61 |
+| 818 | gpu: tree64 + refloor + quadtree + raster + pathtrace | 0.14 | 52.5 | 23.82 | 18.90 | 1.34 | 32.1 | 7.13 | 405 | 711 | 1242 | 3.72 |
+| 819 | gpu: greedy@cpu + rayquery + raycast + rows + incremental + pathtrace | 0.14 | 52.5 | 134.71 | 5.40 | 11.12 | 32.2 | 7.12 | 1898 | 3646 | 2554 | 11.81 |
+| 820 | gpu: greedy@cpu + rayquery + raycast + clipmap + incremental + pathtrace | 0.14 | 52.5 | 98.26 | 6.50 | 11.11 | 32.2 | 7.12 | 2029 | 3805 | 2602 | 12.20 |
+| 821 | gpu: points@cpu + splat + clipmap + rowrun + pathtrace | 0.14 | 52.5 | 78.28 | 8.28 | 0.04 | 32.2 | 7.12 | 1966 | 2679 | 1731 | 8.40 |
+| 822 | gpu: greedy@cpu + rayquery + raycast + hier + incremental + pathtrace | 0.14 | 52.5 | 135.77 | 5.68 | 11.13 | 32.2 | 7.12 | 1834 | 3583 | 2521 | 11.62 |
+| 823 | gpu: cubes@cpu + faces + rows + incremental + depth + visbuffer + pathtrace | 0.14 | 52.4 | 24.15 | 18.61 | 1.84 | 32.2 | 7.12 | 1406 | 1912 | 1111 | 5.76 |
+| 824 | gpu: cubes@cpu + faces + rows + incremental + depth + gbuffer + pathtrace | 0.14 | 52.3 | 23.97 | 18.63 | 1.83 | 32.2 | 7.12 | 1414 | 1921 | 1103 | 5.76 |
+| 825 | gpu: cubes@cpu + faces + prefix + sphere + depth + visbuffer + pathtrace | 0.14 | 52.3 | 23.59 | 18.65 | 1.82 | 32.2 | 7.12 | 1422 | 1925 | 1059 | 5.68 |
+| 826 | gpu: cubes@cpu + faces + prefix + sphere + depth + gbuffer + pathtrace | 0.14 | 52.2 | 23.92 | 18.68 | 1.83 | 32.2 | 7.12 | 1430 | 1933 | 1060 | 5.70 |
+| 827 | gpu: points@cpu + splat + distance + rowrun + pathtrace | 0.14 | 52.2 | 83.85 | 6.47 | 0.11 | 32.2 | 7.12 | 2283 | 2752 | 1628 | 8.34 |
+| 828 | gpu: greedy@cpu + rayquery + raycast + clipmap + rowrun + pathtrace | 0.14 | 52.1 | 96.91 | 6.71 | 11.00 | 32.2 | 7.12 | 2029 | 3805 | 2615 | 12.23 |
+| 829 | gpu: points@cpu + splat + bricks + sphere + pathtrace | 0.14 | 52.1 | 70.03 | 8.96 | 0.10 | 32.2 | 7.12 | 1771 | 2226 | 1619 | 7.32 |
+| 830 | gpu: greedy@cpu + rayquery + raycast + prefix + incremental + pathtrace | 0.14 | 52.0 | 138.31 | 5.90 | 11.24 | 32.2 | 7.12 | 1914 | 3662 | 2498 | 11.73 |
+| 831 | gpu: greedy@cpu + rayquery + raycast + distance + refloor + pathtrace | 0.14 | 51.9 | 105.03 | 4.20 | 11.03 | 32.2 | 7.12 | 2346 | 4094 | 2533 | 12.62 |
+| 832 | gpu: cubes@cpu + faces + bricks + incremental + depth + gbuffer + pathtrace | 0.14 | 51.8 | 23.57 | 18.88 | 1.84 | 32.2 | 7.12 | 1350 | 1889 | 1089 | 5.67 |
+| 833 | gpu: points@cpu + splat + clipmap + incremental + pathtrace | 0.14 | 51.8 | 71.40 | 8.61 | 0.04 | 32.2 | 7.12 | 1966 | 2679 | 1731 | 8.40 |
+| 834 | gpu: cubes@cpu + faces + bricks + incremental + depth + visbuffer + pathtrace | 0.14 | 51.7 | 23.74 | 18.91 | 1.82 | 32.2 | 7.12 | 1342 | 1880 | 1110 | 5.70 |
+| 835 | gpu: greedy@cpu + faces + distance + incremental + depth + raster + pathtrace | 0.14 | 51.5 | 36.66 | 16.85 | 5.08 | 32.1 | 7.13 | 1718 | 2240 | 1027 | 6.22 |
+| 836 | gpu: points@cpu + splat + hier + sphere + pathtrace | 0.14 | 51.4 | 83.64 | 8.32 | 0.10 | 32.2 | 7.12 | 1771 | 2210 | 1627 | 7.31 |
+| 837 | gpu: cubes@cpu + faces + prefix + incremental + depth + visbuffer + pathtrace | 0.14 | 51.2 | 24.05 | 19.04 | 1.84 | 32.2 | 7.12 | 1422 | 1925 | 1061 | 5.69 |
+| 838 | gpu: points@cpu + splat + hier + rowrun + pathtrace | 0.14 | 51.2 | 73.81 | 8.25 | 0.11 | 32.2 | 7.12 | 1771 | 2210 | 1631 | 7.31 |
+| 839 | gpu: greedy@cpu + rayquery + raycast + distance + rowrun + pathtrace | 0.14 | 51.2 | 139.17 | 4.93 | 11.03 | 32.2 | 7.12 | 2346 | 4094 | 2520 | 12.60 |
+| 840 | gpu: cubes@cpu + faces + prefix + incremental + depth + gbuffer + pathtrace | 0.14 | 51.1 | 24.02 | 19.10 | 1.83 | 32.2 | 7.12 | 1430 | 1933 | 1060 | 5.70 |
+| 841 | gpu: points@cpu + splat + bricks + incremental + pathtrace | 0.14 | 50.7 | 71.46 | 9.40 | 0.11 | 32.2 | 7.12 | 1771 | 2226 | 1626 | 7.34 |
+| 842 | gpu: naive@cpu + faces + distance + rowrun + depth + raster + pathtrace | 0.14 | 50.6 | 28.24 | 19.11 | 2.73 | 32.2 | 7.12 | 1846 | 2240 | 1130 | 6.42 |
+| 843 | gpu: cubes@cpu + faces + svo_dag + sphere + depth + visbuffer + pathtrace | 0.13 | 50.4 | 31.06 | 19.19 | 3.87 | 32.2 | 7.12 | 342 | 535 | 1320 | 3.53 |
+| 844 | gpu: greedy@cpu + rayquery + raycast + bricks + sphere + pathtrace | 0.13 | 50.3 | 74.67 | 8.16 | 11.26 | 32.2 | 7.12 | 1834 | 3582 | 2497 | 11.58 |
+| 845 | gpu: cubes@cpu + faces + svo_dag + sphere + depth + gbuffer + pathtrace | 0.13 | 50.3 | 30.37 | 19.21 | 3.87 | 32.2 | 7.12 | 350 | 543 | 1323 | 3.55 |
+| 846 | gpu: greedy@cpu + faces + hier + sphere + depth + raster + pathtrace | 0.13 | 50.3 | 31.93 | 17.84 | 5.13 | 32.1 | 7.13 | 1206 | 1872 | 1033 | 5.53 |
+| 847 | gpu: points@cpu + splat + rows + sphere + pathtrace | 0.13 | 50.2 | 84.66 | 8.96 | 0.11 | 32.2 | 7.12 | 1835 | 2278 | 1624 | 7.43 |
+| 848 | gpu: greedy@cpu + rayquery + raycast + hier + sphere + pathtrace | 0.13 | 49.9 | 101.78 | 7.44 | 11.11 | 32.2 | 7.12 | 1834 | 3583 | 2494 | 11.57 |
+| 849 | gpu: points@cpu + splat + prefix + incremental + pathtrace | 0.13 | 49.9 | 74.46 | 9.40 | 0.11 | 32.2 | 7.12 | 1851 | 2295 | 1632 | 7.48 |
+| 850 | gpu: points@cpu + splat + hier + incremental + pathtrace | 0.13 | 49.8 | 77.16 | 8.88 | 0.11 | 32.2 | 7.12 | 1771 | 2210 | 1634 | 7.32 |
+| 851 | gpu: points@cpu + splat + rows + incremental + pathtrace | 0.13 | 49.8 | 74.20 | 8.99 | 0.10 | 32.2 | 7.12 | 1835 | 2278 | 1634 | 7.45 |
+| 852 | gpu: naive@cpu + faces + rows + incremental + depth + raster + pathtrace | 0.13 | 49.7 | 27.24 | 19.56 | 2.73 | 32.2 | 7.12 | 1398 | 1904 | 1130 | 5.78 |
+| 853 | gpu: points@cpu + splat + tree64 + sphere + pathtrace | 0.13 | 49.5 | 72.66 | 10.89 | 1.20 | 32.2 | 7.12 | 918 | 1289 | 1774 | 5.83 |
+| 854 | gpu: points@cpu + splat + prefix + sphere + pathtrace | 0.13 | 49.2 | 79.44 | 9.05 | 0.11 | 32.2 | 7.12 | 1851 | 2295 | 1626 | 7.47 |
+| 855 | gpu: points@cpu + splat + svo_dag + sphere + pathtrace | 0.13 | 49.2 | 103.16 | 9.60 | 2.18 | 32.2 | 7.12 | 772 | 1166 | 1844 | 5.73 |
+| 856 | gpu: greedy@cpu + rayquery + raycast + hier + rowrun + pathtrace | 0.13 | 48.9 | 94.52 | 8.00 | 11.23 | 32.2 | 7.12 | 1834 | 3583 | 2554 | 11.69 |
+| 857 | gpu: greedy@cpu + rayquery + raycast + prefix + sphere + pathtrace | 0.13 | 48.7 | 95.06 | 8.32 | 11.21 | 32.2 | 7.12 | 1914 | 3662 | 2420 | 11.58 |
+| 858 | gpu: greedy@cpu + rayquery + raycast + rows + sphere + pathtrace | 0.13 | 48.6 | 101.24 | 8.09 | 11.22 | 32.2 | 7.12 | 1898 | 3646 | 2520 | 11.74 |
+| 859 | gpu: cubes@cpu + faces + svo_dag + rowrun + depth + gbuffer + pathtrace | 0.13 | 48.4 | 31.02 | 20.01 | 3.89 | 32.2 | 7.12 | 350 | 543 | 1321 | 3.55 |
+| 860 | gpu: cubes@cpu + faces + svo_dag + rowrun + depth + visbuffer + pathtrace | 0.13 | 48.4 | 30.42 | 20.03 | 3.87 | 32.2 | 7.12 | 342 | 535 | 1320 | 3.53 |
+| 861 | gpu: greedy@cpu + rayquery + raycast + distance + incremental + pathtrace | 0.13 | 48.3 | 142.61 | 6.63 | 11.13 | 32.2 | 7.12 | 2346 | 4094 | 2469 | 12.50 |
+| 862 | gpu: cubes@cpu + faces + tree64 + sphere + depth + gbuffer + pathtrace | 0.13 | 48.0 | 24.93 | 20.48 | 2.85 | 32.2 | 7.12 | 496 | 715 | 1169 | 3.59 |
+| 863 | gpu: cubes@cpu + faces + tree64 + sphere + depth + visbuffer + pathtrace | 0.13 | 48.0 | 24.84 | 20.50 | 2.90 | 32.2 | 7.12 | 488 | 742 | 1182 | 3.66 |
+| 864 | gpu: cubes@cpu + faces + distance + incremental + depth + gbuffer + pathtrace | 0.13 | 47.9 | 26.31 | 20.34 | 1.82 | 32.2 | 7.12 | 1862 | 2257 | 1113 | 6.42 |
+| 865 | gpu: points@cpu + splat + clipmap + sphere + pathtrace | 0.13 | 47.9 | 85.53 | 11.16 | 0.04 | 32.2 | 7.12 | 1966 | 2679 | 1740 | 8.42 |
+| 866 | gpu: cubes@cpu + faces + distance + incremental + depth + visbuffer + pathtrace | 0.13 | 47.9 | 26.26 | 20.38 | 1.80 | 32.2 | 7.12 | 1854 | 2248 | 1115 | 6.41 |
+| 867 | gpu: points@cpu + splat + svo_dag + rowrun + pathtrace | 0.13 | 47.5 | 105.21 | 10.58 | 2.19 | 32.2 | 7.12 | 772 | 1166 | 1843 | 5.73 |
+| 868 | gpu: greedy@cpu + rayquery + raycast + clipmap + sphere + pathtrace | 0.13 | 47.5 | 73.76 | 9.87 | 11.15 | 32.2 | 7.12 | 2029 | 3805 | 2629 | 12.25 |
+| 869 | gpu: greedy@cpu + rayquery + raycast + svo_dag + incremental + pathtrace | 0.13 | 47.4 | 85.17 | 8.76 | 12.76 | 32.2 | 7.12 | 835 | 2478 | 2665 | 9.79 |
+| 870 | gpu: cubes@cpu + faces + svo_dag + incremental + depth + gbuffer + pathtrace | 0.13 | 47.1 | 31.65 | 20.61 | 3.87 | 32.2 | 7.12 | 350 | 543 | 1330 | 3.57 |
+| 871 | gpu: cubes@cpu + faces + svo_dag + incremental + depth + visbuffer + pathtrace | 0.13 | 47.0 | 30.65 | 20.63 | 3.88 | 32.2 | 7.12 | 342 | 535 | 1321 | 3.53 |
+| 872 | gpu: cubes@cpu + faces + clipmap + sphere + depth + visbuffer + pathtrace | 0.13 | 47.0 | 26.08 | 20.83 | 1.76 | 32.2 | 7.12 | 1536 | 1782 | 1286 | 5.84 |
+| 873 | gpu: points@cpu + splat + svo_dag + incremental + pathtrace | 0.12 | 46.9 | 100.80 | 11.05 | 2.19 | 32.2 | 7.12 | 772 | 1166 | 1845 | 5.74 |
+| 874 | gpu: cubes@cpu + faces + clipmap + sphere + depth + gbuffer + pathtrace | 0.12 | 46.8 | 26.67 | 20.89 | 1.77 | 32.2 | 7.12 | 1544 | 1790 | 1285 | 5.86 |
+| 875 | gpu: naive@cpu + faces + hier + incremental + depth + raster + pathtrace | 0.12 | 46.7 | 28.08 | 20.89 | 2.76 | 32.2 | 7.12 | 1334 | 1872 | 1135 | 5.73 |
+| 876 | gpu: svo_dag + refloor + quadtree + raster + pathtrace | 0.12 | 46.7 | 27.07 | 21.04 | 2.38 | 32.1 | 7.13 | 259 | 393 | 1370 | 3.36 |
+| 877 | gpu: points@cpu + splat + tree64 + rowrun + pathtrace | 0.12 | 46.6 | 68.21 | 12.85 | 1.19 | 32.2 | 7.12 | 918 | 1287 | 1754 | 5.79 |
+| 878 | gpu: greedy@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 0.12 | 46.6 | 30.31 | 19.88 | 5.07 | 32.1 | 7.13 | 1400 | 1620 | 1168 | 5.31 |
+| 879 | gpu: greedy@cpu + rayquery + raycast + tree64 + sphere + pathtrace | 0.12 | 46.3 | 77.99 | 10.45 | 11.86 | 32.2 | 7.12 | 981 | 2723 | 2546 | 10.03 |
+| 880 | gpu: naive@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 0.12 | 46.3 | 28.02 | 21.21 | 3.76 | 32.2 | 7.12 | 480 | 683 | 1134 | 3.46 |
+| 881 | gpu: greedy@cpu + faces + rows + sphere + depth + raster + pathtrace | 0.12 | 46.2 | 32.91 | 20.04 | 5.13 | 32.1 | 7.13 | 1270 | 1904 | 1027 | 5.58 |
+| 882 | gpu: naive@cpu + faces + prefix + incremental + depth + raster + pathtrace | 0.12 | 46.0 | 28.52 | 21.23 | 2.73 | 32.2 | 7.12 | 1414 | 1916 | 1129 | 5.80 |
+| 883 | gpu: greedy@cpu + rayquery + raycast + svo_dag + sphere + pathtrace | 0.12 | 45.9 | 88.53 | 9.00 | 13.26 | 32.2 | 7.12 | 835 | 2478 | 2732 | 9.92 |
+| 884 | gpu: naive@cpu + faces + bricks + incremental + depth + raster + pathtrace | 0.12 | 45.8 | 28.81 | 21.39 | 2.79 | 32.2 | 7.12 | 1334 | 1872 | 1134 | 5.72 |
+| 885 | gpu: greedy@cpu + faces + hier + rowrun + depth + raster + pathtrace | 0.12 | 45.3 | 35.28 | 20.53 | 5.14 | 32.1 | 7.13 | 1206 | 1872 | 1033 | 5.53 |
+| 886 | gpu: points@cpu + splat + distance + incremental + pathtrace | 0.12 | 45.2 | 81.67 | 10.80 | 0.10 | 32.2 | 7.12 | 2283 | 2752 | 1631 | 8.35 |
+| 887 | gpu: greedy@cpu + faces + bricks + sphere + depth + raster + pathtrace | 0.12 | 45.1 | 30.24 | 20.69 | 5.28 | 32.1 | 7.13 | 1206 | 1872 | 1032 | 5.53 |
+| 888 | gpu: greedy@cpu + faces + prefix + sphere + depth + raster + pathtrace | 0.12 | 44.9 | 31.74 | 20.80 | 5.12 | 32.1 | 7.13 | 1286 | 1916 | 1027 | 5.60 |
+| 889 | gpu: greedy@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 0.12 | 44.6 | 30.46 | 20.98 | 5.27 | 32.1 | 7.13 | 1206 | 1872 | 1032 | 5.53 |
+| 890 | gpu: greedy@cpu + rayquery + raycast + svo_dag + rowrun + pathtrace | 0.12 | 44.5 | 80.89 | 11.18 | 12.22 | 32.2 | 7.12 | 835 | 2478 | 2718 | 9.89 |
+| 891 | gpu: cubes@cpu + faces + tree64 + rowrun + depth + gbuffer + pathtrace | 0.12 | 44.3 | 26.69 | 22.24 | 2.88 | 32.2 | 7.12 | 496 | 729 | 1185 | 3.65 |
+| 892 | gpu: cubes@cpu + faces + tree64 + rowrun + depth + visbuffer + pathtrace | 0.12 | 43.8 | 27.09 | 22.48 | 2.89 | 32.2 | 7.12 | 488 | 841 | 1200 | 3.89 |
+| 893 | gpu: rows + rowrun + quadtree + raster + pathtrace | 0.11 | 42.2 | 30.97 | 23.41 | 0.25 | 32.1 | 7.13 | 1322 | 2141 | 1053 | 6.08 |
+| 894 | gpu: clipmap + refloor + quadtree + raster + pathtrace | 0.11 | 41.5 | 32.40 | 23.81 | 0.18 | 32.1 | 7.13 | 1453 | 1860 | 1173 | 5.78 |
+| 895 | gpu: greedy@cpu + rayquery + raycast + tree64 + rowrun + pathtrace | 0.11 | 41.5 | 67.10 | 15.41 | 10.46 | 32.2 | 7.12 | 981 | 2711 | 2537 | 9.99 |
+| 896 | gpu: naive@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 0.11 | 40.4 | 32.62 | 24.29 | 2.69 | 32.2 | 7.12 | 1528 | 1773 | 1303 | 5.86 |
+| 897 | gpu: naive@cpu + faces + distance + incremental + depth + raster + pathtrace | 0.11 | 40.1 | 32.82 | 24.37 | 2.74 | 32.2 | 7.12 | 1846 | 2240 | 1131 | 6.42 |
+| 898 | gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + direct | 0.11 | 39.9 | 29.06 | 24.75 | 2.86 | 50.2 | 0.02 | 448 | 652 | 1123 | 3.38 |
+| 899 | gpu: cubes@cpu + faces + bricks + refloor + depth + raster + direct | 0.11 | 39.8 | 29.65 | 24.71 | 1.85 | 50.2 | 0.02 | 1302 | 1840 | 1064 | 5.53 |
+| 900 | gpu: prefix + rowrun + quadtree + raster + pathtrace | 0.11 | 39.8 | 32.19 | 24.87 | 0.27 | 32.1 | 7.13 | 1339 | 2154 | 1052 | 6.11 |
+| 901 | gpu: cubes@cpu + faces + prefix + refloor + depth + raster + direct | 0.11 | 39.7 | 29.76 | 24.68 | 1.81 | 50.2 | 0.02 | 1382 | 1884 | 1059 | 5.61 |
+| 902 | gpu: cubes@cpu + faces + hier + refloor + depth + raster + direct | 0.11 | 39.7 | 30.22 | 24.71 | 1.83 | 50.2 | 0.02 | 1302 | 1840 | 1064 | 5.53 |
+| 903 | gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + direct | 0.11 | 39.7 | 29.28 | 24.86 | 2.89 | 50.2 | 0.02 | 448 | 917 | 1095 | 3.83 |
+| 904 | gpu: cubes@cpu + faces + rows + refloor + depth + raster + direct | 0.11 | 39.7 | 30.18 | 24.71 | 1.83 | 50.2 | 0.02 | 1366 | 1872 | 1059 | 5.58 |
+| 905 | gpu: cubes@cpu + faces + distance + sphere + depth + raster + direct | 0.11 | 39.7 | 31.01 | 24.68 | 1.80 | 50.2 | 0.02 | 1814 | 2208 | 1058 | 6.22 |
+| 906 | gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + direct | 0.11 | 39.7 | 29.77 | 24.77 | 1.81 | 50.2 | 0.02 | 1302 | 1840 | 1065 | 5.53 |
+| 907 | gpu: cubes@cpu + faces + distance + refloor + depth + raster + direct | 0.11 | 39.7 | 31.45 | 24.71 | 1.81 | 50.2 | 0.02 | 1814 | 2208 | 1059 | 6.22 |
+| 908 | gpu: cubes@cpu + faces + hier + rowrun + depth + raster + direct | 0.11 | 39.7 | 29.92 | 24.75 | 1.80 | 50.2 | 0.02 | 1302 | 1840 | 1065 | 5.53 |
+| 909 | gpu: cubes@cpu + faces + rows + rowrun + depth + raster + direct | 0.11 | 39.6 | 29.83 | 24.76 | 1.81 | 50.2 | 0.02 | 1366 | 1872 | 1058 | 5.58 |
+| 910 | gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + direct | 0.11 | 39.6 | 30.20 | 24.80 | 1.83 | 50.2 | 0.02 | 1382 | 1884 | 1058 | 5.60 |
+| 911 | gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + direct | 0.11 | 39.6 | 30.33 | 24.82 | 1.76 | 50.2 | 0.02 | 1497 | 1742 | 1230 | 5.66 |
+| 912 | gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + direct | 0.11 | 39.5 | 29.93 | 24.87 | 1.76 | 50.2 | 0.02 | 1497 | 1742 | 1230 | 5.66 |
+| 913 | gpu: cubes@cpu + faces + distance + rowrun + depth + raster + direct | 0.11 | 39.4 | 31.77 | 24.87 | 1.83 | 50.2 | 0.02 | 1814 | 2208 | 1060 | 6.22 |
+| 914 | gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + direct | 0.10 | 39.4 | 29.96 | 24.87 | 3.88 | 50.2 | 0.02 | 303 | 495 | 1276 | 3.37 |
+| 915 | gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + direct | 0.10 | 39.3 | 30.40 | 24.89 | 3.90 | 50.2 | 0.02 | 303 | 495 | 1271 | 3.36 |
+| 916 | gpu: cubes@cpu + faces + rows + incremental + depth + raster + direct | 0.10 | 39.2 | 30.38 | 25.02 | 1.81 | 50.2 | 0.02 | 1366 | 1872 | 1059 | 5.58 |
+| 917 | gpu: cubes@cpu + faces + hier + incremental + depth + raster + direct | 0.10 | 39.0 | 30.48 | 25.17 | 1.82 | 50.2 | 0.02 | 1302 | 1840 | 1065 | 5.53 |
+| 918 | gpu: cubes@cpu + faces + hier + sphere + depth + raster + direct | 0.10 | 38.9 | 30.60 | 25.22 | 1.82 | 50.2 | 0.02 | 1302 | 1840 | 1065 | 5.53 |
+| 919 | gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + direct | 0.10 | 38.9 | 29.45 | 25.40 | 2.88 | 50.2 | 0.02 | 448 | 649 | 1100 | 3.33 |
+| 920 | gpu: cubes@cpu + faces + bricks + sphere + depth + raster + direct | 0.10 | 38.8 | 30.34 | 25.38 | 1.82 | 50.2 | 0.02 | 1302 | 1840 | 1065 | 5.53 |
+| 921 | gpu: cubes@cpu + faces + rows + sphere + depth + raster + direct | 0.10 | 38.7 | 30.40 | 25.35 | 1.83 | 50.2 | 0.02 | 1366 | 1872 | 1060 | 5.58 |
+| 922 | gpu: cubes@cpu + faces + bricks + incremental + depth + raster + direct | 0.10 | 38.7 | 30.56 | 25.44 | 2.48 | 50.2 | 0.02 | 1302 | 1840 | 1064 | 5.53 |
+| 923 | gpu: cubes@cpu + faces + distance + incremental + depth + raster + direct | 0.10 | 38.6 | 31.58 | 25.39 | 1.82 | 50.2 | 0.02 | 1814 | 2208 | 1060 | 6.22 |
+| 924 | gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + direct | 0.10 | 38.5 | 30.87 | 25.53 | 1.78 | 50.2 | 0.02 | 1497 | 1742 | 1231 | 5.66 |
+| 925 | gpu: cubes@cpu + faces + prefix + incremental + depth + raster + direct | 0.10 | 38.5 | 30.98 | 25.52 | 1.83 | 50.2 | 0.02 | 1382 | 1884 | 1058 | 5.60 |
+| 926 | gpu: distance + rowrun + quadtree + raster + pathtrace | 0.10 | 38.4 | 33.55 | 25.73 | 0.27 | 32.1 | 7.13 | 1770 | 2477 | 1051 | 6.72 |
+| 927 | gpu: cubes@cpu + faces + prefix + sphere + depth + raster + direct | 0.10 | 38.4 | 30.81 | 25.55 | 1.83 | 50.2 | 0.02 | 1382 | 1884 | 1059 | 5.61 |
+| 928 | gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + direct | 0.10 | 38.1 | 30.64 | 25.70 | 3.88 | 50.2 | 0.02 | 303 | 495 | 1270 | 3.36 |
+| 929 | gpu: greedy@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 0.10 | 37.9 | 48.00 | 23.87 | 7.12 | 32.1 | 7.13 | 206 | 302 | 1235 | 2.93 |
+| 930 | gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + direct | 0.10 | 37.9 | 30.36 | 26.12 | 2.86 | 50.2 | 0.02 | 448 | 735 | 1110 | 3.51 |
+| 931 | gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + direct | 0.10 | 37.8 | 31.50 | 25.98 | 1.77 | 50.2 | 0.02 | 1497 | 1742 | 1230 | 5.66 |
+| 932 | gpu: greedy@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 0.10 | 37.2 | 47.91 | 24.49 | 7.16 | 32.1 | 7.13 | 206 | 302 | 1234 | 2.92 |
+| 933 | gpu: greedy@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 0.10 | 36.6 | 36.45 | 26.58 | 5.10 | 32.1 | 7.13 | 1400 | 1620 | 1164 | 5.30 |
+| 934 | gpu: naive@cpu + faces + hier + sphere + depth + raster + pathtrace | 0.10 | 36.5 | 35.74 | 26.95 | 2.76 | 32.2 | 7.12 | 1334 | 1872 | 1135 | 5.73 |
+| 935 | gpu: greedy@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 0.10 | 36.3 | 35.71 | 26.42 | 6.15 | 32.1 | 7.13 | 352 | 841 | 1091 | 3.68 |
+| 936 | gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + direct | 0.10 | 35.8 | 32.03 | 27.40 | 3.91 | 50.2 | 0.02 | 303 | 495 | 1281 | 3.38 |
+| 937 | gpu: rows + incremental + quadtree + raster + pathtrace | 0.09 | 33.1 | 39.72 | 29.92 | 0.26 | 32.1 | 7.13 | 1322 | 2141 | 1052 | 6.08 |
+| 938 | gpu: naive@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 0.09 | 33.0 | 38.88 | 29.85 | 2.72 | 32.2 | 7.12 | 1528 | 1773 | 1303 | 5.86 |
+| 939 | gpu: naive@cpu + faces + rows + sphere + depth + raster + pathtrace | 0.09 | 32.4 | 41.25 | 30.34 | 2.76 | 32.2 | 7.12 | 1398 | 1904 | 1129 | 5.78 |
+| 940 | gpu: cubes@cpu + faces + distance + sphere + depth + raster + pathtrace | 0.09 | 32.3 | 36.81 | 30.51 | 1.83 | 32.2 | 7.12 | 1846 | 2240 | 1060 | 6.28 |
+| 941 | gpu: tree64 + incremental + quadtree + raster + pathtrace | 0.09 | 32.2 | 38.90 | 30.93 | 1.37 | 32.1 | 7.13 | 405 | 688 | 1266 | 3.72 |
+| 942 | gpu: hier + incremental + quadtree + raster + pathtrace | 0.09 | 32.1 | 40.45 | 30.84 | 0.28 | 32.1 | 7.13 | 1259 | 2110 | 1055 | 6.03 |
+| 943 | cpu: hier + refloor + raycast + direct ◆ | 0.08 | 31.6 | 45.95 | - | 30.31 | 58.2 | 0.00 | - | - | 670 | 1.28 |
+| 944 | gpu: naive@cpu + faces + hier + rowrun + depth + raster + pathtrace | 0.08 | 31.6 | 40.84 | 31.16 | 2.79 | 32.2 | 7.12 | 1334 | 1872 | 1137 | 5.73 |
+| 945 | gpu: naive@cpu + faces + bricks + sphere + depth + raster + pathtrace | 0.08 | 31.4 | 41.91 | 31.40 | 2.87 | 32.2 | 7.12 | 1334 | 1872 | 1134 | 5.72 |
+| 946 | gpu: bricks + incremental + quadtree + raster + pathtrace | 0.08 | 31.4 | 41.26 | 31.62 | 0.27 | 32.1 | 7.13 | 1258 | 2109 | 1051 | 6.02 |
+| 947 | gpu: naive@cpu + faces + prefix + sphere + depth + raster + pathtrace | 0.08 | 31.0 | 41.81 | 31.73 | 2.77 | 32.2 | 7.12 | 1414 | 1916 | 1130 | 5.80 |
+| 948 | gpu: cubes@cpu + faces + hier + refloor + depth + raster + pathtrace | 0.08 | 30.9 | 37.76 | 31.90 | 1.83 | 32.2 | 7.12 | 1334 | 1872 | 1066 | 5.60 |
+| 949 | cpu: prefix + incremental + raycast + direct | 0.08 | 30.7 | 46.03 | - | 31.21 | 58.2 | 0.00 | - | - | 885 | 1.69 |
+| 950 | gpu: naive@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 0.08 | 30.6 | 41.70 | 32.23 | 2.84 | 32.2 | 7.12 | 1334 | 1872 | 1135 | 5.73 |
+| 951 | gpu: prefix + incremental + quadtree + raster + pathtrace | 0.08 | 30.5 | 42.24 | 32.54 | 0.27 | 32.1 | 7.13 | 1339 | 2154 | 1053 | 6.11 |
+| 952 | gpu: cubes@cpu + faces + prefix + refloor + depth + raster + pathtrace | 0.08 | 30.4 | 38.02 | 32.40 | 1.85 | 32.2 | 7.12 | 1414 | 1916 | 1060 | 5.67 |
+| 953 | gpu: cubes@cpu + faces + distance + refloor + depth + raster + pathtrace | 0.08 | 30.1 | 38.97 | 32.77 | 1.84 | 32.2 | 7.12 | 1846 | 2240 | 1061 | 6.29 |
+| 954 | gpu: cubes@cpu + faces + rows + refloor + depth + raster + pathtrace | 0.08 | 29.9 | 39.17 | 32.94 | 1.86 | 32.2 | 7.12 | 1398 | 1904 | 1059 | 5.64 |
+| 955 | gpu: cubes@cpu + faces + bricks + refloor + depth + raster + pathtrace | 0.08 | 29.9 | 38.53 | 33.08 | 1.85 | 32.2 | 7.12 | 1334 | 1872 | 1064 | 5.59 |
+| 956 | gpu: cubes@cpu + faces + tree64 + refloor + depth + raster + pathtrace | 0.08 | 29.6 | 38.48 | 33.54 | 2.88 | 32.2 | 7.12 | 480 | 705 | 1113 | 3.46 |
+| 957 | cpu: hier + incremental + raycast + direct ◆ | 0.08 | 29.5 | 46.71 | - | 32.53 | 58.3 | 0.00 | - | - | 670 | 1.28 |
+| 958 | cpu: prefix + refloor + raycast + direct | 0.08 | 29.2 | 48.55 | - | 32.82 | 58.2 | 0.00 | - | - | 885 | 1.69 |
+| 959 | gpu: naive@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 0.08 | 28.7 | 42.41 | 34.37 | 4.85 | 32.2 | 7.12 | 334 | 526 | 1272 | 3.43 |
+| 960 | cpu: bricks + refloor + raycast + direct ◆ | 0.08 | 28.5 | 46.50 | - | 34.32 | 58.2 | 0.00 | - | - | 635 | 1.21 |
+| 961 | gpu: naive@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 0.07 | 28.0 | 44.51 | 35.24 | 4.87 | 32.2 | 7.12 | 334 | 526 | 1266 | 3.41 |
+| 962 | gpu: cubes@cpu + faces + svo_dag + refloor + depth + raster + pathtrace | 0.07 | 28.0 | 41.43 | 35.34 | 3.92 | 32.2 | 7.12 | 334 | 526 | 1258 | 3.40 |
+| 963 | cpu: bricks + incremental + raycast + direct | 0.07 | 27.8 | 47.60 | - | 35.07 | 58.3 | 0.00 | - | - | 635 | 1.21 |
+| 964 | gpu: distance + incremental + quadtree + raster + pathtrace | 0.07 | 27.5 | 47.31 | 36.01 | 0.27 | 32.1 | 7.13 | 1770 | 2477 | 1054 | 6.73 |
+| 965 | cpu: bits + refloor + raycast + direct | 0.07 | 27.5 | 51.11 | - | 35.06 | 58.2 | 0.00 | - | - | 670 | 1.28 |
+| 966 | cpu: brickmajor + refloor + raycast + direct | 0.07 | 27.3 | 51.10 | - | 35.06 | 58.2 | 0.00 | - | - | 959 | 1.83 |
+| 967 | cpu: u8 + refloor + raycast + direct ◆ | 0.07 | 27.1 | 49.31 | - | 36.03 | 58.2 | 0.00 | - | - | 534 | 1.02 |
+| 968 | cpu: bits + incremental + raycast + direct | 0.07 | 26.9 | 49.55 | - | 35.81 | 58.3 | 0.00 | - | - | 670 | 1.28 |
+| 969 | gpu: cubes@cpu + faces + clipmap + refloor + depth + raster + pathtrace | 0.07 | 26.9 | 43.44 | 36.71 | 1.79 | 32.2 | 7.12 | 1528 | 1773 | 1227 | 5.71 |
+| 970 | gpu: hier + sphere + quadtree + raster + pathtrace | 0.07 | 26.8 | 48.49 | 37.06 | 0.28 | 32.1 | 7.13 | 1259 | 2110 | 1056 | 6.03 |
+| 971 | cpu: brickmajor + incremental + raycast + direct | 0.07 | 26.7 | 51.41 | - | 35.89 | 58.3 | 0.00 | - | - | 982 | 1.87 |
+| 972 | gpu: clipmap + incremental + quadtree + raster + pathtrace | 0.07 | 26.6 | 50.40 | 37.19 | 0.20 | 32.1 | 7.13 | 1453 | 1860 | 1174 | 5.78 |
+| 973 | gpu: cubes@cpu + faces + rows + rowrun + depth + raster + pathtrace | 0.07 | 26.4 | 43.89 | 37.38 | 1.85 | 32.2 | 7.12 | 1398 | 1904 | 1061 | 5.65 |
+| 974 | cpu: u8 + incremental + raycast + direct | 0.07 | 26.4 | 67.31 | - | 37.02 | 58.3 | 0.00 | - | - | 552 | 1.05 |
+| 975 | cpu: morton + refloor + raycast + direct | 0.07 | 26.3 | 59.53 | - | 36.21 | 58.2 | 0.00 | - | - | 981 | 1.87 |
+| 976 | cpu: morton + incremental + raycast + direct | 0.07 | 26.2 | 52.99 | - | 36.36 | 58.3 | 0.00 | - | - | 998 | 1.90 |
+| 977 | cpu: palette + incremental + raycast + direct ◆ | 0.07 | 26.0 | 56.49 | - | 36.04 | 58.3 | 0.00 | - | - | 525 | 1.00 |
+| 978 | cpu: palette + refloor + raycast + direct | 0.07 | 25.8 | 57.34 | - | 36.39 | 58.2 | 0.00 | - | - | 526 | 1.00 |
+| 979 | gpu: clipmap + rowrun + quadtree + raster + pathtrace | 0.07 | 25.7 | 49.86 | 38.60 | 0.19 | 32.1 | 7.13 | 1453 | 1860 | 1174 | 5.78 |
+| 980 | gpu: greedy@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 0.07 | 25.6 | 48.35 | 38.70 | 6.22 | 32.1 | 7.13 | 352 | 559 | 1106 | 3.17 |
+| 981 | gpu: hier + rowrun + quadtree + raster + pathtrace | 0.07 | 25.5 | 48.81 | 39.00 | 0.28 | 32.1 | 7.13 | 1259 | 2110 | 1055 | 6.03 |
+| 982 | gpu: naive@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 0.07 | 25.5 | 51.65 | 38.81 | 2.72 | 32.2 | 7.12 | 1528 | 1773 | 1300 | 5.85 |
+| 983 | gpu: cubes@cpu + faces + prefix + rowrun + depth + raster + pathtrace | 0.07 | 25.3 | 45.79 | 39.02 | 1.86 | 32.2 | 7.12 | 1414 | 1916 | 1061 | 5.67 |
+| 984 | gpu: bricks + rowrun + quadtree + raster + pathtrace | 0.07 | 25.2 | 49.36 | 39.46 | 0.29 | 32.1 | 7.13 | 1258 | 2109 | 1051 | 6.02 |
+| 985 | gpu: greedy@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 0.07 | 25.1 | 61.03 | 39.16 | 7.21 | 32.1 | 7.13 | 206 | 302 | 1236 | 2.93 |
+| 986 | gpu: naive@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 0.07 | 24.7 | 50.91 | 40.21 | 3.79 | 32.2 | 7.12 | 480 | 734 | 1124 | 3.54 |
+| 987 | gpu: cubes@cpu + faces + distance + rowrun + depth + raster + pathtrace | 0.07 | 24.5 | 47.30 | 40.38 | 1.84 | 32.2 | 7.12 | 1846 | 2240 | 1060 | 6.29 |
+| 988 | gpu: cubes@cpu + faces + rows + incremental + depth + raster + pathtrace | 0.06 | 23.8 | 49.61 | 41.63 | 1.84 | 32.2 | 7.12 | 1398 | 1904 | 1060 | 5.64 |
+| 989 | gpu: rows + sphere + quadtree + raster + pathtrace | 0.06 | 23.7 | 54.93 | 41.99 | 0.30 | 32.1 | 7.13 | 1322 | 2141 | 1054 | 6.08 |
+| 990 | gpu: prefix + sphere + quadtree + raster + pathtrace | 0.06 | 23.5 | 54.75 | 42.29 | 0.29 | 32.1 | 7.13 | 1339 | 2154 | 1053 | 6.11 |
+| 991 | gpu: bricks + sphere + quadtree + raster + pathtrace | 0.06 | 23.1 | 56.03 | 43.04 | 0.30 | 32.1 | 7.13 | 1258 | 2109 | 1051 | 6.02 |
+| 992 | gpu: cubes@cpu + faces + hier + incremental + depth + raster + pathtrace | 0.06 | 22.9 | 50.62 | 43.17 | 1.85 | 32.2 | 7.12 | 1334 | 1872 | 1066 | 5.60 |
+| 993 | gpu: cubes@cpu + faces + tree64 + incremental + depth + raster + pathtrace | 0.06 | 22.8 | 49.85 | 43.64 | 2.90 | 32.2 | 7.12 | 480 | 709 | 1095 | 3.44 |
+| 994 | gpu: cubes@cpu + faces + prefix + incremental + depth + raster + pathtrace | 0.06 | 22.7 | 50.73 | 43.58 | 1.87 | 32.2 | 7.12 | 1414 | 1916 | 1060 | 5.67 |
+| 995 | gpu: cubes@cpu + faces + bricks + incremental + depth + raster + pathtrace | 0.06 | 22.6 | 51.20 | 43.86 | 2.37 | 32.2 | 7.12 | 1334 | 1872 | 1065 | 5.59 |
+| 996 | gpu: cubes@cpu + faces + clipmap + incremental + depth + raster + pathtrace | 0.06 | 21.1 | 55.77 | 46.98 | 1.79 | 32.2 | 7.12 | 1528 | 1773 | 1228 | 5.72 |
+| 997 | gpu: cubes@cpu + faces + distance + incremental + depth + raster + pathtrace | 0.06 | 20.7 | 56.79 | 47.72 | 1.87 | 32.2 | 7.12 | 1846 | 2240 | 1061 | 6.29 |
+| 998 | gpu: svo_dag + sphere + quadtree + raster + pathtrace | 0.05 | 20.5 | 61.13 | 48.53 | 2.46 | 32.1 | 7.13 | 259 | 393 | 1366 | 3.35 |
+| 999 | gpu: cubes@cpu + faces + hier + sphere + depth + raster + pathtrace | 0.05 | 19.5 | 60.34 | 50.83 | 1.88 | 32.2 | 7.12 | 1334 | 1872 | 1065 | 5.59 |
+| 1000 | gpu: clipmap + sphere + quadtree + raster + pathtrace | 0.05 | 18.8 | 70.00 | 52.92 | 0.20 | 32.1 | 7.13 | 1453 | 1860 | 1174 | 5.78 |
+| 1001 | gpu: cubes@cpu + faces + clipmap + rowrun + depth + raster + pathtrace | 0.05 | 18.6 | 62.66 | 53.28 | 1.83 | 32.2 | 7.12 | 1528 | 1773 | 1228 | 5.72 |
+| 1002 | gpu: svo_dag + incremental + quadtree + raster + pathtrace | 0.05 | 18.3 | 67.54 | 54.56 | 2.49 | 32.1 | 7.13 | 259 | 393 | 1367 | 3.35 |
+| 1003 | gpu: cubes@cpu + faces + rows + sphere + depth + raster + pathtrace | 0.05 | 18.0 | 65.81 | 55.15 | 1.88 | 32.2 | 7.12 | 1398 | 1904 | 1060 | 5.65 |
+| 1004 | gpu: cubes@cpu + faces + hier + rowrun + depth + raster + pathtrace | 0.05 | 18.0 | 64.59 | 55.20 | 1.86 | 32.2 | 7.12 | 1334 | 1872 | 1066 | 5.60 |
+| 1005 | gpu: tree64 + sphere + quadtree + raster + pathtrace | 0.05 | 17.8 | 72.53 | 56.11 | 1.43 | 32.1 | 7.13 | 405 | 673 | 1267 | 3.70 |
+| 1006 | gpu: cubes@cpu + faces + bricks + rowrun + depth + raster + pathtrace | 0.05 | 17.6 | 65.94 | 56.53 | 1.88 | 32.2 | 7.12 | 1334 | 1872 | 1066 | 5.59 |
+| 1007 | gpu: cubes@cpu + faces + prefix + sphere + depth + raster + pathtrace | 0.05 | 17.5 | 67.06 | 56.68 | 1.89 | 32.2 | 7.12 | 1414 | 1916 | 1060 | 5.67 |
+| 1008 | gpu: cubes@cpu + faces + bricks + sphere + depth + raster + pathtrace | 0.05 | 17.5 | 67.99 | 56.84 | 1.94 | 32.2 | 7.12 | 1334 | 1872 | 1066 | 5.59 |
+| 1009 | cpu: greedy + faces + raster + hier + incremental + direct | 0.05 | 16.9 | 87.25 | - | 58.00 | 63.0 | 0.00 | - | - | 1111 | 2.12 |
+| 1010 | cpu: greedy + faces + raster + prefix + incremental + direct | 0.04 | 16.8 | 88.30 | - | 58.06 | 63.0 | 0.00 | - | - | 1626 | 3.10 |
+| 1011 | cpu: greedy + faces + raster + hier + refloor + direct | 0.04 | 16.8 | 87.93 | - | 58.23 | 63.0 | 0.00 | - | - | 1094 | 2.08 |
+| 1012 | cpu: greedy + faces + raster + u8 + refloor + direct | 0.04 | 16.8 | 85.39 | - | 58.71 | 63.0 | 0.00 | - | - | 1366 | 2.60 |
+| 1013 | cpu: greedy + faces + raster + u8 + incremental + direct | 0.04 | 16.8 | 86.20 | - | 58.71 | 63.0 | 0.00 | - | - | 1400 | 2.67 |
+| 1014 | cpu: greedy + faces + raster + bits + incremental + direct | 0.04 | 16.8 | 89.22 | - | 58.43 | 63.0 | 0.00 | - | - | 1122 | 2.14 |
+| 1015 | cpu: greedy + faces + raster + prefix + refloor + direct | 0.04 | 16.7 | 88.50 | - | 58.32 | 63.0 | 0.00 | - | - | 1575 | 3.00 |
+| 1016 | cpu: greedy + faces + raster + bricks + incremental + direct | 0.04 | 16.7 | 86.59 | - | 58.85 | 63.0 | 0.00 | - | - | 1080 | 2.06 |
+| 1017 | cpu: greedy + faces + raster + bits + refloor + direct | 0.04 | 16.7 | 88.40 | - | 58.63 | 63.0 | 0.00 | - | - | 1142 | 2.18 |
+| 1018 | gpu: naive@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 0.04 | 16.6 | 71.92 | 59.72 | 4.94 | 32.2 | 7.12 | 334 | 526 | 1282 | 3.44 |
+| 1019 | cpu: greedy + faces + raster + brickmajor + incremental + direct | 0.04 | 16.6 | 90.51 | - | 58.67 | 63.0 | 0.00 | - | - | 1651 | 3.14 |
+| 1020 | cpu: greedy + faces + raster + bricks + refloor + direct | 0.04 | 16.6 | 87.73 | - | 59.42 | 63.0 | 0.00 | - | - | 1067 | 2.03 |
+| 1021 | cpu: greedy + faces + raster + morton + incremental + direct | 0.04 | 16.6 | 91.42 | - | 58.73 | 63.0 | 0.00 | - | - | 1710 | 3.26 |
+| 1022 | gpu: naive@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 0.04 | 16.5 | 76.09 | 60.19 | 3.83 | 32.2 | 7.12 | 480 | 733 | 1124 | 3.54 |
+| 1023 | cpu: greedy + faces + raster + morton + refloor + direct | 0.04 | 16.5 | 92.03 | - | 58.82 | 63.0 | 0.00 | - | - | 1667 | 3.17 |
+| 1024 | cpu: greedy + faces + raster + brickmajor + refloor + direct | 0.04 | 16.5 | 90.56 | - | 59.17 | 63.0 | 0.00 | - | - | 1648 | 3.14 |
+| 1025 | cpu: greedy + faces + raster + palette + incremental + direct | 0.04 | 16.4 | 94.08 | - | 58.65 | 63.0 | 0.00 | - | - | 1162 | 2.21 |
+| 1026 | cpu: greedy + faces + raster + palette + refloor + direct | 0.04 | 16.4 | 94.62 | - | 58.89 | 63.0 | 0.00 | - | - | 1156 | 2.20 |
+| 1027 | gpu: cubes@cpu + faces + svo_dag + incremental + depth + raster + pathtrace | 0.04 | 16.3 | 69.87 | 60.85 | 4.02 | 32.2 | 7.12 | 334 | 526 | 1260 | 3.40 |
+| 1028 | gpu: cubes@cpu + faces + svo_dag + sphere + depth + raster + pathtrace | 0.04 | 16.3 | 70.47 | 61.00 | 4.02 | 32.2 | 7.12 | 334 | 526 | 1270 | 3.42 |
+| 1029 | gpu: cubes@cpu + faces + clipmap + sphere + depth + raster + pathtrace | 0.04 | 15.3 | 77.91 | 64.78 | 1.84 | 32.2 | 7.12 | 1528 | 1773 | 1232 | 5.72 |
+| 1030 | gpu: cubes@cpu + faces + tree64 + sphere + depth + raster + pathtrace | 0.04 | 14.8 | 79.40 | 67.17 | 3.05 | 32.2 | 7.12 | 480 | 907 | 1097 | 3.82 |
+| 1031 | gpu: svo_dag + rowrun + quadtree + raster + pathtrace | 0.04 | 14.7 | 81.02 | 67.99 | 2.50 | 32.1 | 7.13 | 259 | 393 | 1360 | 3.34 |
+| 1032 | gpu: tree64 + rowrun + quadtree + raster + pathtrace | 0.04 | 14.2 | 84.21 | 70.11 | 1.45 | 32.1 | 7.13 | 405 | 799 | 1264 | 3.93 |
+| 1033 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.04 | 13.3 | 94.83 | 17.63 | 71.21 | 31.8 | 7.14 | 1084 | 1876 | 1800 | 7.00 |
+| 1034 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.04 | 13.1 | 154.44 | 3.35 | 71.35 | 42.7 | 0.04 | 1053 | 1844 | 1812 | 6.96 |
+| 1035 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 13.1 | 155.39 | 4.16 | 71.67 | 31.8 | 7.14 | 1092 | 1884 | 1854 | 7.12 |
+| 1036 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 13.1 | 153.26 | 4.71 | 72.09 | 31.8 | 7.14 | 1100 | 1892 | 1877 | 7.18 |
+| 1037 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 13.0 | 156.63 | 1.08 | 71.96 | 42.7 | 0.04 | 1069 | 1861 | 1821 | 7.01 |
+| 1038 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 13.0 | 158.23 | 0.89 | 72.10 | 42.7 | 0.04 | 1061 | 1852 | 1815 | 6.98 |
+| 1039 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.8 | 122.13 | 17.78 | 73.58 | 31.8 | 7.14 | 1084 | 1876 | 2346 | 8.04 |
+| 1040 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.8 | 119.78 | 17.66 | 73.87 | 31.8 | 7.14 | 1084 | 1876 | 2225 | 7.81 |
+| 1041 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.8 | 94.32 | 17.86 | 74.91 | 31.8 | 7.14 | 1084 | 1876 | 1822 | 7.04 |
+| 1042 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.8 | 94.62 | 18.08 | 74.89 | 31.8 | 7.14 | 1084 | 1876 | 2077 | 7.53 |
+| 1043 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.8 | 95.60 | 18.15 | 74.48 | 31.8 | 7.14 | 1084 | 1876 | 1797 | 6.99 |
+| 1044 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 153.82 | 4.46 | 73.05 | 31.8 | 7.14 | 1092 | 1884 | 2443 | 8.24 |
+| 1045 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 153.57 | 4.63 | 73.16 | 31.8 | 7.14 | 1100 | 1892 | 2344 | 8.07 |
+| 1046 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + refloor + direct | 0.03 | 12.7 | 160.61 | 4.33 | 74.38 | 42.7 | 0.04 | 1247 | 1596 | 1896 | 6.65 |
+| 1047 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.7 | 156.93 | 0.87 | 73.29 | 42.7 | 0.04 | 1061 | 1852 | 2376 | 8.05 |
+| 1048 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.7 | 157.41 | 1.09 | 73.13 | 42.7 | 0.04 | 1069 | 1861 | 2372 | 8.06 |
+| 1049 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + incremental + direct | 0.03 | 12.7 | 161.32 | 6.61 | 74.47 | 42.7 | 0.04 | 1247 | 1596 | 1897 | 6.65 |
+| 1050 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + incremental + direct | 0.03 | 12.7 | 116.79 | 10.54 | 76.77 | 42.7 | 0.04 | 53 | 131 | 2022 | 4.10 |
+| 1051 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 124.16 | 17.75 | 74.19 | 31.8 | 7.14 | 1084 | 1876 | 2381 | 8.11 |
+| 1052 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + sphere + direct | 0.03 | 12.7 | 158.84 | 6.79 | 73.71 | 42.7 | 0.04 | 1117 | 1876 | 1791 | 6.98 |
+| 1053 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + rowrun + direct | 0.03 | 12.7 | 148.85 | 3.95 | 76.75 | 42.7 | 0.04 | 53 | 131 | 2053 | 4.16 |
+| 1054 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 150.04 | 4.21 | 74.59 | 31.8 | 7.14 | 1092 | 1884 | 1740 | 6.90 |
+| 1055 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + sphere + direct | 0.03 | 12.7 | 114.66 | 7.28 | 76.91 | 42.7 | 0.04 | 53 | 131 | 2060 | 4.17 |
+| 1056 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 157.32 | 4.78 | 74.66 | 31.8 | 7.14 | 1100 | 1892 | 1876 | 7.18 |
+| 1057 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 153.97 | 4.75 | 73.71 | 31.8 | 7.14 | 1100 | 1892 | 2435 | 8.24 |
+| 1058 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 158.36 | 4.17 | 73.66 | 31.8 | 7.14 | 1092 | 1884 | 2369 | 8.10 |
+| 1059 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.7 | 157.86 | 0.88 | 73.52 | 42.7 | 0.04 | 1061 | 1852 | 2300 | 7.91 |
+| 1060 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.03 | 12.7 | 159.71 | 3.35 | 73.28 | 42.7 | 0.04 | 1053 | 1844 | 2397 | 8.08 |
+| 1061 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + rowrun + direct | 0.03 | 12.7 | 163.05 | 4.78 | 74.67 | 42.7 | 0.04 | 1247 | 1596 | 1941 | 6.74 |
+| 1062 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.03 | 12.7 | 164.79 | 3.35 | 74.53 | 42.7 | 0.04 | 1053 | 1844 | 2053 | 7.42 |
+| 1063 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.7 | 158.93 | 0.89 | 74.44 | 42.7 | 0.04 | 1061 | 1852 | 2062 | 7.45 |
+| 1064 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.7 | 156.18 | 1.12 | 73.56 | 42.7 | 0.04 | 1069 | 1861 | 2286 | 7.90 |
+| 1065 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + sphere + direct | 0.03 | 12.7 | 156.61 | 6.19 | 74.05 | 42.7 | 0.04 | 1053 | 1844 | 1816 | 6.97 |
+| 1066 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + rowrun + direct | 0.03 | 12.7 | 160.32 | 3.60 | 73.75 | 42.7 | 0.04 | 1117 | 1876 | 1782 | 6.97 |
+| 1067 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 157.43 | 4.71 | 74.37 | 31.8 | 7.14 | 1100 | 1892 | 1784 | 7.00 |
+| 1068 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + incremental + direct | 0.03 | 12.7 | 162.11 | 5.74 | 74.05 | 42.7 | 0.04 | 1133 | 1888 | 1793 | 7.01 |
+| 1069 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 159.22 | 3.34 | 73.74 | 42.7 | 0.04 | 1053 | 1844 | 2370 | 8.03 |
+| 1070 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + svo_dag + refloor + direct | 0.03 | 12.6 | 132.26 | 3.59 | 77.25 | 42.7 | 0.04 | 53 | 131 | 2043 | 4.14 |
+| 1071 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + rowrun + direct | 0.03 | 12.6 | 160.90 | 3.49 | 74.03 | 42.7 | 0.04 | 1053 | 1844 | 1789 | 6.92 |
+| 1072 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + incremental + direct | 0.03 | 12.6 | 159.15 | 4.78 | 74.00 | 42.7 | 0.04 | 1117 | 1876 | 1821 | 7.04 |
+| 1073 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + rows + refloor + direct | 0.03 | 12.6 | 158.62 | 3.24 | 73.85 | 42.7 | 0.04 | 1117 | 1876 | 1789 | 6.98 |
+| 1074 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + refloor + direct | 0.03 | 12.6 | 162.63 | 3.23 | 74.07 | 42.7 | 0.04 | 1053 | 1844 | 1789 | 6.92 |
+| 1075 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 155.03 | 4.22 | 74.63 | 31.8 | 7.14 | 1092 | 1884 | 1872 | 7.15 |
+| 1076 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + refloor + direct | 0.03 | 12.6 | 153.58 | 3.93 | 72.04 | 42.7 | 0.04 | 1565 | 2212 | 1806 | 7.65 |
+| 1077 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + clipmap + sphere + direct | 0.03 | 12.6 | 157.04 | 9.18 | 75.10 | 42.7 | 0.04 | 1247 | 1596 | 1940 | 6.73 |
+| 1078 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + refloor + direct | 0.03 | 12.6 | 155.64 | 3.00 | 73.90 | 42.7 | 0.04 | 1133 | 1888 | 1797 | 7.02 |
+| 1079 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + incremental + direct | 0.03 | 12.6 | 100.32 | 5.95 | 77.63 | 42.7 | 0.04 | 199 | 533 | 2024 | 4.87 |
+| 1080 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + sphere + direct | 0.03 | 12.6 | 149.25 | 3.68 | 72.09 | 42.7 | 0.04 | 1565 | 2212 | 1800 | 7.64 |
+| 1081 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + incremental + direct | 0.03 | 12.6 | 151.05 | 5.90 | 72.38 | 42.7 | 0.04 | 1565 | 2212 | 1814 | 7.67 |
+| 1082 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + sphere + direct | 0.03 | 12.6 | 161.95 | 7.17 | 74.42 | 42.7 | 0.04 | 1133 | 1888 | 1777 | 6.98 |
+| 1083 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 145.46 | 17.89 | 73.68 | 31.8 | 7.14 | 1084 | 1876 | 1865 | 7.12 |
+| 1084 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 161.09 | 3.35 | 75.05 | 42.7 | 0.04 | 1053 | 1844 | 1752 | 6.85 |
+| 1085 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 158.62 | 0.88 | 73.78 | 42.7 | 0.04 | 1061 | 1852 | 2381 | 8.06 |
+| 1086 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 164.82 | 4.21 | 75.25 | 31.8 | 7.14 | 1092 | 1884 | 2063 | 7.52 |
+| 1087 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 158.49 | 1.11 | 74.93 | 42.7 | 0.04 | 1069 | 1861 | 2065 | 7.48 |
+| 1088 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 165.53 | 4.75 | 75.32 | 31.8 | 7.14 | 1100 | 1892 | 2065 | 7.54 |
+| 1089 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + distance + rowrun + direct | 0.03 | 12.6 | 151.79 | 4.21 | 72.27 | 42.7 | 0.04 | 1565 | 2212 | 1765 | 7.57 |
+| 1090 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 162.99 | 3.34 | 74.15 | 42.7 | 0.04 | 1053 | 1844 | 2293 | 7.88 |
+| 1091 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 160.57 | 1.11 | 74.06 | 42.7 | 0.04 | 1069 | 1861 | 2365 | 8.05 |
+| 1092 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 158.32 | 4.27 | 74.41 | 31.8 | 7.14 | 1092 | 1884 | 2244 | 7.86 |
+| 1093 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + hier + incremental + direct | 0.03 | 12.6 | 157.78 | 5.14 | 74.72 | 42.7 | 0.04 | 1053 | 1844 | 1794 | 6.93 |
+| 1094 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + prefix + rowrun + direct | 0.03 | 12.6 | 162.11 | 3.25 | 74.33 | 42.7 | 0.04 | 1133 | 1888 | 1828 | 7.08 |
+| 1095 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + refloor + direct | 0.03 | 12.6 | 101.30 | 3.51 | 77.93 | 42.7 | 0.04 | 199 | 451 | 1978 | 4.63 |
+| 1096 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 163.47 | 0.90 | 75.15 | 42.7 | 0.04 | 1061 | 1852 | 1764 | 6.89 |
+| 1097 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.6 | 157.36 | 1.11 | 75.24 | 42.7 | 0.04 | 1069 | 1861 | 1779 | 6.93 |
+| 1098 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.5 | 164.28 | 1.12 | 74.87 | 42.7 | 0.04 | 1069 | 1861 | 1825 | 7.02 |
+| 1099 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + rowrun + direct | 0.03 | 12.5 | 106.27 | 4.05 | 78.00 | 42.7 | 0.04 | 199 | 476 | 2000 | 4.72 |
+| 1100 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.5 | 162.95 | 4.77 | 74.70 | 31.8 | 7.14 | 1100 | 1892 | 2320 | 8.02 |
+| 1101 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.5 | 161.87 | 0.89 | 75.00 | 42.7 | 0.04 | 1061 | 1852 | 1842 | 7.04 |
+| 1102 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + tree64 + sphere + direct | 0.03 | 12.5 | 101.41 | 8.85 | 78.22 | 42.7 | 0.04 | 199 | 547 | 1984 | 4.82 |
+| 1103 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.5 | 153.62 | 4.77 | 73.70 | 31.8 | 7.14 | 1100 | 1892 | 1914 | 7.25 |
+| 1104 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.5 | 155.15 | 0.89 | 73.57 | 42.7 | 0.04 | 1061 | 1852 | 1840 | 7.03 |
+| 1105 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.03 | 12.5 | 160.38 | 3.35 | 75.28 | 42.7 | 0.04 | 1053 | 1844 | 1841 | 7.02 |
+| 1106 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.4 | 153.63 | 4.28 | 74.11 | 31.8 | 7.14 | 1092 | 1884 | 1902 | 7.21 |
+| 1107 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.03 | 12.4 | 155.68 | 1.11 | 74.11 | 42.7 | 0.04 | 1069 | 1861 | 1835 | 7.04 |
+| 1108 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + direct | 0.03 | 12.4 | 155.62 | 3.36 | 74.44 | 42.7 | 0.04 | 1053 | 1844 | 1829 | 6.99 |
+| 1109 | gpu: cubes@cpu + faces + svo_dag + rowrun + depth + raster + pathtrace | 0.03 | 11.3 | 100.17 | 88.14 | 4.12 | 32.2 | 7.12 | 334 | 526 | 1253 | 3.39 |
+| 1110 | gpu: cubes@cpu + faces + tree64 + rowrun + depth + raster + pathtrace | 0.03 | 11.1 | 103.85 | 89.58 | 2.92 | 32.2 | 7.12 | 480 | 880 | 1095 | 3.76 |
+| 1111 | cpu: naive + faces + raster + hier + incremental + direct | 0.03 | 9.5 | 127.08 | - | 103.52 | 64.6 | 0.00 | - | - | 1830 | 3.49 |
+| 1112 | cpu: naive + faces + raster + prefix + refloor + direct | 0.03 | 9.5 | 125.42 | - | 103.70 | 64.6 | 0.00 | - | - | 2290 | 4.36 |
+| 1113 | cpu: naive + faces + raster + u8 + incremental + direct | 0.03 | 9.5 | 124.97 | - | 104.42 | 64.6 | 0.00 | - | - | 2030 | 3.87 |
+| 1114 | cpu: naive + faces + raster + prefix + incremental + direct | 0.03 | 9.5 | 122.52 | - | 103.98 | 64.6 | 0.00 | - | - | 2210 | 4.21 |
+| 1115 | cpu: naive + faces + raster + bricks + incremental + direct | 0.03 | 9.5 | 125.99 | - | 104.77 | 64.6 | 0.00 | - | - | 1815 | 3.46 |
+| 1116 | cpu: naive + faces + raster + hier + refloor + direct | 0.03 | 9.5 | 126.87 | - | 104.46 | 64.6 | 0.00 | - | - | 1841 | 3.51 |
+| 1117 | cpu: naive + faces + raster + u8 + refloor + direct | 0.03 | 9.5 | 125.57 | - | 104.87 | 64.6 | 0.00 | - | - | 2042 | 3.89 |
+| 1118 | cpu: naive + faces + raster + bits + incremental + direct | 0.03 | 9.4 | 125.05 | - | 104.57 | 64.6 | 0.00 | - | - | 1775 | 3.38 |
+| 1119 | cpu: naive + faces + raster + bricks + refloor + direct | 0.03 | 9.4 | 124.57 | - | 105.42 | 64.6 | 0.00 | - | - | 1721 | 3.28 |
+| 1120 | cpu: naive + faces + raster + palette + refloor + direct | 0.03 | 9.4 | 131.24 | - | 104.04 | 64.6 | 0.00 | - | - | 1813 | 3.45 |
+| 1121 | cpu: naive + faces + raster + bits + refloor + direct | 0.03 | 9.4 | 127.15 | - | 105.13 | 64.6 | 0.00 | - | - | 1767 | 3.36 |
+| 1122 | cpu: naive + faces + raster + palette + incremental + direct | 0.03 | 9.4 | 129.89 | - | 104.33 | 64.6 | 0.00 | - | - | 1817 | 3.46 |
+| 1123 | cpu: naive + faces + raster + brickmajor + incremental + direct | 0.03 | 9.4 | 128.27 | - | 105.07 | 64.6 | 0.00 | - | - | 2313 | 4.41 |
+| 1124 | cpu: naive + faces + raster + morton + incremental + direct | 0.02 | 9.4 | 130.74 | - | 105.07 | 64.6 | 0.00 | - | - | 2317 | 4.41 |
+| 1125 | cpu: naive + faces + raster + brickmajor + refloor + direct | 0.02 | 9.4 | 127.17 | - | 105.19 | 64.6 | 0.00 | - | - | 2325 | 4.43 |
+| 1126 | cpu: naive + faces + raster + morton + refloor + direct | 0.02 | 9.3 | 130.80 | - | 105.61 | 64.6 | 0.00 | - | - | 2302 | 4.38 |
+| 1127 | gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.9 | 474.74 | 3.39 | 199.85 | 42.5 | 0.04 | 1053 | 1844 | 1680 | 6.71 |
+| 1128 | gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.9 | 330.60 | 5.22 | 200.29 | 31.8 | 7.14 | 1092 | 1884 | 1673 | 6.77 |
+| 1129 | gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.9 | 328.91 | 6.04 | 200.31 | 31.8 | 7.14 | 1100 | 1892 | 1710 | 6.86 |
+| 1130 | gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.9 | 465.44 | 1.18 | 201.15 | 42.5 | 0.04 | 1069 | 1861 | 1759 | 6.89 |
+| 1131 | gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.8 | 481.78 | 0.92 | 201.82 | 42.5 | 0.04 | 1061 | 1852 | 1699 | 6.76 |
+| 1132 | gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.8 | 256.63 | 20.05 | 202.51 | 31.8 | 7.14 | 1084 | 1876 | 1618 | 6.65 |
+| 1133 | gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.8 | 263.14 | 5.19 | 206.17 | 31.8 | 7.14 | 1092 | 1884 | 1956 | 7.31 |
+| 1134 | gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.7 | 441.66 | 3.42 | 206.75 | 42.5 | 0.04 | 1053 | 1844 | 1990 | 7.30 |
+| 1135 | gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.7 | 483.02 | 0.93 | 207.14 | 42.5 | 0.04 | 1061 | 1852 | 1980 | 7.30 |
+| 1136 | gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.7 | 438.76 | 1.18 | 207.55 | 42.5 | 0.04 | 1069 | 1861 | 1990 | 7.33 |
+| 1137 | gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 261.44 | 20.08 | 207.92 | 31.8 | 7.14 | 1084 | 1876 | 2000 | 7.38 |
+| 1138 | gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.7 | 487.25 | 3.41 | 207.27 | 42.5 | 0.04 | 1053 | 1844 | 2283 | 7.86 |
+| 1139 | gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.7 | 488.14 | 0.92 | 207.42 | 42.5 | 0.04 | 1061 | 1852 | 2300 | 7.91 |
+| 1140 | gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 354.59 | 6.01 | 207.60 | 31.8 | 7.14 | 1100 | 1892 | 2248 | 7.89 |
+| 1141 | gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.7 | 480.40 | 1.17 | 207.68 | 42.5 | 0.04 | 1069 | 1861 | 2277 | 7.88 |
+| 1142 | gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 382.48 | 5.25 | 207.73 | 31.8 | 7.14 | 1092 | 1884 | 2256 | 7.88 |
+| 1143 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 268.84 | 5.17 | 209.67 | 31.8 | 7.14 | 1092 | 1884 | 1639 | 6.71 |
+| 1144 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 267.66 | 6.05 | 209.63 | 31.8 | 7.14 | 1100 | 1892 | 1602 | 6.66 |
+| 1145 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.7 | 421.04 | 3.42 | 209.78 | 42.5 | 0.04 | 1053 | 1844 | 1619 | 6.60 |
+| 1146 | gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 263.26 | 6.02 | 210.80 | 31.8 | 7.14 | 1100 | 1892 | 1970 | 7.36 |
+| 1147 | gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 490.50 | 0.92 | 209.50 | 42.5 | 0.04 | 1061 | 1852 | 1859 | 7.07 |
+| 1148 | gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 484.07 | 5.24 | 209.57 | 31.8 | 7.14 | 1092 | 1884 | 1742 | 6.91 |
+| 1149 | gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 493.41 | 3.41 | 209.68 | 42.5 | 0.04 | 1053 | 1844 | 1722 | 6.79 |
+| 1150 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 461.65 | 0.92 | 211.40 | 42.5 | 0.04 | 1061 | 1852 | 1652 | 6.67 |
+| 1151 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 493.79 | 1.17 | 210.60 | 42.5 | 0.04 | 1069 | 1861 | 2303 | 7.93 |
+| 1152 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 496.44 | 3.38 | 210.65 | 42.5 | 0.04 | 1053 | 1844 | 2267 | 7.83 |
+| 1153 | gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 494.97 | 1.17 | 210.15 | 42.5 | 0.04 | 1069 | 1861 | 1850 | 7.07 |
+| 1154 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 498.95 | 0.92 | 211.17 | 42.5 | 0.04 | 1061 | 1852 | 2299 | 7.91 |
+| 1155 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 266.00 | 20.10 | 212.27 | 31.8 | 7.14 | 1084 | 1876 | 1657 | 6.73 |
+| 1156 | gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 270.80 | 20.26 | 212.19 | 31.8 | 7.14 | 1084 | 1876 | 1656 | 6.73 |
+| 1157 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 443.76 | 1.18 | 212.34 | 42.5 | 0.04 | 1069 | 1861 | 1711 | 6.80 |
+| 1158 | gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 270.81 | 20.17 | 211.92 | 31.8 | 7.14 | 1084 | 1876 | 2296 | 7.94 |
+| 1159 | gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 356.42 | 5.27 | 212.13 | 31.8 | 7.14 | 1092 | 1884 | 1635 | 6.70 |
+| 1160 | gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 488.07 | 3.39 | 212.20 | 42.5 | 0.04 | 1053 | 1844 | 1661 | 6.68 |
+| 1161 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 357.26 | 6.08 | 211.99 | 31.8 | 7.14 | 1100 | 1892 | 2147 | 7.69 |
+| 1162 | gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 274.85 | 6.08 | 212.34 | 31.8 | 7.14 | 1100 | 1892 | 1681 | 6.81 |
+| 1163 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 343.87 | 5.25 | 213.25 | 31.8 | 7.14 | 1092 | 1884 | 2264 | 7.90 |
+| 1164 | gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 490.55 | 6.08 | 211.40 | 31.8 | 7.14 | 1100 | 1892 | 1728 | 6.89 |
+| 1165 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 500.67 | 0.91 | 214.61 | 42.5 | 0.04 | 1061 | 1852 | 2211 | 7.74 |
+| 1166 | gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 281.23 | 20.23 | 212.97 | 31.8 | 7.14 | 1084 | 1876 | 1710 | 6.83 |
+| 1167 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 508.10 | 3.40 | 213.74 | 42.5 | 0.04 | 1053 | 1844 | 2142 | 7.59 |
+| 1168 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 269.91 | 20.20 | 214.13 | 31.8 | 7.14 | 1084 | 1876 | 2177 | 7.72 |
+| 1169 | gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 485.89 | 1.18 | 214.14 | 42.5 | 0.04 | 1069 | 1861 | 1801 | 6.97 |
+| 1170 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 346.83 | 6.09 | 214.20 | 31.8 | 7.14 | 1100 | 1892 | 2154 | 7.71 |
+| 1171 | gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.6 | 512.03 | 0.92 | 214.82 | 42.5 | 0.04 | 1061 | 1852 | 1772 | 6.90 |
+| 1172 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 276.47 | 20.27 | 216.17 | 31.8 | 7.14 | 1084 | 1876 | 2233 | 7.82 |
+| 1173 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + direct | 0.01 | 4.5 | 511.14 | 1.18 | 216.54 | 42.5 | 0.04 | 1069 | 1861 | 2214 | 7.76 |
+| 1174 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 351.73 | 5.22 | 218.78 | 31.8 | 7.14 | 1092 | 1884 | 2141 | 7.67 |
+| 1175 | gpu: heightmap + columns + heightfield + direct (incorrect) | 0.42 | 158.0 | 14.08 | 5.59 | 0.03 | 15.3 | 23.79 | 28 | 78 | 1160 | 2.36 |
+| 1176 | cpu: heightmap + columns + heightfield + direct (incorrect) | 0.36 | 134.8 | 13.64 | - | 6.96 | 15.3 | 23.79 | - | - | 654 | 1.25 |
+| 1177 | gpu: heightmap + columns + heightfield + pathtrace (incorrect) | 0.08 | 28.2 | 53.23 | 34.76 | 0.11 | 15.1 | 27.02 | 60 | 110 | 1195 | 2.49 |
+| 1178 | gpu: naive@cpu + rayquery + raycast + direct | FAILED: [gpu: naive@cpu + rayquery + raycast + direct]: worker error: the device is out of memory (NVIDIA GeForce RTX 5060 Laptop GPU, this renderer seen holding up to 6923 MiB; the world's size and the resolution set most of it: lower the view radius or the resolution, or the storage's pool or slot knobs): wgpu error: Out of Memory | | | | | | | | | | |
+| 1179 | gpu: naive@cpu + rayquery + raycast + pathtrace | FAILED: [gpu: naive@cpu + rayquery + raycast + pathtrace]: worker error: the device is out of memory (NVIDIA GeForce RTX 5060 Laptop GPU, this renderer seen holding up to 6954 MiB; the world's size and the resolution set most of it: lower the view radius or the resolution, or the storage's pool or slot knobs): wgpu error: Out of Memory | | | | | | | | | | |
+
+### far [unlit]
+
+1920×1080. camera 4.78 blocks/frame (max 6.1), turn 0.52°/frame; 9141 chunks at start, 35.3 loads/frame; chunk fill 8%, solid 5.8%, surface 0.44%; sky 69%, hits at 465 blocks (median 455); 0.0 edits/frame; 0 lights; 0 mesh triangles.
+
+| # | renderer | rel | fps | frame p99 ms | gpu ms | cpu ms | psnr | bad pct | gpu mb | gpu device mb | peak rss mb | mem rel |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | gpu: bricks + refloor + composite + raycast + pathtrace ◆ | 1.00 | 400.5 | 13.08 | 0.88 | 0.10 | 57.7 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 2 | gpu: tree64 + refloor + composite + raycast + pathtrace ◆ | 0.96 | 385.1 | 12.81 | 0.97 | 1.14 | 57.7 | 0.02 | 223 | 515 | 1073 | 2.93 |
+| 3 | gpu: bricks + refloor + beam + composite + raycast + pathtrace | 0.95 | 381.9 | 13.32 | 1.13 | 0.09 | 57.8 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 4 | gpu: bricks + incremental + composite + raycast + pathtrace | 0.89 | 356.1 | 11.91 | 1.46 | 0.08 | 57.7 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 5 | gpu: bricks + rowrun + composite + raycast + pathtrace | 0.86 | 343.6 | 12.23 | 1.51 | 0.10 | 57.7 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 6 | gpu: tree64 + refloor + beam + composite + raycast + pathtrace ◆ | 0.83 | 332.3 | 13.26 | 1.60 | 1.15 | 57.8 | 0.02 | 223 | 460 | 1073 | 2.83 |
+| 7 | gpu: prefix + refloor + composite + raycast + pathtrace | 0.82 | 329.8 | 19.93 | 0.77 | 0.09 | 57.7 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 8 | gpu: clipmap + refloor + composite + raycast + pathtrace | 0.82 | 329.6 | 14.55 | 1.41 | 0.03 | 57.7 | 0.02 | 1271 | 1643 | 1021 | 4.92 |
+| 9 | gpu: bricks + incremental + beam + composite + raycast + pathtrace | 0.82 | 326.6 | 12.44 | 1.70 | 0.10 | 57.8 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 10 | gpu: bricks + rowrun + beam + composite + raycast + pathtrace | 0.81 | 322.9 | 12.31 | 1.73 | 0.10 | 57.8 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 11 | gpu: hier + refloor + composite + raycast + pathtrace | 0.80 | 321.7 | 19.84 | 0.81 | 0.09 | 57.7 | 0.02 | 1077 | 1894 | 913 | 5.19 |
+| 12 | gpu: prefix + refloor + beam + composite + raycast + pathtrace | 0.80 | 320.6 | 19.25 | 1.00 | 0.09 | 57.8 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 13 | gpu: tree64 + incremental + composite + raycast + pathtrace | 0.79 | 317.7 | 12.00 | 1.88 | 1.13 | 57.7 | 0.02 | 223 | 665 | 1078 | 3.22 |
+| 14 | gpu: hier + refloor + beam + composite + raycast + pathtrace | 0.78 | 312.3 | 19.10 | 1.05 | 0.09 | 57.8 | 0.02 | 1077 | 1894 | 914 | 5.19 |
+| 15 | gpu: prefix + rowrun + composite + raycast + pathtrace | 0.77 | 307.6 | 18.58 | 1.15 | 0.09 | 57.7 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 16 | gpu: rows + refloor + composite + raycast + pathtrace | 0.76 | 305.8 | 21.68 | 0.89 | 0.09 | 57.7 | 0.02 | 1140 | 1926 | 907 | 5.24 |
+| 17 | gpu: bricks + sphere + composite + raycast + pathtrace | 0.76 | 302.5 | 12.25 | 2.06 | 0.09 | 57.7 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 18 | gpu: clipmap + rowrun + composite + raycast + pathtrace | 0.75 | 298.8 | 12.25 | 2.00 | 0.03 | 57.7 | 0.02 | 1271 | 1643 | 1017 | 4.91 |
+| 19 | gpu: prefix + rowrun + beam + composite + raycast + pathtrace | 0.74 | 295.2 | 17.89 | 1.36 | 0.10 | 57.8 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 20 | gpu: svo_dag + refloor + composite + raycast + pathtrace ◆ | 0.74 | 295.1 | 24.82 | 0.92 | 2.05 | 57.7 | 0.02 | 77 | 176 | 1191 | 2.53 |
+| 21 | gpu: clipmap + incremental + composite + raycast + pathtrace | 0.73 | 293.5 | 12.37 | 1.98 | 0.03 | 57.7 | 0.02 | 1271 | 1643 | 1017 | 4.91 |
+| 22 | gpu: rows + rowrun + composite + raycast + pathtrace | 0.73 | 291.3 | 21.90 | 1.16 | 0.09 | 57.7 | 0.02 | 1140 | 1926 | 907 | 5.24 |
+| 23 | gpu: bricks + sphere + beam + composite + raycast + pathtrace | 0.73 | 290.8 | 12.52 | 2.29 | 0.10 | 57.8 | 0.02 | 1076 | 1894 | 904 | 5.17 |
+| 24 | gpu: rows + refloor + beam + composite + raycast + pathtrace | 0.72 | 289.7 | 22.21 | 1.13 | 0.10 | 57.8 | 0.02 | 1140 | 1926 | 908 | 5.24 |
+| 25 | gpu: tree64 + incremental + beam + composite + raycast + pathtrace | 0.72 | 286.5 | 11.41 | 2.33 | 1.15 | 57.8 | 0.02 | 223 | 463 | 1075 | 2.84 |
+| 26 | gpu: prefix + incremental + composite + raycast + pathtrace | 0.71 | 282.4 | 16.69 | 1.71 | 0.09 | 57.7 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 27 | gpu: rows + rowrun + beam + composite + raycast + pathtrace | 0.69 | 277.8 | 19.63 | 1.39 | 0.10 | 57.8 | 0.02 | 1140 | 1926 | 908 | 5.24 |
+| 28 | gpu: hier + incremental + composite + raycast + pathtrace | 0.69 | 277.7 | 18.42 | 1.62 | 0.09 | 57.7 | 0.02 | 1077 | 1894 | 914 | 5.19 |
+| 29 | gpu: clipmap + refloor + beam + composite + raycast + pathtrace | 0.68 | 273.5 | 12.38 | 2.27 | 0.03 | 57.8 | 0.02 | 1271 | 1643 | 1017 | 4.91 |
+| 30 | gpu: bricks + refloor + quadtree + gbuffer + pathtrace | 0.68 | 271.6 | 10.84 | 2.51 | 0.17 | 50.2 | 0.02 | 1274 | 2126 | 911 | 5.61 |
+| 31 | gpu: bricks + refloor + quadtree + raster + pathtrace | 0.68 | 271.5 | 10.79 | 2.50 | 0.16 | 50.2 | 0.02 | 1258 | 2109 | 912 | 5.58 |
+| 32 | gpu: prefix + incremental + beam + composite + raycast + pathtrace | 0.66 | 265.2 | 16.28 | 1.92 | 0.10 | 57.8 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 33 | gpu: bricks + refloor + quadtree + visbuffer + pathtrace | 0.66 | 265.1 | 8.80 | 2.63 | 0.17 | 50.2 | 0.02 | 1266 | 2118 | 910 | 5.59 |
+| 34 | gpu: hier + incremental + beam + composite + raycast + pathtrace | 0.66 | 263.6 | 16.64 | 1.83 | 0.10 | 57.8 | 0.02 | 1077 | 1894 | 914 | 5.19 |
+| 35 | gpu: rows + incremental + beam + composite + raycast + pathtrace | 0.65 | 260.2 | 16.72 | 1.78 | 0.09 | 57.8 | 0.02 | 1140 | 1926 | 908 | 5.24 |
+| 36 | gpu: svo_dag + refloor + beam + composite + raycast + pathtrace | 0.65 | 259.2 | 24.62 | 1.59 | 2.08 | 57.8 | 0.02 | 77 | 176 | 1192 | 2.53 |
+| 37 | gpu: hier + sphere + composite + raycast + pathtrace | 0.65 | 258.8 | 18.45 | 1.87 | 0.09 | 57.7 | 0.02 | 1077 | 1894 | 913 | 5.19 |
+| 38 | gpu: prefix + sphere + composite + raycast + pathtrace | 0.64 | 258.1 | 16.29 | 2.06 | 0.09 | 57.7 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 39 | gpu: hier + rowrun + composite + raycast + pathtrace | 0.64 | 257.9 | 16.28 | 2.00 | 0.10 | 57.7 | 0.02 | 1077 | 1894 | 914 | 5.19 |
+| 40 | gpu: hier + sphere + beam + composite + raycast + pathtrace | 0.64 | 256.5 | 15.35 | 2.11 | 0.10 | 57.8 | 0.02 | 1077 | 1894 | 914 | 5.19 |
+| 41 | gpu: rows + incremental + composite + raycast + pathtrace | 0.64 | 254.5 | 19.99 | 1.68 | 0.09 | 57.7 | 0.02 | 1140 | 1926 | 907 | 5.24 |
+| 42 | gpu: tree64 + sphere + composite + raycast + pathtrace | 0.63 | 253.8 | 10.84 | 2.97 | 1.14 | 57.7 | 0.02 | 223 | 478 | 1077 | 2.87 |
+| 43 | gpu: tree64 + refloor + quadtree + raster + pathtrace | 0.63 | 253.2 | 11.29 | 2.84 | 1.21 | 50.2 | 0.02 | 405 | 725 | 1123 | 3.42 |
+| 44 | gpu: prefix + sphere + beam + composite + raycast + pathtrace | 0.63 | 251.3 | 14.62 | 2.28 | 0.10 | 57.8 | 0.02 | 1157 | 1939 | 908 | 5.26 |
+| 45 | gpu: tree64 + refloor + quadtree + gbuffer + pathtrace | 0.63 | 251.0 | 11.09 | 2.87 | 1.23 | 50.2 | 0.02 | 421 | 846 | 1124 | 3.64 |
+| 46 | gpu: distance + sphere + composite + raycast + pathtrace | 0.63 | 250.6 | 31.09 | 0.64 | 0.09 | 57.7 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 47 | gpu: rows + sphere + composite + raycast + pathtrace | 0.63 | 250.3 | 15.78 | 2.08 | 0.09 | 57.7 | 0.02 | 1140 | 1926 | 907 | 5.24 |
+| 48 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + raster(faces~iterate2) + pathtrace | 0.62 | 248.8 | 10.50 | 2.91 | 0.17 | 50.7 | 0.02 | 1258 | 2109 | 915 | 5.59 |
+| 49 | gpu: tree64 + refloor + quadtree + visbuffer + pathtrace | 0.62 | 247.3 | 11.12 | 2.91 | 1.23 | 50.2 | 0.02 | 413 | 806 | 1124 | 3.57 |
+| 50 | gpu: clipmap + rowrun + beam + composite + raycast + pathtrace | 0.61 | 246.2 | 13.18 | 2.82 | 0.03 | 57.8 | 0.02 | 1271 | 1643 | 1017 | 4.91 |
+| 51 | gpu: clipmap + sphere + composite + raycast + pathtrace | 0.61 | 245.5 | 13.35 | 2.80 | 0.03 | 57.7 | 0.02 | 1271 | 1643 | 1016 | 4.91 |
+| 52 | gpu: hier + rowrun + beam + composite + raycast + pathtrace | 0.61 | 244.3 | 16.34 | 2.25 | 0.10 | 57.8 | 0.02 | 1077 | 1894 | 914 | 5.19 |
+| 53 | gpu: distance + refloor + composite + raycast + pathtrace | 0.61 | 243.9 | 30.74 | 0.78 | 0.09 | 57.7 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 54 | gpu: prefix + refloor + quadtree + raster + pathtrace | 0.61 | 243.2 | 12.52 | 2.39 | 0.16 | 50.2 | 0.02 | 1339 | 2154 | 918 | 5.68 |
+| 55 | gpu: clipmap + refloor + quadtree + gbuffer + pathtrace | 0.60 | 240.3 | 11.33 | 3.05 | 0.11 | 50.2 | 0.02 | 1469 | 1877 | 1031 | 5.37 |
+| 56 | gpu: distance + sphere + beam + composite + raycast + pathtrace | 0.60 | 240.1 | 30.16 | 0.88 | 0.09 | 57.8 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 57 | gpu: clipmap + incremental + beam + composite + raycast + pathtrace | 0.60 | 239.9 | 14.85 | 2.96 | 0.03 | 57.8 | 0.02 | 1271 | 1643 | 1021 | 4.92 |
+| 58 | gpu: clipmap + refloor + quadtree + raster + pathtrace | 0.60 | 239.3 | 11.99 | 3.00 | 0.10 | 50.2 | 0.02 | 1453 | 1860 | 1032 | 5.34 |
+| 59 | gpu: clipmap + refloor + quadtree + visbuffer + pathtrace | 0.60 | 239.2 | 12.07 | 3.05 | 0.11 | 50.2 | 0.02 | 1461 | 1869 | 1031 | 5.36 |
+| 60 | gpu: prefix + refloor + quadtree + gbuffer + pathtrace | 0.59 | 237.8 | 14.25 | 2.41 | 0.18 | 50.2 | 0.02 | 1354 | 2170 | 917 | 5.71 |
+| 61 | gpu: prefix + refloor + quadtree + visbuffer + pathtrace | 0.59 | 237.5 | 14.24 | 2.42 | 0.17 | 50.2 | 0.02 | 1346 | 2162 | 917 | 5.69 |
+| 62 | gpu: bricks + incremental + quadtree + raster + pathtrace | 0.59 | 237.4 | 10.08 | 3.37 | 0.17 | 50.2 | 0.02 | 1258 | 2109 | 918 | 5.59 |
+| 63 | gpu: hier + refloor + quadtree + gbuffer + pathtrace | 0.59 | 236.0 | 14.72 | 2.44 | 0.17 | 50.2 | 0.02 | 1274 | 2126 | 919 | 5.63 |
+| 64 | gpu: hier + refloor + quadtree + visbuffer + pathtrace | 0.59 | 235.4 | 15.78 | 2.44 | 0.16 | 50.2 | 0.02 | 1267 | 2118 | 920 | 5.61 |
+| 65 | gpu: rows + sphere + beam + composite + raycast + pathtrace | 0.59 | 235.3 | 16.74 | 2.31 | 0.10 | 57.8 | 0.02 | 1140 | 1926 | 908 | 5.24 |
+| 66 | gpu: distance + refloor + beam + composite + raycast + pathtrace | 0.58 | 233.8 | 29.87 | 1.01 | 0.09 | 57.8 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 67 | gpu: hier + refloor + quadtree + raster + pathtrace | 0.58 | 233.3 | 14.74 | 2.40 | 0.17 | 50.2 | 0.02 | 1259 | 2110 | 920 | 5.60 |
+| 68 | gpu: bricks + incremental + quadtree + visbuffer + pathtrace | 0.58 | 232.0 | 9.83 | 3.40 | 0.18 | 50.1 | 0.02 | 1266 | 2118 | 920 | 5.61 |
+| 69 | gpu: bricks + rowrun + quadtree + raster + pathtrace | 0.58 | 231.7 | 9.58 | 3.47 | 0.16 | 50.2 | 0.02 | 1258 | 2109 | 921 | 5.60 |
+| 70 | gpu: bricks + rowrun + quadtree + visbuffer + pathtrace | 0.57 | 229.8 | 10.08 | 3.52 | 0.17 | 50.2 | 0.02 | 1266 | 2118 | 920 | 5.61 |
+| 71 | gpu: tree64 + sphere + beam + composite + raycast + pathtrace | 0.57 | 229.2 | 10.04 | 3.60 | 1.16 | 57.8 | 0.02 | 223 | 470 | 1074 | 2.85 |
+| 72 | gpu: distance + rowrun + composite + raycast + pathtrace | 0.57 | 229.0 | 29.81 | 1.22 | 0.09 | 57.7 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 73 | gpu: svo_dag + sphere + composite + raycast + pathtrace | 0.57 | 226.8 | 22.65 | 2.39 | 2.06 | 57.7 | 0.02 | 77 | 176 | 1191 | 2.53 |
+| 74 | gpu: bricks + incremental + quadtree + gbuffer + pathtrace | 0.57 | 226.4 | 11.37 | 3.49 | 0.18 | 50.2 | 0.02 | 1274 | 2126 | 920 | 5.63 |
+| 75 | gpu: rows + refloor + quadtree + gbuffer + pathtrace | 0.56 | 225.2 | 16.46 | 2.51 | 0.17 | 50.2 | 0.02 | 1338 | 2158 | 917 | 5.68 |
+| 76 | gpu: rows + refloor + quadtree + raster + pathtrace | 0.56 | 225.2 | 15.60 | 2.48 | 0.16 | 50.2 | 0.02 | 1322 | 2141 | 918 | 5.65 |
+| 77 | gpu: prefix + rowrun + quadtree + raster + pathtrace | 0.56 | 224.5 | 15.01 | 2.89 | 0.17 | 50.2 | 0.02 | 1339 | 2154 | 919 | 5.68 |
+| 78 | gpu: bricks + rowrun + quadtree + gbuffer + pathtrace | 0.56 | 223.3 | 10.45 | 3.60 | 0.17 | 50.2 | 0.02 | 1274 | 2126 | 921 | 5.63 |
+| 79 | gpu: bricks + sphere + quadtree + gbuffer + pathtrace | 0.56 | 222.5 | 10.96 | 3.69 | 0.18 | 50.2 | 0.02 | 1274 | 2126 | 920 | 5.63 |
+| 80 | gpu: prefix + rowrun + quadtree + gbuffer + pathtrace | 0.55 | 221.8 | 15.25 | 2.92 | 0.18 | 50.2 | 0.02 | 1354 | 2170 | 918 | 5.71 |
+| 81 | gpu: rows + refloor + quadtree + visbuffer + pathtrace | 0.55 | 221.2 | 15.80 | 2.51 | 0.17 | 50.2 | 0.02 | 1330 | 2150 | 917 | 5.67 |
+| 82 | gpu: bricks + sphere + quadtree + visbuffer + pathtrace | 0.55 | 221.1 | 10.17 | 3.69 | 0.17 | 50.1 | 0.02 | 1266 | 2118 | 917 | 5.61 |
+| 83 | gpu: prefix + rowrun + quadtree + visbuffer + pathtrace | 0.55 | 221.0 | 13.35 | 2.92 | 0.18 | 50.2 | 0.02 | 1346 | 2162 | 917 | 5.69 |
+| 84 | gpu: bricks + sphere + quadtree + raster + pathtrace | 0.55 | 220.6 | 10.58 | 3.67 | 0.17 | 50.2 | 0.02 | 1258 | 2109 | 920 | 5.60 |
+| 85 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + visbuffer(faces~iterate2) + pathtrace | 0.55 | 219.8 | 17.17 | 2.97 | 0.18 | 50.7 | 0.02 | 1266 | 2118 | 915 | 5.60 |
+| 86 | gpu: clipmap + sphere + beam + composite + raycast + pathtrace | 0.55 | 218.3 | 12.76 | 3.75 | 0.03 | 57.8 | 0.02 | 1271 | 1643 | 1021 | 4.92 |
+| 87 | gpu: distance + rowrun + beam + composite + raycast + pathtrace | 0.54 | 217.7 | 29.24 | 1.44 | 0.10 | 57.8 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 88 | gpu: rows + rowrun + quadtree + gbuffer + pathtrace | 0.54 | 216.7 | 16.36 | 2.83 | 0.17 | 50.2 | 0.02 | 1338 | 2158 | 917 | 5.68 |
+| 89 | gpu: clipmap + rowrun + quadtree + raster + pathtrace | 0.54 | 214.8 | 11.01 | 3.66 | 0.10 | 50.2 | 0.02 | 1453 | 1860 | 1031 | 5.34 |
+| 90 | gpu: rows + rowrun + quadtree + raster + pathtrace | 0.53 | 214.2 | 15.11 | 2.80 | 0.17 | 50.2 | 0.02 | 1322 | 2141 | 918 | 5.65 |
+| 91 | gpu: clipmap + rowrun + quadtree + gbuffer + pathtrace | 0.53 | 214.2 | 12.06 | 3.70 | 0.11 | 50.2 | 0.02 | 1469 | 1877 | 1035 | 5.38 |
+| 92 | gpu: tree64 + incremental + quadtree + raster + pathtrace | 0.53 | 213.8 | 10.57 | 3.92 | 1.22 | 50.2 | 0.02 | 405 | 704 | 1124 | 3.38 |
+| 93 | gpu: clipmap + rowrun + quadtree + visbuffer + pathtrace | 0.53 | 213.2 | 11.38 | 3.71 | 0.11 | 50.2 | 0.02 | 1461 | 1869 | 1035 | 5.37 |
+| 94 | gpu: distance + incremental + composite + raycast + pathtrace | 0.53 | 212.5 | 28.69 | 1.59 | 0.09 | 57.7 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 95 | gpu: clipmap + incremental + quadtree + visbuffer + pathtrace | 0.53 | 212.3 | 11.41 | 3.82 | 0.11 | 50.1 | 0.02 | 1461 | 1869 | 1036 | 5.37 |
+| 96 | gpu: tree64 + incremental + quadtree + visbuffer + pathtrace | 0.53 | 212.1 | 9.82 | 3.96 | 1.24 | 50.1 | 0.02 | 413 | 674 | 1123 | 3.32 |
+| 97 | gpu: hier + incremental + quadtree + raster + pathtrace | 0.53 | 211.8 | 15.67 | 3.25 | 0.17 | 50.2 | 0.02 | 1259 | 2110 | 920 | 5.60 |
+| 98 | gpu: rows + rowrun + quadtree + visbuffer + pathtrace | 0.53 | 211.2 | 13.97 | 2.84 | 0.17 | 50.2 | 0.02 | 1330 | 2150 | 917 | 5.67 |
+| 99 | gpu: clipmap + incremental + quadtree + gbuffer + pathtrace | 0.53 | 210.5 | 12.25 | 3.82 | 0.11 | 50.2 | 0.02 | 1469 | 1877 | 1035 | 5.38 |
+| 100 | gpu: hier + incremental + quadtree + gbuffer + pathtrace | 0.52 | 209.5 | 15.15 | 3.27 | 0.17 | 50.2 | 0.02 | 1274 | 2126 | 920 | 5.63 |
+| 101 | gpu: tree64 + incremental + quadtree + gbuffer + pathtrace | 0.52 | 209.4 | 9.92 | 4.01 | 1.23 | 50.2 | 0.02 | 421 | 683 | 1124 | 3.34 |
+| 102 | gpu: clipmap + incremental + quadtree + raster + pathtrace | 0.52 | 208.9 | 13.02 | 3.80 | 0.11 | 50.2 | 0.02 | 1453 | 1860 | 1036 | 5.35 |
+| 103 | gpu: svo_dag + sphere + beam + composite + raycast + pathtrace | 0.52 | 208.3 | 22.32 | 3.00 | 2.08 | 57.8 | 0.02 | 77 | 176 | 1192 | 2.53 |
+| 104 | gpu: distance + incremental + beam + composite + raycast + pathtrace | 0.52 | 207.8 | 24.80 | 1.83 | 0.10 | 57.8 | 0.02 | 1588 | 2262 | 908 | 5.86 |
+| 105 | gpu: prefix + incremental + quadtree + gbuffer + pathtrace | 0.52 | 207.7 | 14.65 | 3.40 | 0.18 | 50.2 | 0.02 | 1354 | 2170 | 918 | 5.71 |
+| 106 | gpu: prefix + incremental + quadtree + raster + pathtrace | 0.52 | 206.9 | 15.83 | 3.38 | 0.17 | 50.2 | 0.02 | 1339 | 2154 | 918 | 5.68 |
+| 107 | gpu: rows + incremental + quadtree + raster + pathtrace | 0.52 | 206.3 | 17.18 | 3.16 | 0.16 | 50.2 | 0.02 | 1322 | 2141 | 918 | 5.65 |
+| 108 | gpu: hier + incremental + quadtree + visbuffer + pathtrace | 0.51 | 205.3 | 16.06 | 3.28 | 0.18 | 50.1 | 0.02 | 1267 | 2118 | 919 | 5.61 |
+| 109 | gpu: svo_dag + incremental + composite + raycast + pathtrace | 0.51 | 205.3 | 22.63 | 3.12 | 2.07 | 57.7 | 0.02 | 77 | 176 | 1191 | 2.53 |
+| 110 | gpu: prefix + incremental + quadtree + visbuffer + pathtrace | 0.51 | 205.1 | 15.07 | 3.40 | 0.18 | 50.1 | 0.02 | 1346 | 2162 | 917 | 5.69 |
+| 111 | gpu: tree64 + rowrun + composite + raycast + pathtrace | 0.51 | 205.0 | 9.07 | 4.27 | 1.15 | 57.7 | 0.02 | 223 | 464 | 1074 | 2.84 |
+| 112 | gpu: svo_dag + refloor + quadtree + gbuffer + pathtrace | 0.51 | 204.1 | 22.33 | 2.97 | 2.17 | 50.2 | 0.02 | 275 | 410 | 1212 | 3.00 |
+| 113 | gpu: svo_dag + refloor + quadtree + raster + pathtrace | 0.51 | 203.7 | 23.16 | 2.96 | 2.15 | 50.2 | 0.02 | 259 | 393 | 1214 | 2.97 |
+| 114 | gpu: rows + incremental + quadtree + visbuffer + pathtrace | 0.51 | 202.8 | 14.14 | 3.19 | 0.18 | 50.1 | 0.02 | 1330 | 2150 | 917 | 5.67 |
+| 115 | gpu: rows + incremental + quadtree + gbuffer + pathtrace | 0.50 | 201.7 | 17.43 | 3.19 | 0.18 | 50.2 | 0.02 | 1338 | 2158 | 919 | 5.69 |
+| 116 | gpu: boxes@cpu + rayquery + raycast + pathtrace | 0.50 | 201.3 | 24.05 | 1.58 | 1.81 | 57.7 | 0.02 | 1169 | 1865 | 1603 | 6.41 |
+| 117 | gpu: hier + sphere + quadtree + raster + pathtrace | 0.50 | 201.0 | 14.66 | 3.52 | 0.17 | 50.2 | 0.02 | 1259 | 2110 | 921 | 5.60 |
+| 118 | gpu: svo_dag + refloor + quadtree + visbuffer + pathtrace | 0.50 | 198.4 | 22.66 | 3.09 | 2.17 | 50.2 | 0.02 | 267 | 401 | 1213 | 2.98 |
+| 119 | gpu: hier + sphere + quadtree + gbuffer + pathtrace | 0.50 | 198.3 | 15.47 | 3.55 | 0.18 | 50.2 | 0.02 | 1274 | 2126 | 920 | 5.63 |
+| 120 | gpu: hier + sphere + quadtree + visbuffer + pathtrace | 0.49 | 196.5 | 15.74 | 3.56 | 0.18 | 50.1 | 0.02 | 1267 | 2118 | 922 | 5.62 |
+| 121 | gpu: prefix + sphere + quadtree + gbuffer + pathtrace | 0.49 | 196.1 | 16.23 | 3.80 | 0.18 | 50.2 | 0.02 | 1354 | 2170 | 919 | 5.71 |
+| 122 | gpu: prefix + sphere + quadtree + raster + pathtrace | 0.49 | 195.8 | 15.14 | 3.77 | 0.18 | 50.2 | 0.02 | 1339 | 2154 | 918 | 5.68 |
+| 123 | gpu: hier + rowrun + quadtree + raster + pathtrace | 0.49 | 195.4 | 15.11 | 3.74 | 0.17 | 50.2 | 0.02 | 1259 | 2110 | 924 | 5.60 |
+| 124 | gpu: svo_dag + incremental + beam + composite + raycast + pathtrace | 0.49 | 194.6 | 22.36 | 3.47 | 2.10 | 57.8 | 0.02 | 77 | 176 | 1191 | 2.53 |
+| 125 | gpu: hier + rowrun + quadtree + visbuffer + pathtrace | 0.48 | 194.0 | 15.26 | 3.78 | 0.18 | 50.2 | 0.02 | 1267 | 2118 | 924 | 5.62 |
+| 126 | gpu: prefix + sphere + quadtree + visbuffer + pathtrace | 0.48 | 193.7 | 15.57 | 3.80 | 0.18 | 50.1 | 0.02 | 1346 | 2162 | 917 | 5.69 |
+| 127 | gpu: clipmap + sphere + quadtree + gbuffer + pathtrace | 0.48 | 193.5 | 11.91 | 4.47 | 0.11 | 50.2 | 0.02 | 1469 | 1877 | 1036 | 5.38 |
+| 128 | gpu: hier + rowrun + quadtree + gbuffer + pathtrace | 0.48 | 193.5 | 15.48 | 3.78 | 0.18 | 50.2 | 0.02 | 1274 | 2126 | 924 | 5.64 |
+| 129 | gpu: distance + sphere + quadtree + raster + pathtrace | 0.48 | 192.7 | 23.89 | 2.23 | 0.16 | 50.2 | 0.02 | 1770 | 2477 | 918 | 6.27 |
+| 130 | gpu: distance + sphere + quadtree + gbuffer + pathtrace | 0.48 | 192.5 | 23.84 | 2.25 | 0.17 | 50.2 | 0.02 | 1786 | 2494 | 917 | 6.30 |
+| 131 | gpu: rows + sphere + quadtree + raster + pathtrace | 0.48 | 192.0 | 16.14 | 3.66 | 0.17 | 50.2 | 0.02 | 1322 | 2141 | 922 | 5.66 |
+| 132 | gpu: svo_dag + rowrun + composite + raycast + pathtrace | 0.48 | 191.8 | 22.06 | 3.60 | 2.05 | 57.7 | 0.02 | 77 | 176 | 1191 | 2.53 |
+| 133 | gpu: clipmap + sphere + quadtree + visbuffer + pathtrace | 0.48 | 191.7 | 11.98 | 4.52 | 0.12 | 50.1 | 0.02 | 1461 | 1869 | 1036 | 5.37 |
+| 134 | gpu: clipmap + sphere + quadtree + raster + pathtrace | 0.48 | 190.4 | 12.91 | 4.48 | 0.11 | 50.2 | 0.02 | 1453 | 1860 | 1037 | 5.35 |
+| 135 | gpu: distance + sphere + quadtree + visbuffer + pathtrace | 0.48 | 190.2 | 23.43 | 2.26 | 0.17 | 50.1 | 0.02 | 1778 | 2486 | 917 | 6.29 |
+| 136 | gpu: rows + sphere + quadtree + visbuffer + pathtrace | 0.47 | 189.7 | 16.34 | 3.70 | 0.18 | 50.1 | 0.02 | 1330 | 2150 | 917 | 5.67 |
+| 137 | gpu: distance + refloor + quadtree + visbuffer + pathtrace | 0.47 | 189.5 | 23.67 | 2.44 | 0.17 | 50.1 | 0.02 | 1778 | 2486 | 917 | 6.29 |
+| 138 | gpu: distance + refloor + quadtree + gbuffer + pathtrace | 0.47 | 188.5 | 21.90 | 2.44 | 0.18 | 50.2 | 0.02 | 1786 | 2494 | 917 | 6.30 |
+| 139 | gpu: distance + refloor + quadtree + raster + pathtrace | 0.47 | 188.0 | 20.50 | 2.41 | 0.17 | 50.2 | 0.02 | 1770 | 2477 | 918 | 6.27 |
+| 140 | gpu: rows + sphere + quadtree + gbuffer + pathtrace | 0.47 | 187.0 | 16.66 | 3.70 | 0.17 | 50.2 | 0.02 | 1338 | 2158 | 919 | 5.69 |
+| 141 | gpu: tree64 + sphere + quadtree + raster + pathtrace | 0.47 | 186.9 | 9.43 | 4.79 | 1.24 | 50.2 | 0.02 | 405 | 710 | 1125 | 3.39 |
+| 142 | gpu: naive@cpu + faces + bricks + refloor + depth + raster + pathtrace | 0.47 | 186.7 | 25.51 | 1.45 | 2.50 | 53.2 | 0.02 | 1334 | 1872 | 1134 | 5.55 |
+| 143 | gpu: naive@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 0.46 | 185.4 | 25.57 | 1.51 | 2.49 | 53.2 | 0.02 | 1350 | 1889 | 1134 | 5.58 |
+| 144 | gpu: naive@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 0.46 | 184.9 | 25.78 | 1.52 | 2.52 | 53.2 | 0.02 | 1342 | 1880 | 1134 | 5.57 |
+| 145 | gpu: tree64 + sphere + quadtree + visbuffer + pathtrace | 0.46 | 184.2 | 9.84 | 4.82 | 1.27 | 50.1 | 0.02 | 413 | 916 | 1122 | 3.77 |
+| 146 | gpu: tree64 + sphere + quadtree + gbuffer + pathtrace | 0.46 | 184.1 | 9.26 | 4.81 | 1.26 | 50.2 | 0.02 | 421 | 966 | 1122 | 3.86 |
+| 147 | gpu: tree64 + rowrun + beam + composite + raycast + pathtrace | 0.46 | 184.1 | 9.60 | 4.91 | 1.17 | 57.8 | 0.02 | 223 | 491 | 1075 | 2.89 |
+| 148 | gpu: distance + rowrun + quadtree + raster + pathtrace | 0.45 | 180.3 | 22.08 | 2.82 | 0.17 | 50.2 | 0.02 | 1770 | 2477 | 918 | 6.27 |
+| 149 | gpu: svo_dag + rowrun + beam + composite + raycast + pathtrace | 0.44 | 177.2 | 21.37 | 4.19 | 2.10 | 57.8 | 0.02 | 77 | 176 | 1196 | 2.54 |
+| 150 | gpu: distance + rowrun + quadtree + gbuffer + pathtrace | 0.44 | 177.1 | 23.67 | 2.86 | 0.18 | 50.2 | 0.02 | 1786 | 2494 | 918 | 6.30 |
+| 151 | gpu: bricks + refloor + coverage(sky~prev) + quadtree + gbuffer(faces~iterate2) + pathtrace | 0.44 | 176.2 | 31.32 | 2.97 | 0.21 | 50.7 | 0.02 | 1274 | 2126 | 926 | 5.64 |
+| 152 | gpu: distance + rowrun + quadtree + visbuffer + pathtrace | 0.44 | 175.8 | 22.46 | 2.87 | 0.18 | 50.1 | 0.02 | 1778 | 2486 | 941 | 6.33 |
+| 153 | gpu: distance + incremental + quadtree + raster + pathtrace | 0.42 | 167.1 | 23.91 | 3.53 | 0.17 | 50.2 | 0.02 | 1770 | 2477 | 977 | 6.38 |
+| 154 | gpu: svo_dag + sphere + quadtree + raster + pathtrace | 0.42 | 166.6 | 22.97 | 4.53 | 2.18 | 50.2 | 0.02 | 259 | 393 | 1213 | 2.97 |
+| 155 | gpu: svo_dag + sphere + quadtree + gbuffer + pathtrace | 0.41 | 165.5 | 22.64 | 4.54 | 2.19 | 50.2 | 0.02 | 275 | 410 | 1213 | 3.00 |
+| 156 | gpu: svo_dag + sphere + quadtree + visbuffer + pathtrace | 0.41 | 164.3 | 22.75 | 4.57 | 2.19 | 50.1 | 0.02 | 267 | 401 | 1213 | 2.98 |
+| 157 | gpu: distance + incremental + quadtree + gbuffer + pathtrace | 0.41 | 164.3 | 23.75 | 3.56 | 0.18 | 50.2 | 0.02 | 1786 | 2494 | 974 | 6.41 |
+| 158 | gpu: distance + incremental + quadtree + visbuffer + pathtrace | 0.41 | 163.3 | 24.55 | 3.56 | 0.19 | 50.1 | 0.02 | 1778 | 2486 | 977 | 6.40 |
+| 159 | gpu: svo_dag + incremental + quadtree + raster + pathtrace | 0.38 | 151.5 | 22.59 | 5.27 | 2.16 | 50.2 | 0.02 | 259 | 393 | 1213 | 2.97 |
+| 160 | gpu: svo_dag + incremental + quadtree + visbuffer + pathtrace | 0.38 | 150.9 | 22.80 | 5.29 | 2.19 | 50.1 | 0.02 | 267 | 401 | 1214 | 2.99 |
+| 161 | gpu: svo_dag + incremental + quadtree + gbuffer + pathtrace | 0.38 | 150.4 | 22.29 | 5.26 | 2.22 | 50.2 | 0.02 | 275 | 410 | 1214 | 3.00 |
+| 162 | gpu: greedy@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 0.34 | 137.4 | 39.51 | 0.63 | 4.96 | 51.8 | 0.03 | 1222 | 1889 | 1024 | 5.38 |
+| 163 | gpu: greedy@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 0.34 | 136.9 | 39.86 | 0.64 | 4.96 | 51.8 | 0.03 | 1214 | 1880 | 1024 | 5.37 |
+| 164 | gpu: svo_dag + rowrun + quadtree + raster + pathtrace | 0.34 | 136.3 | 22.24 | 6.17 | 2.18 | 50.2 | 0.02 | 259 | 393 | 1222 | 2.98 |
+| 165 | gpu: greedy@cpu + faces + bricks + refloor + depth + raster + pathtrace | 0.34 | 136.2 | 44.62 | 0.58 | 4.96 | 51.8 | 0.03 | 1206 | 1872 | 1024 | 5.35 |
+| 166 | gpu: svo_dag + rowrun + quadtree + visbuffer + pathtrace | 0.34 | 135.6 | 22.46 | 6.20 | 2.19 | 50.2 | 0.02 | 267 | 401 | 1222 | 3.00 |
+| 167 | gpu: svo_dag + rowrun + quadtree + gbuffer + pathtrace | 0.34 | 134.9 | 22.34 | 6.18 | 2.21 | 50.2 | 0.02 | 275 | 410 | 1221 | 3.01 |
+| 168 | gpu: tree64 + rowrun + quadtree + raster + pathtrace | 0.31 | 123.3 | 10.72 | 7.84 | 1.28 | 50.2 | 0.02 | 405 | 682 | 1187 | 3.45 |
+| 169 | gpu: tree64 + rowrun + quadtree + visbuffer + pathtrace | 0.31 | 122.6 | 10.87 | 7.88 | 1.30 | 50.2 | 0.02 | 413 | 688 | 1189 | 3.47 |
+| 170 | gpu: tree64 + rowrun + quadtree + gbuffer + pathtrace | 0.31 | 122.5 | 11.83 | 7.87 | 1.29 | 50.2 | 0.02 | 421 | 679 | 1188 | 3.45 |
+| 171 | gpu: cubes@cpu + faces + bricks + refloor + depth + raster + pathtrace | 0.20 | 78.1 | 16.69 | 12.35 | 1.78 | 53.2 | 0.02 | 1334 | 1872 | 1065 | 5.43 |
+| 172 | gpu: cubes@cpu + faces + bricks + refloor + depth + gbuffer + pathtrace | 0.19 | 77.7 | 16.73 | 12.41 | 1.81 | 53.2 | 0.02 | 1350 | 1889 | 1065 | 5.46 |
+| 173 | gpu: cubes@cpu + faces + bricks + refloor + depth + visbuffer + pathtrace | 0.19 | 77.6 | 17.13 | 12.42 | 1.80 | 53.1 | 0.02 | 1342 | 1880 | 1066 | 5.44 |
+| 174 | gpu: greedy@cpu + rayquery + raycast + pathtrace | 0.16 | 65.4 | 128.48 | 1.53 | 10.87 | 57.6 | 0.02 | 809 | 2557 | 2490 | 9.33 |
+| 175 | gpu: points@cpu + splat + bricks + refloor + pathtrace | 0.16 | 64.7 | 83.87 | 3.53 | 0.10 | 57.7 | 0.02 | 1771 | 2226 | 1615 | 7.10 |
+| 176 | cpu: hier + refloor + raycast + direct ◆ | 0.10 | 39.1 | 36.82 | - | 24.23 | 61.7 | 0.01 | - | - | 670 | 1.24 |
+| 177 | cpu: prefix + incremental + raycast + direct | 0.09 | 37.4 | 37.29 | - | 25.32 | 61.7 | 0.01 | - | - | 892 | 1.65 |
+| 178 | cpu: hier + incremental + raycast + direct | 0.09 | 37.4 | 37.11 | - | 25.40 | 61.7 | 0.01 | - | - | 670 | 1.24 |
+| 179 | cpu: prefix + refloor + raycast + direct | 0.09 | 35.6 | 40.63 | - | 26.75 | 61.7 | 0.01 | - | - | 885 | 1.63 |
+| 180 | cpu: bricks + refloor + raycast + direct ◆ | 0.09 | 35.4 | 37.93 | - | 27.40 | 61.7 | 0.01 | - | - | 635 | 1.17 |
+| 181 | cpu: bits + refloor + raycast + direct | 0.09 | 34.5 | 39.91 | - | 27.68 | 61.7 | 0.01 | - | - | 670 | 1.24 |
+| 182 | cpu: bricks + incremental + raycast + direct ◆ | 0.09 | 34.1 | 38.04 | - | 28.44 | 61.7 | 0.01 | - | - | 635 | 1.17 |
+| 183 | cpu: u8 + refloor + raycast + direct ◆ | 0.09 | 34.1 | 38.40 | - | 28.44 | 61.7 | 0.01 | - | - | 552 | 1.02 |
+| 184 | cpu: brickmajor + refloor + raycast + direct | 0.08 | 33.1 | 42.37 | - | 28.60 | 61.7 | 0.01 | - | - | 982 | 1.82 |
+| 185 | cpu: bits + incremental + raycast + direct | 0.08 | 33.0 | 40.13 | - | 28.96 | 61.7 | 0.01 | - | - | 670 | 1.24 |
+| 186 | cpu: u8 + incremental + raycast + direct | 0.08 | 32.9 | 39.29 | - | 29.44 | 61.7 | 0.01 | - | - | 568 | 1.05 |
+| 187 | cpu: morton + refloor + raycast + direct | 0.08 | 32.8 | 42.42 | - | 28.71 | 61.7 | 0.01 | - | - | 998 | 1.84 |
+| 188 | cpu: brickmajor + incremental + raycast + direct | 0.08 | 32.4 | 43.08 | - | 29.24 | 61.7 | 0.01 | - | - | 987 | 1.82 |
+| 189 | cpu: morton + incremental + raycast + direct | 0.08 | 32.3 | 43.36 | - | 29.19 | 61.7 | 0.01 | - | - | 998 | 1.84 |
+| 190 | cpu: palette + refloor + raycast + direct ◆ | 0.08 | 32.0 | 46.74 | - | 28.92 | 61.7 | 0.01 | - | - | 541 | 1.00 |
+| 191 | cpu: palette + incremental + raycast + direct | 0.08 | 31.6 | 45.90 | - | 29.26 | 61.7 | 0.01 | - | - | 549 | 1.02 |
+| 192 | cpu: greedy + faces + raster + bricks + refloor + direct | 0.05 | 18.7 | 80.75 | - | 52.50 | 66.7 | 0.00 | - | - | 1062 | 1.96 |
+| 193 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 13.8 | 146.29 | 0.34 | 67.67 | 44.9 | 0.04 | 1084 | 1876 | 1775 | 6.75 |
+| 194 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 13.4 | 151.15 | 0.43 | 69.50 | 44.9 | 0.04 | 1100 | 1892 | 1796 | 6.82 |
+| 195 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 13.4 | 148.43 | 0.34 | 69.87 | 44.9 | 0.04 | 1084 | 1876 | 2327 | 7.77 |
+| 196 | gpu: hier@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 13.3 | 154.89 | 0.40 | 70.25 | 44.9 | 0.04 | 1092 | 1884 | 1808 | 6.82 |
+| 197 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 13.3 | 150.89 | 0.43 | 69.89 | 44.9 | 0.04 | 1100 | 1892 | 2279 | 7.71 |
+| 198 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.8 | 160.11 | 0.35 | 73.77 | 44.9 | 0.04 | 1084 | 1876 | 1791 | 6.77 |
+| 199 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.8 | 156.77 | 0.34 | 72.78 | 44.9 | 0.04 | 1084 | 1876 | 2367 | 7.84 |
+| 200 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 162.07 | 0.34 | 74.91 | 44.9 | 0.04 | 1084 | 1876 | 2072 | 7.29 |
+| 201 | gpu: prefix@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.7 | 167.45 | 0.40 | 73.18 | 44.9 | 0.04 | 1092 | 1884 | 2282 | 7.70 |
+| 202 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 156.48 | 0.34 | 73.49 | 44.9 | 0.04 | 1084 | 1876 | 2368 | 7.84 |
+| 203 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 155.98 | 0.44 | 73.73 | 44.9 | 0.04 | 1100 | 1892 | 2365 | 7.87 |
+| 204 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 159.46 | 0.43 | 73.59 | 44.9 | 0.04 | 1100 | 1892 | 2343 | 7.83 |
+| 205 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.6 | 163.85 | 0.41 | 75.00 | 44.9 | 0.04 | 1092 | 1884 | 2088 | 7.34 |
+| 206 | gpu: morton@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.5 | 161.10 | 0.40 | 74.02 | 44.9 | 0.04 | 1092 | 1884 | 2359 | 7.84 |
+| 207 | gpu: u8@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.5 | 161.86 | 0.44 | 75.34 | 44.9 | 0.04 | 1100 | 1892 | 2051 | 7.29 |
+| 208 | gpu: brickmajor@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.5 | 160.91 | 0.40 | 74.35 | 44.9 | 0.04 | 1092 | 1884 | 2364 | 7.85 |
+| 209 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.4 | 163.77 | 0.41 | 75.90 | 44.9 | 0.04 | 1092 | 1884 | 1779 | 6.77 |
+| 210 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.4 | 162.46 | 0.34 | 75.58 | 44.9 | 0.04 | 1084 | 1876 | 1802 | 6.80 |
+| 211 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.4 | 171.02 | 0.44 | 75.71 | 44.9 | 0.04 | 1100 | 1892 | 1797 | 6.82 |
+| 212 | gpu: bits@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.4 | 165.94 | 0.41 | 75.90 | 44.9 | 0.04 | 1092 | 1884 | 1795 | 6.80 |
+| 213 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.3 | 154.47 | 0.40 | 74.49 | 44.9 | 0.04 | 1092 | 1884 | 1858 | 6.91 |
+| 214 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.3 | 158.58 | 0.34 | 74.76 | 44.9 | 0.04 | 1084 | 1876 | 1901 | 6.98 |
+| 215 | gpu: palette@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 12.3 | 154.33 | 0.42 | 74.63 | 44.9 | 0.04 | 1100 | 1892 | 1832 | 6.88 |
+| 216 | gpu: bricks@cpu + refloor@cpu + quadtree@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.03 | 11.9 | 170.33 | 0.45 | 79.25 | 44.9 | 0.04 | 1100 | 1892 | 1806 | 6.83 |
+| 217 | cpu: naive + faces + raster + bricks + refloor + direct | 0.03 | 10.2 | 116.53 | - | 97.59 | 68.1 | 0.00 | - | - | 1702 | 3.15 |
+| 218 | gpu: hier@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.9 | 475.67 | 0.44 | 199.57 | 44.8 | 0.04 | 1100 | 1892 | 1713 | 6.66 |
+| 219 | gpu: hier@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.9 | 481.55 | 0.35 | 200.75 | 44.8 | 0.04 | 1084 | 1876 | 1667 | 6.54 |
+| 220 | gpu: hier@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.8 | 487.23 | 0.42 | 204.19 | 44.8 | 0.04 | 1092 | 1884 | 1713 | 6.65 |
+| 221 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 498.60 | 0.35 | 210.32 | 44.8 | 0.04 | 1084 | 1876 | 1651 | 6.52 |
+| 222 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.7 | 493.93 | 0.46 | 210.46 | 44.8 | 0.04 | 1100 | 1892 | 1603 | 6.46 |
+| 223 | gpu: bricks@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 508.49 | 0.43 | 211.15 | 44.8 | 0.04 | 1092 | 1884 | 1660 | 6.55 |
+| 224 | gpu: u8@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 498.00 | 0.47 | 212.59 | 44.8 | 0.04 | 1100 | 1892 | 1944 | 7.09 |
+| 225 | gpu: u8@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 506.44 | 0.43 | 212.91 | 44.8 | 0.04 | 1092 | 1884 | 1995 | 7.17 |
+| 226 | gpu: u8@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.6 | 514.48 | 0.34 | 216.55 | 44.8 | 0.04 | 1084 | 1876 | 1956 | 7.08 |
+| 227 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 505.32 | 0.34 | 215.64 | 44.8 | 0.04 | 1084 | 1876 | 2242 | 7.61 |
+| 228 | gpu: morton@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 516.42 | 0.42 | 215.57 | 44.8 | 0.04 | 1092 | 1884 | 2181 | 7.51 |
+| 229 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 514.77 | 0.45 | 216.94 | 44.8 | 0.04 | 1100 | 1892 | 2170 | 7.51 |
+| 230 | gpu: palette@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 508.77 | 0.45 | 216.17 | 44.8 | 0.04 | 1100 | 1892 | 1727 | 6.69 |
+| 231 | gpu: palette@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 501.75 | 0.42 | 216.73 | 44.8 | 0.04 | 1092 | 1884 | 1778 | 6.77 |
+| 232 | gpu: morton@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 517.85 | 0.45 | 217.41 | 44.8 | 0.04 | 1100 | 1892 | 2288 | 7.72 |
+| 233 | gpu: morton@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 515.84 | 0.34 | 217.46 | 44.8 | 0.04 | 1084 | 1876 | 2213 | 7.55 |
+| 234 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 519.69 | 0.42 | 217.97 | 44.8 | 0.04 | 1092 | 1884 | 2235 | 7.61 |
+| 235 | gpu: brickmajor@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 519.20 | 0.46 | 218.17 | 44.8 | 0.04 | 1100 | 1892 | 2234 | 7.62 |
+| 236 | gpu: palette@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 513.81 | 0.34 | 217.43 | 44.8 | 0.04 | 1084 | 1876 | 1787 | 6.77 |
+| 237 | gpu: bits@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 531.19 | 0.35 | 219.40 | 44.8 | 0.04 | 1084 | 1876 | 1710 | 6.62 |
+| 238 | gpu: bits@cpu + refloor@cpu + cluster@cpu + gbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.5 | 519.21 | 0.46 | 220.06 | 44.8 | 0.04 | 1100 | 1892 | 1573 | 6.40 |
+| 239 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.4 | 534.07 | 0.43 | 220.35 | 44.8 | 0.04 | 1092 | 1884 | 2154 | 7.46 |
+| 240 | gpu: bits@cpu + refloor@cpu + cluster@cpu + visbuffer(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.4 | 531.73 | 0.43 | 221.54 | 44.8 | 0.04 | 1092 | 1884 | 1617 | 6.47 |
+| 241 | gpu: prefix@cpu + refloor@cpu + cluster@cpu + raster(faces~prev) + bricks + refloor + pathtrace | 0.01 | 4.4 | 528.69 | 0.34 | 221.74 | 44.8 | 0.04 | 1084 | 1876 | 2139 | 7.42 |
+| 242 | cpu: heightmap + columns + heightfield + direct (incorrect) | 0.76 | 305.3 | 8.38 | - | 2.67 | 18.2 | 22.12 | - | - | 649 | 1.20 |
+| 243 | gpu: heightmap + columns + heightfield + pathtrace (incorrect) | 0.75 | 298.7 | 14.15 | 1.55 | 0.02 | 18.2 | 22.12 | 60 | 110 | 1134 | 2.30 |
+| 244 | gpu: naive@cpu + rayquery + raycast + pathtrace | FAILED: [gpu: naive@cpu + rayquery + raycast + pathtrace]: worker error: the device is out of memory (NVIDIA GeForce RTX 5060 Laptop GPU, this renderer seen holding up to 6954 MiB; the world's size and the resolution set most of it: lower the view radius or the resolution, or the storage's pool or slot knobs): wgpu error: Out of Memory | | | | | | | | | | |
 
 ### showcase [lit]
 

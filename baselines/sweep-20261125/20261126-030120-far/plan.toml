@@ -1,0 +1,52 @@
+# overrides: ["renderer=[\n    { graph = \"raycast-gpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { any = [[], [{ add = \"prepass\", role = \"prepass\", component = \"beam\" }, { node = \"prepass\", input = \"storage\", from = \"storage\" }, { node = \"visibility\", input = \"start\", from = \"prepass\" }]] },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n        { any = [[], [{ remove = \"meshes\" }]] },\n    ] },\n    { graph = \"raycast-cpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"rayquery-gpu\", vary = [{ node = \"geometry\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"raster-gpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { node = \"geometry\", component = \"*\" },\n        { node = \"draw\", component = \"*\" },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n        { any = [[], [{ remove = \"meshes\" }]] },\n    ] },\n    { graph = \"raster-cpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { node = \"geometry\", component = \"*\" },\n        { node = \"draw\", component = \"*\" },\n        { node = \"kernel\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n    ] },\n    { graph = \"discover-gpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"draw\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"discover-cpu\", vary = [\n        { node = \"storage\", component = \"*\" },\n        { any = [[], [{ node = \"visibility\", component = \"cluster\" }, { node = \"visibility\", device = \"default\" }]] },\n        { node = \"draw\", component = \"*\" },\n        { node = \"shading\", component = \"*\" },\n    ] },\n    # The shadow walk's storage beside the CPU visibility (the default `bricks` is in the entry above).\n    { graph = \"discover-cpu\", vary = [\n        { node = \"shadow.storage\", component = \"*\", except = [\"bricks\"] },\n        { node = \"shadow.kernel\", component = \"*\" },\n    ] },\n    # Holes filled by coverage (as plans/demo-pathtrace-discovery.toml).\n    { graph = \"discover-gpu\", edits = [\n        { add = \"holes\", role = \"holes\", component = \"coverage\" },\n        { node = \"draw\", input = \"faces\", when = { iterate = 2 } },\n        { node = \"holes\", input = \"covered\", from = \"draw\" },\n        { node = \"holes\", input = \"sky\", from = \"draw\" },\n        { node = \"holes\", input = \"sky\", when = \"prev\" },\n        { node = \"visibility\", input = \"where\", from = \"holes\" },\n    ], vary = [{ node = \"draw\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    # Path-traced bounces walking a voxel storage inside the ray-query pass.\n    { graph = \"rayquery-gpu\", edits = [\n        { node = \"shading\", component = \"pathtrace\" },\n        { add = \"walk\", role = \"traversal\", component = \"refloor\" },\n        { add = \"store\", role = \"storage\", component = \"bricks\" },\n        { node = \"store\", input = \"changes\", from = \"world\" },\n        { node = \"walk\", input = \"storage\", from = \"store\" },\n        { node = \"shading\", input = \"bounce\", from = \"walk\" },\n    ], vary = [{ node = \"store\", component = \"*\" }, { node = \"walk\", component = \"*\" }] },\n    { graph = \"splat-gpu\", vary = [{ node = \"storage\", component = \"*\" }, { node = \"kernel\", component = \"*\" }, { node = \"shading\", component = \"*\" }] },\n    { graph = \"columns-gpu\", vary = [{ node = \"shading\", component = \"*\" }] },\n    { graph = \"columns-cpu\", vary = [{ node = \"shading\", component = \"*\" }] },\n]", "run.repeats=1", "run.parallel=false", "output.compare.every=50", "output.dir=\"/home/efurrer/Repositories/RustroverProjects/MultiRenderer/target/sweep/g10-baseline\"", "output.resume=true"], unset: ["output.save", "output.window"]
+# Long view distance over terrain: full-resolution streaming versus level of detail.
+# bricks + refloor streams 24 chunks (768 blocks) at full resolution; the LOD variants (a
+# client `max_lod`) reach the same distance (radius × 2^max_lod chunks, so the reference
+# compares like with like) with far fewer chunks, at coarser resolution far away.
+name = "far"
+
+[scene]
+generator = { type = "terrain", seed = 7 }
+camera = { type = "flythrough", points = [[0, 170, 0], [500, 200, 300], [1000, 170, -150], [1500, 210, 200]] }
+
+[run]
+frames = 400
+warmup = 20
+resolution = [1920, 1080]
+modes = ["unlit", "lit"]
+view_radius = 24
+
+[[renderer]]
+graph = "raycast-gpu"
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [
+    { add = "client", role = "client", component = "pick" },
+    { node = "client", knobs = { max_lod = 1, radius = 12 } },
+]
+label = "lod r12+1"
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [
+    { add = "client", role = "client", component = "pick" },
+    { node = "client", knobs = { max_lod = 2, radius = 6 } },
+]
+label = "lod r6+2"
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [
+    { add = "client", role = "client", component = "pick" },
+    { node = "client", knobs = { max_lod = 3, radius = 3 } },
+]
+label = "lod r3+3"
+
+[[renderer]]
+graph = "raycast-gpu"
+edits = [{ node = "storage", component = "tree64" }]
+
+[output]
+compare = { every = 100 }
+save = { every = 200 }

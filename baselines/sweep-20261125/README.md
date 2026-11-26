@@ -8,8 +8,9 @@ baseline holds the plans measured so far, and each plan is folded in when its ru
 |---|---|---:|---|
 | showcase | `20261124-074806-showcase` | 1423 | e0bc16f |
 | terrain-flight | `20261124-081857-terrain-flight` | 1423 | e0bc16f |
+| far | `20261126-030120-far` | 1423 | b642d4d |
 
-Queued, not measured yet: far, edits, menger, random, room, many-lights, streaming, city,
+Queued, not measured yet (the catalogue sweep): edits, menger, random, room, many-lights, streaming, city,
 islands, lattice, gyroid, checker, meshes (the rest of `scripts/sweep.py`, from a frozen copy of
 b642d4d), then the RADV sweep, the Windows check and the turn sweep.
 
@@ -21,5 +22,11 @@ b642d4d), then the RADV sweep, the Windows check and the turn sweep.
 - `*/plan.toml`: the plan each run ran.
 - `catalogue.md`, `catalogue.csv.gz`: the catalogue of these runs.
 
-Below the floor: only the `columns` entries (a heightfield of the terrain's surface, which
+`far` ran partly unsupervised (2026-11-26 01:47-11:16, the queue's service stopped): builds
+outside it ran 01:52-02:11, so the 109 passes whose logs ended in that window are listed in
+`20261126-030120-far/possibly-disturbed.txt` (label-mode, as the log names); read their timings
+with care. Their pixels are unaffected.
+
+Below the floor: on `far`, the naive ray-query geometry runs out of device memory (named in the
+record: a defined failure, as in `docs/limits.md`); otherwise only the `columns` entries (a heightfield of the terrain's surface, which
 cannot show overhangs or caves; accepted as such).
