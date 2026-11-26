@@ -193,14 +193,18 @@ features asked for. Asynchronous renderers call the `Waker` when work may have f
 a copy of `bricks`), builds again, restores the tree and prints both; `walk` and `shading` do
 the same with a probe (a copy of `incremental` matched at run time beside the other walks, a
 copy of `direct` chosen at run time beside it: the code a real one adds, not a component);
-`--time` adds the rebuild and `check.py` times (an idle machine only). Measured 2026-11-24
-(sizes only; release `.text` 44.3 MB before):
+`--time` adds the rebuild and `check.py` times (an idle machine only). Sizes measured
+2026-11-24 (release `.text` 44.3 MB before), times 2026-11-26 on 21ad0f2 in the idle queue
+(quiet, each job's own before and after; rebuild = the release build after the edit,
+`check.py` = its wall time right after; a before took 113-117 s and 424-427 s):
 
 | one more | binary | `.text` | functions | instantiated for it | rebuild | `check.py` |
 |---|---|---|---|---|---|---|
-| CPU storage | +6.1 MB (+2.2 %) | +1.8 MB (+4.2 %) | +340 (+0.7 %) | 305 | not yet timed | not yet timed |
-| CPU raycast walk | +4.6 MB (+1.7 %) | +2.9 MB (+6.5 %) | +8 | 8 (the rest inlined) | not yet timed | not yet timed |
-| CPU shading | +0.2 MB (+0.1 %) | +0.17 MB (+0.4 %) | +50 | 41 | not yet timed | not yet timed |
+| CPU storage | +6.1 MB (+2.2 %) | +1.8 MB (+4.2 %) | +340 (+0.7 %) | 305 | +13.1 s (+12 %) | build step +16 s; total 425 s, as the befores (tests -17 s, noise) |
+| CPU raycast walk | +4.6 MB (+1.7 %) | +2.9 MB (+6.5 %) | +8 | 8 (the rest inlined) | +25.6 s (+22 %) | +36.5 s (+9 %; build step +35.5 s) |
+| CPU shading | +0.2 MB (+0.1 %) | +0.17 MB (+0.4 %) | +50 | 41 | -0.7 s (noise) | +1.9 s (noise) |
+
+CI's jobs on the same commit: `check` 22.6 min, `lavapipe` 11.0 min (recorded, `buildguard.py show`).
 
 Why: the generic CPU build monomorphises each region per storage (`by_storage!` in
 `mr-exec-cpu/src/raycast.rs`), and inside that the ray caster's tile loop
@@ -243,7 +247,9 @@ to `baselines/build.jsonl`: release binary and `.text` bytes and functions (from
 it, with `check.py`'s wall time right after that rebuild (total and per step: check.py writes
 `target/logs/times.json` each run; a run's own time depends on what was built before it, so only
 this defined start is tracked), and CI's job minutes
-(`gh`, the newest successful run of the commit). `buildguard.py` alone compares the tree with the
+(`gh`, the newest successful run of the commit). `record --from JSON` records a
+`buildcost.py` JSON made elsewhere (a timed run in a clone, as the idle queue makes them) under
+its own commit. `buildguard.py` alone compares the tree with the
 last record and prints every delta: sizes are flagged past `--pct` (default 5 %), times past
 `--time-pct` (default 10 %) only when both records were taken on a quiet machine; CI times are
 shown, never flagged (one tree's jobs took 15-24 and 8-16 minutes). `buildguard.py show` lists

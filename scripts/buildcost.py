@@ -180,7 +180,12 @@ def main():
     if timed:
         # times compare only between quiet runs (scripts/ab/buildguard.py); absent tool: unknown
         q = ROOT / ".agent/bin/quiet"
-        res["quiet"] = subprocess.run([str(q)], capture_output=True).returncode == 0 if q.exists() else None
+        # under `.agent/bin/idle run` (MR_PAUSE_FILE set) the runner checked quiet and watched
+        # for outside load throughout, so the run is quiet even where the tool is absent (a clone)
+        if os.environ.get("MR_PAUSE_FILE"):
+            res["quiet"] = True
+        else:
+            res["quiet"] = subprocess.run([str(q)], capture_output=True).returncode == 0 if q.exists() else None
     res["before"] = figures(timed)
     if mode == "storage":
         sh([sys.executable, "scripts/new.py", "storage", NAME], stdout=subprocess.DEVNULL)

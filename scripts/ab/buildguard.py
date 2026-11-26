@@ -4,6 +4,8 @@
   scripts/ab/buildguard.py [--pct P] [--time-pct P]   compare the tree's figures with the last record
   scripts/ab/buildguard.py record                     append them to baselines/build.jsonl
   scripts/ab/buildguard.py show                       print the records, one line each
+  scripts/ab/buildguard.py record --from JSON         append a `buildcost.py` JSON's figures (its
+                                                      commit; e.g. a timed run made in a clone)
 
 The figures, each from where it is measured:
 - sizes (deterministic, any machine): binary and .text bytes and functions of the release
@@ -43,6 +45,18 @@ def commit():
     return sh("git", "rev-parse", "--short", "HEAD").stdout.strip()
 
 
+def from_json(d):
+    """A record's figures from one buildcost JSON (its `before` half)."""
+    f = d["before"]
+    out = {k: f[k] for k in ("binary_bytes", "text_bytes", "functions")}
+    if d.get("timed") and f.get("rebuild_s") is not None:
+        out["rebuild_s"] = f["rebuild_s"]
+        out["rebuild_quiet"] = d.get("quiet")
+    if d.get("timed") and f.get("check_s") is not None:
+        out["check"] = {"total_s": f["check_s"], "steps": f.get("check_steps"), "quiet": d.get("quiet")}
+    return out
+
+
 def sizes(c):
     """The newest buildcost figures JSON made on commit c (made now when there is none)."""
     def newest():
@@ -58,14 +72,7 @@ def sizes(c):
         if r.returncode:
             sys.exit("buildguard: buildcost.py figures failed:\n" + r.stderr[-2000:])
         d = newest()
-    f = d["before"]
-    out = {k: f[k] for k in ("binary_bytes", "text_bytes", "functions")}
-    if d.get("timed") and f.get("rebuild_s") is not None:
-        out["rebuild_s"] = f["rebuild_s"]
-        out["rebuild_quiet"] = d.get("quiet")
-    if d.get("timed") and f.get("check_s") is not None:
-        out["check"] = {"total_s": f["check_s"], "steps": f.get("check_steps"), "quiet": d.get("quiet")}
-    return out
+    return from_json(d)
 
 
 def ci_times(full):
@@ -127,17 +134,27 @@ def compare(old, new, pct, time_pct):
 
 
 def main():
-    ap = argparse.ArgumentParser(usage=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("what", nargs="?", default="compare", choices=["compare", "record", "show"])
     ap.add_argument("--pct", type=float, default=5.0)
     ap.add_argument("--time-pct", type=float, default=10.0)
+    ap.add_argument("--from", dest="src", help="record this buildcost.py JSON's figures (record only)")
     a = ap.parse_args()
     rs = records()
     if a.what == "show":
         for r in rs:
             print(line(r))
         return
-    new = current()
+    if a.src:
+        if a.what != "record":
+            sys.exit("buildguard: --from goes with record")
+        d = json.loads(Path(a.src).read_text())
+        new = {"commit": d["commit"], "at": d["at"][:19], **from_json(d)}
+        ci = ci_times(sh("git", "rev-parse", d["commit"]).stdout.strip())
+        if ci:
+            new["ci"] = ci
+    else:
+        new = current()
     if a.what == "record":
         RECORDS.parent.mkdir(exist_ok=True)
         with open(RECORDS, "a") as f:

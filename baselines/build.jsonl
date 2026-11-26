@@ -1,1 +1,2 @@
 {"commit": "25531bd", "at": "2026-11-25T00:10:25", "binary_bytes": 273175936, "text_bytes": 44487877, "functions": 50530}
+{"commit": "21ad0f2", "at": "2026-11-26T11:47:50", "binary_bytes": 274618400, "text_bytes": 44487877, "functions": 50530, "rebuild_s": 140.2, "rebuild_quiet": true, "check": {"total_s": 512.4, "steps": {"build": 199.2, "clippy": 22.2, "test": 291.0}, "quiet": true}, "ci": {"run": 45575033894, "lavapipe": 11.0, "check": 22.6}}
