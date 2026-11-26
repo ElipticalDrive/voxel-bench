@@ -20,6 +20,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mr import ROOT, before, fresh, full_sweep, release, run_logged
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 compare_only = "--compare" in sys.argv
 plans = [a for a in sys.argv[1:] if a != "--compare"] or ["terrain", "meshes"]

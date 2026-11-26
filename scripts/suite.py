@@ -7,6 +7,8 @@ import time
 
 sys.path.insert(0, __import__("os").path.dirname(__file__))
 from mr import ROOT, release
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 for p in "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker".split():
     print(f"=== {p} {time.strftime('%H:%M')}", flush=True)

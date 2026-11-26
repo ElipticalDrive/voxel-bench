@@ -15,6 +15,8 @@ import sys
 import tomllib
 
 from mr import ROOT, fresh, release, run_logged
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 OUT = ROOT / "target" / "limits"
 GRAPHS = sorted(p.stem for p in (ROOT / "pipelines").glob("*.toml") if tomllib.loads(p.read_text()).get("executor") == "gpu")

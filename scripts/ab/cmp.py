@@ -1,9 +1,11 @@
-# cmp.py BEFORE_DIR AFTER_DIR: compares saved frames of two runs pixel by pixel.
-# AB_RENAME="old=new": the before side's frame folders with `old` replaced by `new` (a graph
-# that gained nodes has a new label, so a new folder name).
+"""cmp.py BEFORE_DIR AFTER_DIR: compares saved frames of two runs pixel by pixel.
+AB_RENAME="old=new": the before side's frame folders with `old` replaced by `new` (a graph
+that gained nodes has a new label, so a new folder name)."""
 import sys, os, glob
 from PIL import Image
 import numpy as np
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 a, b = sys.argv[1:3]
 fa = sorted(f for f in glob.glob(a + '/*/frames/*/*') if not f.endswith('-diff.png'))
 sep = os.sep + 'frames' + os.sep

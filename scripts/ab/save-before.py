@@ -6,6 +6,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mr import ROOT, build_release, release
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 if not build_release():
     sys.exit(1)

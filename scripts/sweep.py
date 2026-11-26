@@ -24,6 +24,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from mr import ROOT, build_release, finished, full_sweep, plan_log, release, run_logged
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 out = os.environ.get("OUT") or f"target/sweep/{time.strftime('%Y%m%d-%H%M')}"
 plans = sys.argv[1:] or "showcase terrain far edits menger random room many-lights streaming city islands lattice gyroid checker meshes".split()

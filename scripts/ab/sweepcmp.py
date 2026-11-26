@@ -1,8 +1,10 @@
-# sweepcmp.py BASE_SWEEP NEW_SWEEP (two directories of runs, e.g. target/sweep/<time>; the baseline of 2026-10-11 names its pipelines in a form no longer read): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
-# Records are read and keyed by records.py (the graph key recomputed by the binary; see there).
+"""sweepcmp.py BASE_SWEEP NEW_SWEEP (two directories of runs, e.g. target/sweep/<time>; the baseline of 2026-10-11 names its pipelines in a form no longer read): compares two sweeps per (plan, mode, pipeline, options): GPU ms, fps, PSNR.
+Records are read and keyed by records.py (the graph key recomputed by the binary; see there)."""
 import sys, os, statistics as st, collections
 sys.path.insert(0, os.path.dirname(__file__))
 from records import load
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 base, new = load(sys.argv[1]), load(sys.argv[2])
 shown = {k: v[1] for d in (base, new) for k, v in d.items()}
 base = {k: v[0] for k, v in base.items()}

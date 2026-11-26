@@ -9,6 +9,8 @@ import glob
 import json
 import os
 import sys
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 
 def settled_why(r):

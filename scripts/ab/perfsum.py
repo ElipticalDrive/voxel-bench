@@ -1,7 +1,9 @@
-# perfsum.py DIR: median GPU ms and fps per pass of interleaved before/after runs.
-# AB_RENAME="old=new": the before side's labels with `old` replaced by `new` (a graph that
-# gained nodes has a new label).
+"""perfsum.py DIR: median GPU ms and fps per pass of interleaved before/after runs.
+AB_RENAME="old=new": the before side's labels with `old` replaced by `new` (a graph that
+gained nodes has a new label)."""
 import os, re, sys, json, glob, statistics as st
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 T = sys.argv[1]; res = {}
 old, _, new = os.environ.get('AB_RENAME', '').partition('=')
 for b in ('before', 'after'):

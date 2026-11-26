@@ -125,8 +125,27 @@ On the RTX 5060 (8 GiB), each run pixel-compared with the CPU reference:
   reference, both alike: the boxes are smaller than a pixel); 4 million (48 M triangles) are
   refused naming the limit, 4194304 (2^22) triangles a hit record can name.
 
+## Level of detail (`max_lod > 0`)
+
+    scripts/scale.py --plans terrain --radii 8,16,32,64,128 --lod 2 --only raycast-gpu
+
+With `max_lod = 2` the view reaches radius x 4 chunks, each level at twice the cell size of
+the one inside it. Only raycast-gpu over bricks, hier, prefix, distance and rows builds levels;
+every other pipeline (and tree64, svo_dag, clipmap) leaves `max_lod` out, says so in
+`not_supported` and renders at level 0, so the run marks it left out, not as reaching the
+radius. Terrain, same setup as above:
+
+| radius (reach in chunks) | chunks sent, lod 2 (lod 0) | raycast-gpu: bricks, hier, prefix, distance, rows |
+|---|---|---|
+| 8 (32) | 3696 (1989) | renders |
+| 16 (64) | 11520 (6060) | renders |
+| 32 (128) | 38642 (19229) | renders |
+| 64 (256) | - | the voxel pool is full (32767 chunks: `pool_mb` 2048), named |
+
+The coarser levels cost about as much again as level 0, so the pool fills at the same radius
+as at level 0 (the stop [4] above) while the view reaches four times as far. No new break.
+
 ## Not yet covered
 
-`max_lod > 0` (the view reach at LOD is radius x 2^max_lod chunks; checked only through the
-reach above), lavapipe's limits, host and worker world at the memory cap, and points, faces
-and instances on the other drawers (counts above are raycast-gpu, raster-gpu and splat-gpu).
+lavapipe's limits, host and worker world at the memory cap, and points, faces and instances on
+the other drawers (counts above are raycast-gpu, raster-gpu and splat-gpu).

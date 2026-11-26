@@ -24,6 +24,8 @@ import sys
 import time
 
 from mr import ROOT
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 logs = ROOT / "target" / "logs"
 logs.mkdir(parents=True, exist_ok=True)

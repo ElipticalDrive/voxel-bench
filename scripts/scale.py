@@ -4,8 +4,11 @@ generator), the view radius doubles step by step; every pipeline still standing 
 frames at each radius, and the first radius at which it fails (or is refused) is recorded with
 the reason. Pass / fail only, no timing (it needs no idle machine).
 
-  scripts/scale.py [--plans terrain,city] [--radii 8,16,32,64] [--mem 24G] [--only TEXT] [--no-build]
-  scripts/scale.py --table          # the table so far (Markdown), from the journal
+  scripts/scale.py [--plans terrain,city] [--radii 8,16,32,64] [--lod N] [--mem 24G] [--only TEXT] [--no-build]
+  scripts/scale.py --table [--lod N]   # the table so far (Markdown), from the journal
+
+`--lod N` sets `run.max_lod` (default 0): the view then reaches radius x 2^N chunks, coarser
+further out; each level is its own set of results (journal rows carry `lod`).
 
 Pipelines: every shipped graph as it is, every storage on raycast-gpu and raycast-cpu, every
 geometry on rayquery-gpu and raster-gpu (`--only TEXT` keeps those whose label contains TEXT).
@@ -19,13 +22,15 @@ import subprocess
 import sys
 
 from mr import ROOT, build_release, fresh, release
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 OUT = ROOT / "target" / "scale"
 JOURNAL = OUT / "results.jsonl"
 GPU_STORAGES = "bricks hier prefix distance rows tree64 svo_dag clipmap".split()
 CPU_STORAGES = "bricks hier prefix brickmajor morton u8 bits palette".split()
 ARGS = ["-s", "run.frames=2", "-s", "run.warmup=1", "-s", "run.resolution=[640,360]", "-s", 'run.modes=["unlit"]',
-        "-s", "run.parallel=false", "-s", "run.repeats=1", "-s", "run.max_lod=0",
+        "-s", "run.parallel=false", "-s", "run.repeats=1",
         "-u", "output.compare", "-u", "output.save", "-u", "output.window"]
 
 
@@ -54,22 +59,26 @@ def reason(err):
     return line[:240]
 
 
-def step(plan, radius, todo, mem):
+def step(plan, radius, todo, mem, lod=0):
     """Runs `todo` (name -> spec) on `plan` at `radius`; name -> error (None = rendered)."""
-    out = fresh(OUT / f"{plan}-r{radius}")
+    out = fresh(OUT / (f"{plan}-r{radius}" + (f"-lod{lod}" if lod else "")))
     names = list(todo)
     spec = "[" + ",".join(todo[n].rstrip("}") + f',label="{n}"}}' for n in names) + "]"
     log = out / "run.log"
     cmd = ["systemd-run", "--user", "--scope", "--quiet", "-p", f"MemoryMax={mem}", "-p", "MemorySwapMax=0",
-           str(release()), "run", f"plans/{plan}.toml", *ARGS, "-s", f"run.view_radius={radius}",
+           str(release()), "run", f"plans/{plan}.toml", *ARGS, "-s", f"run.view_radius={radius}", "-s", f"run.max_lod={lod}",
            "-s", f"renderer={spec}", "-s", f'output.dir="{out.as_posix()}"']
     with open(log, "w") as f:
         code = subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT).returncode
     reports = list(out.rglob("report.json"))
-    passes, culprit = {}, None
+    passes, culprit, lacks = {}, None, {}
     if reports:
         for p in json.loads(reports[0].read_text()):
             passes[p["label"]] = p.get("error")
+            # A pipeline that leaves out the asked level of detail renders at level 0: not this step.
+            left = [s for s in p.get("not_supported") or [] if lod and s.startswith(f"max_lod {lod}:")]
+            if left and not p.get("error"):
+                lacks[p["label"]] = left[0]
     else:
         # The run died: its journal holds the passes it finished, and the one it died in.
         for j in out.rglob("passes.jsonl"):
@@ -86,7 +95,7 @@ def step(plan, radius, todo, mem):
                     culprit = None
     tail = re.sub(r"\x1b\[[0-9;]*m", "", log.read_text(errors="replace")).strip().splitlines()[-1:] or [""]
     killed = f"killed at the memory cap ({mem}, host and workers together)" if code in (-9, 137) else f"exit {code}"
-    res = {n: reason(passes[n]) if passes[n] else None for n in names if n in passes}
+    res = {n: LEFT_OUT + lacks[n] if n in lacks else reason(passes[n]) if passes[n] else None for n in names if n in passes}
     if not reports:
         if not res:
             # Dead in its first pass: the host's own world is as likely the cause as the
@@ -97,8 +106,12 @@ def step(plan, radius, todo, mem):
     return res
 
 
-def table(rows):
-    """Markdown: pipeline x plan -> the largest radius rendered and where / why it stopped."""
+LEFT_OUT = "left out: "  # an error text so marked: the pipeline does not do the step (not a stop)
+
+
+def table(rows, lod=0):
+    """Markdown: pipeline x plan -> the largest radius rendered and where / why it stopped, at `lod`."""
+    rows = [r for r in rows if r.get("lod", 0) == lod]
     plans = sorted({r["plan"] for r in rows})
     names = list(pipelines())
     cell = {}
@@ -121,6 +134,8 @@ def table(rows):
             c = cell.get((n, p))
             if c is None:
                 cs.append("-")
+            elif c["stop"] and c["stop"][1].startswith(LEFT_OUT):
+                cs.append("- (" + c["stop"][1][len(LEFT_OUT):].split(": ", 1)[-1] + ")")
             elif c["stop"] is None:
                 cs.append(f"≥ {c['ok']}")
             else:
@@ -136,16 +151,17 @@ def main():
     argv = sys.argv[1:]
     opt = lambda k, d: argv[argv.index(k) + 1] if k in argv else d
     if "--table" in argv:
-        print(table(journal()))
+        print(table(journal(), int(opt("--lod", "0"))))
         return
     plans = opt("--plans", "terrain,city,lattice,islands").split(",")
     radii = [int(r) for r in opt("--radii", "8,16,32,64").split(",")]
     mem = opt("--mem", "24G")
     only = opt("--only", "")
+    lod = int(opt("--lod", "0"))
     if "--no-build" not in argv and not build_release():
         sys.exit("build failed")
     OUT.mkdir(parents=True, exist_ok=True)
-    done = journal()
+    done = [r for r in journal() if r.get("lod", 0) == lod]
     for plan in plans:
         dead = {r["name"] for r in done if r["plan"] == plan and r["error"] is not None}
         for radius in radii:
@@ -154,17 +170,18 @@ def main():
                         and not any(r["plan"] == plan and r["radius"] == radius and r["name"] == n for r in done)}
                 if not todo:
                     break
-                res = step(plan, radius, todo, mem)
+                res = step(plan, radius, todo, mem, lod)
                 with open(JOURNAL, "a") as f:
                     for n, e in res.items():
-                        f.write(json.dumps({"plan": plan, "radius": radius, "name": n, "error": e}) + "\n")
-                done = journal()
-                bad = {n: e for n, e in res.items() if e}
-                dead |= set(bad)
-                print(f"{plan} r{radius}: {len(res) - len(bad)} rendered, {len(bad)} stopped", flush=True)
+                        f.write(json.dumps({"plan": plan, "radius": radius, "lod": lod, "name": n, "error": e}) + "\n")
+                done = [r for r in journal() if r.get("lod", 0) == lod]
+                bad = {n: e for n, e in res.items() if e and not e.startswith(LEFT_OUT)}
+                left = [n for n, e in res.items() if e and e.startswith(LEFT_OUT)]
+                dead |= set(bad) | set(left)
+                print(f"{plan} r{radius}: {len(res) - len(bad) - len(left)} rendered, {len(bad)} stopped, {len(left)} left out", flush=True)
                 for n, e in bad.items():
                     print(f"  {n}: {e}", flush=True)
-    print(table(journal()))
+    print(table(journal(), lod))
 
 
 if __name__ == "__main__":

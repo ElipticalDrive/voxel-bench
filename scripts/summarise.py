@@ -1,4 +1,8 @@
+"""summarise.py DIR: one line per pass (fps, p99 frame interval, GPU ms, PSNR, bad pixels, device MB) of
+every run under DIR (each with its report.json), oldest run first."""
 import json,glob,os,sys
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 base=sys.argv[1]
 for d in sorted(glob.glob(base+'/*/'),key=os.path.getmtime):
     rp=d+'report.json'

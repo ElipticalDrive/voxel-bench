@@ -8,6 +8,8 @@ prints the summary of `report.py`; the log is target/logs/run1.log.
 import os
 import subprocess
 import sys
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 here = os.path.dirname(os.path.abspath(__file__))
 from mr import ROOT, fresh, release, run_logged

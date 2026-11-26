@@ -15,6 +15,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mr import ROOT, after_build, before, fresh, release, run_logged
+if {"-h", "--help"} & set(sys.argv[1:(sys.argv + ["--"]).index("--")]):  # help, never a run
+    sys.exit(print(__doc__))
 
 plan, renderers, rounds, extra = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
 after_build()
