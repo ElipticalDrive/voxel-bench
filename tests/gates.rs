@@ -4,7 +4,8 @@
 //! modelled network and is deserialized; the pass reports per gate what crossed (bytes,
 //! packets lost, serialization time) and lives through what the lost bytes did to the data.
 //! Lossless gates change no pixel. A gate on an edge no executor runs gates on yet is
-//! refused, naming it.
+//! refused, naming it. The GPU's hit records through gates need a GPU (`--ignored`;
+//! `scripts/check.py gpu` runs them).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -149,10 +150,11 @@ fn world_hits_and_frame_through_lossy_gates() {
 /// written, on the hit records (the ray caster's and the column marcher's) and the frame.
 #[test]
 fn lossless_gates_change_no_pixel() {
-    for graph in ["raycast-cpu", "columns-cpu"] {
+    for graph in ["raycast-cpu", "columns-cpu", "raster-cpu"] {
         let plain = run(&dir(), &format!("{graph}-plain"), graph, r#"[{ node = "shading", knobs = { placement = "deferred" } }]"#);
         assert!(plain["error"].is_null(), "{}", plain["error"]);
-        let gated = run(&dir(), &format!("{graph}-gated"), graph, &format!("[{}]", inside("{}", "{}")));
+        let source = if graph == "raster-cpu" { "draw" } else { "visibility" };
+        let gated = run(&dir(), &format!("{graph}-gated"), graph, &format!("[{}]", inside("{}", "{}").replace(r#"from = "visibility""#, &format!(r#"from = "{source}""#))));
         assert!(gated["error"].is_null(), "{}", gated["error"]);
         assert_eq!(gates(&gated).iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["f:frame", "h:shading.hits"]);
         crossed(&gated, false);
@@ -161,8 +163,9 @@ fn lossless_gates_change_no_pixel() {
 }
 
 /// What is refused, naming the gate, its edge and why: hits that never leave their pass
-/// (shading inline), hits of an executor without their serialized form (the rasteriser), an
-/// image into the post (compiled into its shading).
+/// (shading inline, on the CPU and the GPU), hits of an executor without their serialized
+/// form (the GPU column marcher), a drawer writing no records, an image into the post
+/// (compiled into its shading).
 #[test]
 fn gates_refused_naming_them() {
     let on_hits = |from: &str| {
@@ -177,6 +180,13 @@ fn gates_refused_naming_them() {
     let (_, log) = launch(&dir(), "inline", "raycast-cpu", &on_hits("visibility"));
     assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
     let (_, log) = launch(&dir(), "raster", "raster-cpu", &on_hits("draw"));
+    assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
+    // Refused by `accept`, before any GPU is asked for.
+    let (_, log) = launch(&dir(), "raycast-gpu-inline", "raycast-gpu", &on_hits("visibility"));
+    assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
+    let (_, log) = launch(&dir(), "raster-gpu-forward", "raster-gpu", &on_hits("draw"));
+    assert!(log.contains("`g` on `shading.hits`") && log.contains("no hit records"), "{log}");
+    let (_, log) = launch(&dir(), "columns-gpu", "columns-gpu", &on_hits("visibility").replacen('[', r#"[{ node = "shading", knobs = { placement = "deferred" } }, "#, 1));
     assert!(log.contains("`g` on `shading.hits`") && log.contains("no serialized form"), "{log}");
     let post = r#"[
   { add = "post", role = "post", component = "clamp" },
@@ -186,4 +196,56 @@ fn gates_refused_naming_them() {
 ]"#;
     let (_, log) = launch(&dir(), "post", "raycast-cpu", post);
     assert!(log.contains("`g` on `post.image`") && log.contains("after the post"), "{log}");
+}
+
+/// On a GPU: a gate on the hit records the shading reads, shading `deferred` or a drawer
+/// writing records (`gbuffer`, no meshes node), or splats.
+fn gpu_hits(graph: &str, hits: &str) -> String {
+    let source = match graph {
+        "raster-gpu" => r#"{ node = "draw", component = "gbuffer" }, { remove = "meshes" },"#,
+        "splat-gpu" => "",
+        _ => r#"{ node = "shading", knobs = { placement = "deferred" } }, { remove = "meshes" },"#,
+    };
+    let from = if graph == "raster-gpu" { "draw" } else { "visibility" };
+    format!(
+        r#"[{source}
+  {{ add = "h", role = "gate", component = "net" }},
+  {{ node = "h", input = "in", from = "{from}" }},
+  {{ node = "h", knobs = {hits} }},
+  {{ node = "shading", input = "hits", from = "h" }},
+]"#
+    )
+}
+
+/// On the GPU the hit records cross a lossy gate end to end: read back from the pass that
+/// writes them, serialized through the gate, written to the shading's own copy of the edge
+/// (the shading split off on the same GPU, its walks over its own storage). The pass lives
+/// through the losses and reports the gate. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_hits_through_a_lossy_gate() {
+    for graph in ["raycast-gpu", "raster-gpu", "splat-gpu"] {
+        let r = run(&dir(), &format!("{graph}-lossy"), graph, &gpu_hits(graph, "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, seed = 5 }"));
+        assert!(r["error"].is_null(), "{graph}: {}", r["error"]);
+        let gs = gates(&r);
+        assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["h:shading.hits"], "{graph}");
+        crossed(&r, true);
+        let h = &gs["h"].1;
+        let messages = h["messages"].as_f64().unwrap();
+        assert!(messages >= r["frames"].as_f64().unwrap(), "{graph}: {h}");
+        assert!(h["bytes"].as_f64().unwrap() >= messages * 48.0 * 32.0 * 8.0, "{graph}: {h}");
+    }
+}
+
+/// A lossless gate with no delay on the GPU's hit records changes no pixel: the records read
+/// back and written again are the ones the shading would have read. Needs a GPU.
+#[test]
+#[ignore]
+fn gpu_lossless_hits_gate_changes_no_pixel() {
+    let plain = run(&dir(), "raycast-gpu-plain", "raycast-gpu", r#"[{ node = "shading", knobs = { placement = "deferred" } }, { remove = "meshes" }]"#);
+    assert!(plain["error"].is_null(), "{}", plain["error"]);
+    let gated = run(&dir(), "raycast-gpu-gated", "raycast-gpu", &gpu_hits("raycast-gpu", "{}"));
+    assert!(gated["error"].is_null(), "{}", gated["error"]);
+    crossed(&gated, false);
+    assert!(last_image(&dir(), "raycast-gpu-plain") == last_image(&dir(), "raycast-gpu-gated"), "a lossless gate on the GPU's hit records changed the frame");
 }

@@ -280,7 +280,24 @@ pub(crate) trait Region: State {
 
 /// The nodes of `g`'s passes on GPU slot `slot` in frame order, each by its node's role
 /// (`node`; a role without one has no pass of its own here).
+/// The shading is the second executor's when it is split off ([`crate::remote::far_slot`]),
+/// on another GPU or, behind gates, on the same.
 pub(crate) fn passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
+    let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
+    let split = crate::remote::far_slot(g).is_some();
+    Ok(schedule
+        .passes()
+        .filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot))
+        .map(|p| g.node(&p.node).role)
+        .filter(|&r| !(split && r == Role::Shading))
+        .filter_map(node)
+        .collect())
+}
+
+/// The passes of the executor the shading is split off to, on GPU slot `slot`: its node's
+/// role's (`node`) for every node there (what the near executor also runs there, when both
+/// are one GPU's, it runs on its own copy).
+pub(crate) fn far_passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Box<dyn Node<R>>>> {
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     Ok(schedule.passes().filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot)).filter_map(|p| node(g.node(&p.node).role)).collect())
 }

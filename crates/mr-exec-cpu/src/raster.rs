@@ -313,9 +313,65 @@ impl Node for Faces {
 
 /// The drawer's hit records: the quad id per pixel (0 = sky) and the visible set the ids
 /// index (the quad behind an id), as the visibility numbered it this frame.
+#[derive(Clone)]
 struct Ids {
     ids: Vec<u32>,
     visible: Vec<Visible>,
+}
+
+/// On the wire: the ids (a count, 4 bytes each), then the visible set (a count; each chunk's
+/// position, first id, per-face counts and quads). What arrives must read as a frame's: the
+/// first ids follow on from 1 without gaps and every id names a quad (else the message is
+/// lost, as a decoder rejects it).
+impl exec::Crossing for Ids {
+    fn encode(&self, out: &mut Vec<u8>) {
+        let mut p = mr_core::gate::Put(out);
+        p.u32(self.ids.len() as u32);
+        self.ids.iter().for_each(|&i| p.u32(i));
+        p.u32(self.visible.len() as u32);
+        for (pos, m, base) in &self.visible {
+            pos.to_array().into_iter().for_each(|c| p.i32(c));
+            p.u32(*base);
+            m.counts.iter().for_each(|&c| p.u32(c));
+            p.u32(m.quads.len() as u32);
+            m.quads.iter().flatten().for_each(|&q| p.u32(q));
+        }
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, mr_core::gate::WireError> {
+        let bad = |w: &str| mr_core::gate::WireError(w.to_string());
+        let mut g = mr_core::gate::Get(bytes);
+        let n = g.count(4)?;
+        let ids: Vec<u32> = (0..n).map(|_| g.u32()).collect::<Result<_, _>>()?;
+        let chunks = g.count(4 * 11)?;
+        let mut visible = Vec::with_capacity(chunks);
+        let mut next = 1u32;
+        for _ in 0..chunks {
+            let pos = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
+            let base = g.u32()?;
+            let mut counts = [0u32; 6];
+            for c in &mut counts {
+                *c = g.u32()?;
+            }
+            let quads = g.count(8)?;
+            let quads: Vec<[u32; 2]> = (0..quads).map(|_| Ok([g.u32()?, g.u32()?])).collect::<Result<_, mr_core::gate::WireError>>()?;
+            if base != next || counts.iter().map(|&c| c as u64).sum::<u64>() != quads.len() as u64 {
+                return Err(bad("the visible set does not number its quads"));
+            }
+            next = base.checked_add(quads.len() as u32).ok_or_else(|| bad("quad ids past u32"))?;
+            visible.push((pos, Arc::new(Mesh { quads, counts }), base));
+        }
+        g.end()?;
+        if ids.iter().any(|&i| i >= next) {
+            return Err(bad("an id names no visible quad"));
+        }
+        Ok(Ids { ids, visible })
+    }
+    fn blank(w: u32, h: u32) -> Self {
+        Ids { ids: vec![0; (w * h) as usize], visible: vec![] }
+    }
+    fn fits(&self, w: u32, h: u32) -> bool {
+        self.ids.len() == (w * h) as usize
+    }
 }
 
 /// Draw `raster`: bins the triangles into (band, tile) cells, rasterises each band in
@@ -394,6 +450,9 @@ impl<P: Pixel> Node for Draw<P> {
     }
     fn memory(&self, out: &Res) -> u64 {
         (std::mem::size_of_val(&self.depth[..]) + out.downcast_ref::<Ids>().map_or(0, |r| std::mem::size_of_val(&r.ids[..]))) as u64
+    }
+    fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        (!self.fused).then(|| exec::GatePass::<Ids>::boxed(chain, w, h))
     }
 }
 

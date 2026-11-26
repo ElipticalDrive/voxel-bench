@@ -202,17 +202,21 @@ node reads, one behind something other than the output. Where they run:
 |---|---|---|---|
 | the world's changes | the worker, in front of the client (every gated changes edge must carry the same gates) | each batch the host sends | nothing |
 | hits (`shading.hits`) | the CPU executor, a pass between visibility and shading (`placement = "deferred"`; the ray caster's records and the column marcher's) | each frame's records | the shading reads the last records that arrived at this size (no hit before any has) |
+| hits (`shading.hits`) on a GPU | the GPU executor, as a split at the hit records (the shading's own executor, on the same GPU or another, with its own copy of the storages its rays walk): read back, through the gates on the host, written to the shading's edge (`placement = "deferred"`, a drawer writing records, or splats; no meshes node) | each frame's records, with its frame id and size | the shading reads the last records that arrived at this size (sky before any has), with the camera of the frame they were cast in (its own frame's when the id was lost) |
 | the frame (behind the output) | the worker, for every executor (read back even when the host asked for no pixels: a GPU pays that) | each frame's pixels | the host gets the last frame that arrived at this size (black before any has) |
 
-Refused by the executors so far, naming the gate and the edge: hits of the rasteriser and of
-every GPU executor (no serialized form yet), hits with `placement = inline` (they never
-leave the visibility pass), an image into the post (the post is compiled into its shading,
+The CPU rasteriser's hits are its quad ids with the visible chunks' quads they index (a
+message whose ids do not index its quads fails to decode). Refused by the executors so far,
+naming the gate and the edge: hits of the GPU column marcher (no serialized form yet), hits
+with `placement = inline` or of a forward drawer (they never leave the pass that finds them),
+hits beside mesh surfaces on a GPU (the shading past the gate has not their triangles), an image into the post (the post is compiled into its shading,
 no image crosses: put the gate after the post), and faces, surfaces, tiles, ray starts and
 generated chunks. Reports carry `gates`, one entry per gate node: `gate` (its id), `edge`
 (`reader.port`, `changes`, `frame`) and `stats` (messages, bytes, packets, packets lost,
 messages that failed to decode, `encode_ms` / `decode_ms`), so a gate's serialization time
 and bytes are its own. Serialized forms: the world's changes, frames (`gate::Frame`), hit
-records (the CPU executor's `Crossing`), plain records (`gate::encode_pod`).
+records (the CPU executor's `Crossing`; the GPU's `transfer::Records`), plain records
+(`gate::encode_pod`).
 
 **Sweeps** are edits whose values are lists: `vary = [...]` after `graph` and `edits`
 ([plans.md](plans.md#sweeps)).
