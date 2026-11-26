@@ -133,9 +133,6 @@ impl Graph {
                     chain.push((s.to_string(), specs[s]));
                     s = &self.nodes[s].inputs["in"];
                 }
-                if n.when(p) != When::Now {
-                    return Err(format!("`{id}`.{p}: a gate on an edge with timing `{}` is not modelled (only this frame's edges)", n.when(p).label()));
-                }
                 chain.reverse();
                 g.nodes.get_mut(id).unwrap().inputs.insert(p.clone(), s.to_string());
                 edges.push(EdgeGates { reader: id.clone(), port: p.clone(), source: s.to_string(), data: Data::Image, gates: chain, into_client: false });
@@ -269,6 +266,9 @@ mod tests {
         let sh = g.nodes.get_mut("shading").unwrap();
         sh.inputs.insert("hits".into(), "g".into());
         sh.timing.insert("hits".into(), When::Prev);
-        assert!(g.check().unwrap_err().contains("timing `prev`"));
+        // A previous-frame edge: refused where the executor does not hand its value over
+        // itself (here the CPU ray caster), naming the gate.
+        let why = g.check().and_then(|c| c.built()).unwrap_err();
+        assert!(why.contains("`g` on `shading.hits`") && why.contains("timing `prev`"), "{why}");
     }
 }

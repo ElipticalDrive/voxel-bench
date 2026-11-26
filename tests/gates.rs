@@ -19,13 +19,18 @@ fn launch(dir: &Path, name: &str, graph: &str, edits: &str) -> (bool, String) {
 
 /// [`launch`], saving every `every`-th frame (0: the last).
 fn launch_saving(dir: &Path, name: &str, graph: &str, edits: &str, every: u32) -> (bool, String) {
+    launch_scene(dir, name, graph, edits, every, r#"generator = { type = "terrain", seed = 3 }
+camera = { type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }"#)
+}
+
+/// [`launch_saving`] in `scene` (the plan's scene table's lines).
+fn launch_scene(dir: &Path, name: &str, graph: &str, edits: &str, every: u32, scene: &str) -> (bool, String) {
     let d = dir.join(name);
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let plan = format!(
         r#"[scene]
-generator = {{ type = "terrain", seed = 3 }}
-camera = {{ type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }}
+{scene}
 [run]
 frames = 20
 warmup = 0
@@ -385,4 +390,70 @@ fn the_world_side_gated_at_each_place() {
 ]"#;
     let (_, log) = launch(&dir(), "server-chunks", "raycast-cpu", server);
     assert!(log.contains("`gen` on `client.chunks`") && log.contains("on the server"), "{log}");
+}
+
+/// A gate on the CPU discoverer's faces (`draw.faces`, a previous-frame edge: discovery runs
+/// a frame ahead of the drawer), `knobs` its knobs.
+fn on_discovered(knobs: &str) -> String {
+    format!(
+        r#"[
+  {{ add = "d", role = "gate", component = "net" }},
+  {{ node = "d", input = "in", from = "visibility" }},
+  {{ node = "d", knobs = {knobs} }},
+  {{ node = "draw", input = "faces", from = "d" }},
+]"#
+    )
+}
+
+/// The CPU discoverer's face set crosses a gate on its way to the GPU that draws it, on the
+/// previous-frame edge: lossless, no pixel changes; lossy (no resend: a message with a lost
+/// packet arrives with records zeroed, or does not decode), the pass lives on and the gate
+/// reports the whole set crossing each frame; within the frame (`now`) the same gate runs.
+/// Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn discovered_faces_cross_a_gate() {
+    let plain = run(&dir(), "discover-plain", "discover-cpu", "[]");
+    assert!(plain["error"].is_null(), "{}", plain["error"]);
+    let gated = run(&dir(), "discover-gated", "discover-cpu", &on_discovered("{}"));
+    assert!(gated["error"].is_null(), "{}", gated["error"]);
+    assert_eq!(gates(&gated).iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["d:draw.faces"]);
+    crossed(&gated, false);
+    assert!(last_image(&dir(), "discover-plain") == last_image(&dir(), "discover-gated"), "a lossless gate on the discovered faces changed the frame");
+    let lossy = run(&dir(), "discover-lossy", "discover-cpu", &on_discovered("{ latency_ms = 30, jitter_ms = 10, loss = 0.02, seed = 9 }"));
+    assert!(lossy["error"].is_null(), "{}", lossy["error"]);
+    crossed(&lossy, true);
+    let d = &gates(&lossy)["d"].1;
+    let messages = d["messages"].as_f64().unwrap();
+    assert!(messages >= lossy["frames"].as_f64().unwrap(), "one face set a frame: {d}");
+    assert!(d["bytes"].as_f64().unwrap() > messages * 1000.0, "the face set crossed: {d}");
+    let now = run(&dir(), "discover-now", "discover-cpu", &on_discovered("{}").replacen('[', r#"[{ node = "draw", input = "faces", when = "now" }, "#, 1));
+    assert!(now["error"].is_null(), "{}", now["error"]);
+    crossed(&now, false);
+}
+
+/// See-through blocks behind a CPU gate on the hit records: the ray caster's records cross
+/// with their layers (eight records a pixel), and a lossless gate changes no pixel of the
+/// composited frame.
+#[test]
+fn transparency_layers_cross_a_cpu_gate() {
+    let glass = r#"generator = { type = "glass" }
+camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
+    let report = |name: &str| -> serde_json::Value {
+        let p = find(&dir().join(name).join("out"), &|p| p.file_name().is_some_and(|n| n == "report.json")).expect("a report");
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap()[0].clone()
+    };
+    let (ok, log) = launch_scene(&dir(), "glass-plain", "raycast-cpu", r#"[{ node = "shading", knobs = { placement = "deferred" } }]"#, 0, glass);
+    assert!(ok, "{log}");
+    let (ok, log) = launch_scene(&dir(), "glass-gated", "raycast-cpu", &format!("[{}]", inside("{}", "{}")), 0, glass);
+    assert!(ok, "{log}");
+    let (plain, gated) = (report("glass-plain"), report("glass-gated"));
+    for r in [&plain, &gated] {
+        assert!(r["error"].is_null(), "{}", r["error"]);
+        assert!(!r["not_supported"].to_string().contains("ransparency"), "transparency left out: {}", r["not_supported"]);
+    }
+    let h = &gates(&gated)["h"].1;
+    let messages = h["messages"].as_f64().unwrap();
+    assert!(h["bytes"].as_f64().unwrap() >= messages * 48.0 * 32.0 * 8.0 * 8.0, "the layers crossed: {h}");
+    assert!(last_image(&dir(), "glass-plain") == last_image(&dir(), "glass-gated"), "a lossless gate changed the composited layers");
 }

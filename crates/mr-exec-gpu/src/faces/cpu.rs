@@ -25,6 +25,11 @@
 //! `margin` widens the discovery FOV, both to cut disocclusion errors. The very first frame
 //! (and the first after a resize) discovers synchronously.
 //!
+//! A gate on the faces (the drawer's `faces` edge) carries the whole face set each frame
+//! (anchor, records, the view's tags) serialized from discovery to the drawer; the drawer
+//! draws the last set that arrived, and only the records that differ from what it holds are
+//! uploaded. The faces are in world space: they are drawn from this frame's camera.
+//!
 //! Counters: `rays` / `rays_per_pixel` (discovery rays), `faces_s` (|S|), `faces_drawn`
 //! (valid records on the GPU), `faces_uploaded` (records written this frame), `discovery_ms` (CPU job time), `wait_ms` (render thread
 //! blocked on the job). `audit=true` also casts one CPU ray per pixel for the rendered
@@ -41,6 +46,7 @@ use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
 use mr_components::visibility::discover::{Output, Records, Settings, State, grid};
+use mr_core::gate::{GateChain, GateReport, Get, Put, Wire, WireError};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{DEVICE_BOUND, GrowableBuffer, wgpu};
@@ -222,8 +228,54 @@ pub(crate) struct CpuSampler {
     /// The nodes of the timed stage: discovery on the CPU.
     vis_nodes: Vec<String>,
     drawing: Draw,
+    /// The gates on the faces, if any.
+    gate: Option<FacesGate>,
     /// This frame's state: what its nodes did so far, its counters and its groups.
     frame: Frame,
+}
+
+/// The face set as it crosses gates: the frame it was discovered for, the anchor its records
+/// are relative to, every record, the view's tags (empty when none is viewed).
+struct Faces {
+    frame_id: u64,
+    anchor: IVec3,
+    records: Vec<[u32; 2]>,
+    tags: Vec<u32>,
+}
+
+impl Wire for Faces {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.reserve(28 + self.records.len() * 8 + self.tags.len() * 4);
+        let mut p = Put(out);
+        p.u64(self.frame_id);
+        self.anchor.to_array().into_iter().for_each(|x| p.i32(x));
+        p.u32(self.records.len() as u32);
+        p.bytes(bytemuck::cast_slice(&self.records));
+        p.u32(self.tags.len() as u32);
+        p.bytes(bytemuck::cast_slice(&self.tags));
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut g = Get(bytes);
+        let frame_id = g.u64()?;
+        let anchor = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
+        let n = g.count(8)?;
+        let records = g.take(n * 8)?.as_chunks::<8>().0.iter().map(|b| [u32::from_le_bytes([b[0], b[1], b[2], b[3]]), u32::from_le_bytes([b[4], b[5], b[6], b[7]])]).collect();
+        let n = g.count(4)?;
+        let tags = g.take(n * 4)?.as_chunks::<4>().0.iter().map(|b| u32::from_le_bytes(*b)).collect();
+        g.end()?;
+        Ok(Faces { frame_id, anchor, records, tags })
+    }
+}
+
+/// The gates on the faces: the chain, discovery's side of the records (what is sent), and
+/// the drawer's: the anchor and tags of the set it draws (its records are the mirror).
+struct FacesGate {
+    chain: GateChain,
+    sent: Vec<[u32; 2]>,
+    anchor: IVec3,
+    tags: Vec<u32>,
+    /// This frame's serialization and crossing, in ms.
+    ms: f32,
 }
 
 /// What a frame's nodes share.
@@ -304,6 +356,8 @@ impl CpuSampler {
         core.view_max = view_max;
         let rec_buf = GrowableBuffer::new(&core.gpu, "visibility: face records", 1 << 22, u64::MAX, wgpu::BufferUsages::STORAGE);
         let tag_buf = GrowableBuffer::new(&core.gpu, "visibility: face tags", 1 << 21, u64::MAX, wgpu::BufferUsages::STORAGE);
+        let draw_id = g.find(Role::Draw).expect("found above");
+        let gate = g.gates_on(draw_id, "faces").map(|e| FacesGate { chain: GateChain::new(&e.edge(), &e.gates), sent: Vec::new(), anchor: IVec3::ZERO, tags: Vec::new(), ms: 0.0 });
         let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(p.devices.cpu_threads(opts.threads)).thread_name(|i| format!("discover-{i}")).build()?);
         let s = Self {
             cpu: match world {
@@ -327,6 +381,7 @@ impl CpuSampler {
             bind0: None,
             vis_nodes: g.ids(&[Role::Visibility]),
             drawing,
+            gate,
             frame: Frame::default(),
         };
         Ok((core, s, far))
@@ -345,20 +400,41 @@ impl CpuSampler {
         }
     }
 
-    /// A pass's records' changes into the mirror (uploaded by the next [`Self::upload`]).
+    /// A pass's records' changes into the mirror (uploaded by the next [`Self::upload`]); with
+    /// gates on the faces, into what is sent through them.
     fn receive(&mut self, r: &Records) {
+        if let Some(g) = &mut self.gate {
+            r.apply(&mut g.sent);
+            return;
+        }
         r.apply(&mut self.mirror);
         self.dirty.extend(r.writes.iter().map(|&(s, _)| s));
+    }
+
+    /// The face set sent through the gates at the frame's time (anchor `anchor`, `tags`); the
+    /// last set that arrived replaces the mirror, the records that differ marked for the
+    /// upload. Returns the anchor and tags of the set the drawer draws (`None`: no gates).
+    fn cross(&mut self, req: &FrameRequest, anchor: IVec3, tags: &[u32]) -> Option<(IVec3, Vec<u32>)> {
+        let g = self.gate.as_mut()?;
+        let start = Instant::now();
+        let sent = Faces { frame_id: req.frame_id, anchor, records: g.sent.clone(), tags: tags.to_vec() };
+        if let Some(f) = g.chain.gates.pass(req.time, Some(sent)).pop() {
+            let mirror = &self.mirror;
+            self.dirty.extend((0..f.records.len()).filter(|&i| mirror.get(i) != Some(&f.records[i])).map(|i| i as u32));
+            self.mirror = f.records;
+            (g.anchor, g.tags) = (f.anchor, f.tags);
+        }
+        g.ms = start.elapsed().as_secs_f32() * 1e3;
+        Some((g.anchor, g.tags.clone()))
     }
 
     /// The transfer adapter of the faces (CPU to GPU): the records that changed into `rec_buf`
     /// (runs of slots closer than [`GAP`] merged into one write), the views' tags into
     /// `tag_buf`; returns how many records the GPU draws.
-    fn upload(&mut self, core: &Core, out: &Output) -> u32 {
+    fn upload(&mut self, core: &Core, tags: &[u32]) -> u32 {
         /// Unchanged slots between two changed ones written with them rather than splitting
         /// the write.
         const GAP: u32 = 64;
-        self.receive(&out.records);
         let n = self.mirror.len() as u32;
         let bytes = n as u64 * REC_BYTES;
         self.uploaded = 0;
@@ -383,7 +459,6 @@ impl CpuSampler {
             }
         }
         // Tags for the post's view, when the algorithm provides them.
-        let tags = &out.records.tags;
         self.tags_valid = false;
         if tags.len() == n as usize && !tags.is_empty()
             && let Some(grew) = self.tag_buf.reserve(&core.gpu, tags.len() as u64 * 4, DEVICE_BOUND) {
@@ -547,7 +622,7 @@ impl exec::State for CpuSampler {
 
     fn memory(&self, core: &Core) -> (u64, u64) {
         // S (key + entry), the state's records and keys, the mirror.
-        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16) + self.mirror.len() as u64 * 24;
+        let s = self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16) + self.mirror.len() as u64 * 24 + self.gate.as_ref().map_or(0, |g| g.sent.len() as u64 * 8);
         (self.cpu.memory() + s + (core.width as u64 + 1) * (core.height as u64 + 1) * 36, self.rec_buf.size() + self.drawing.memory_bytes(core))
     }
 }
@@ -580,8 +655,12 @@ impl Region for CpuSampler {
         };
         let wait_ms = start.elapsed().as_secs_f64() * 1e3;
 
-        // 2. The faces to the GPU.
-        let n = self.upload(core, &out);
+        // 2. The faces to the GPU (through the gates on them, if any).
+        self.receive(&out.records);
+        let (anchor, n) = match self.cross(req, out.records.anchor, &out.records.tags) {
+            Some((anchor, tags)) => (anchor, self.upload(core, &tags)),
+            None => (out.records.anchor, self.upload(core, &out.records.tags)),
+        };
 
         // 3. Optional audit against a full per-pixel cast of the camera actually drawn.
         let audit = if self.opts.audit {
@@ -611,7 +690,7 @@ impl Region for CpuSampler {
         }
 
         // 5. The frame's camera and world for drawing S.
-        self.drawing.write_frame(core, &c, req.mode, out.records.anchor);
+        self.drawing.write_frame(core, &c, req.mode, anchor);
         let world = core.world.prepare(&core.gpu, &c).clone();
         core.accum.begin(&core.gpu, &c, req.mode);
         let pixels = (w as f64) * (h as f64);
@@ -648,8 +727,13 @@ impl Region for CpuSampler {
         let f = &self.frame;
         let (accel, accel_stages) = core.accel_stats();
         let counters = f.counters.iter().cloned().chain(core.accum.counter(req.mode)).chain(core.storages.counters()).chain(accel).collect();
-        let stages = [StageTime::cpu("discover", &self.vis_nodes, f.discovery_ms)].into_iter().chain(accel_stages).collect();
+        let gate = self.gate.as_ref().map(|g| StageTime::cpu("gate", &g.chain.nodes.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), g.ms));
+        let stages = [StageTime::cpu("discover", &self.vis_nodes, f.discovery_ms)].into_iter().chain(gate).chain(accel_stages).collect();
         (counters, None, stages)
+    }
+
+    fn gates(&self) -> Vec<GateReport> {
+        self.gate.as_ref().map_or(vec![], |g| g.chain.reports())
     }
 
     fn quantities(&self) -> &'static [Quantity] {

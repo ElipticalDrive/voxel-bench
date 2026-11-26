@@ -6,7 +6,7 @@
 //! the client may generate the world itself ([`Generating`]), the server's
 //! stream then carrying edits only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -174,10 +174,72 @@ fn panic_message(p: &(dyn std::any::Any + Send)) -> &str {
 
 /// The world's changes `got` by `time` sent through the gates (one message per change:
 /// `gate::world_messages`), and what came out of them by then.
-fn gated(gates: &mut Option<GateChain>, time: f64, got: Vec<mr_core::WorldUpdate>) -> Vec<mr_core::WorldUpdate> {
+fn gated(gates: &mut Option<Gated>, time: f64, got: Vec<mr_core::WorldUpdate>) -> Vec<mr_core::WorldUpdate> {
     match gates {
-        Some(g) => g.gates.pass_all(time, mr_core::gate::world_messages(got)).into_iter().flatten().collect(),
+        Some(g) => {
+            g.ledger.sent(&got);
+            let out: Vec<_> = g.chain.gates.pass_all(time, mr_core::gate::world_messages(got)).into_iter().flatten().collect();
+            g.ledger.arrived(&out);
+            out
+        }
         None => got,
+    }
+}
+
+/// One edge's gates on the world's side and the chunks gone into them.
+struct Gated {
+    chain: GateChain,
+    ledger: Ledger,
+}
+
+/// The chunks loaded into gates and not out of them: on the way, or lost (a load whose
+/// bytes did not decode never arrives, without `resend`): holes on the far side until a
+/// later load of the chunk arrives or it is unloaded.
+#[derive(Default)]
+struct Ledger {
+    sent: HashSet<mr_core::ChunkKey>,
+    arrived: HashSet<mr_core::ChunkKey>,
+    missing: HashSet<mr_core::ChunkKey>,
+}
+
+impl Ledger {
+    /// Changes going into the gates.
+    fn sent(&mut self, ups: &[mr_core::WorldUpdate]) {
+        for u in ups {
+            match u {
+                mr_core::WorldUpdate::ChunkLoad { key, .. } => {
+                    self.sent.insert(*key);
+                    if !self.arrived.contains(key) {
+                        self.missing.insert(*key);
+                    }
+                }
+                mr_core::WorldUpdate::ChunkUnload { key } => {
+                    self.sent.remove(key);
+                    self.missing.remove(key);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Changes come out of them (a load's key as it arrived: one garbled by lost bytes is
+    /// some other chunk, and the one sent stays missing).
+    fn arrived(&mut self, ups: &[mr_core::WorldUpdate]) {
+        for u in ups {
+            match u {
+                mr_core::WorldUpdate::ChunkLoad { key, .. } => {
+                    self.arrived.insert(*key);
+                    self.missing.remove(key);
+                }
+                mr_core::WorldUpdate::ChunkUnload { key } => {
+                    self.arrived.remove(key);
+                    if self.sent.contains(key) {
+                        self.missing.insert(*key);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -185,24 +247,28 @@ fn gated(gates: &mut Option<GateChain>, time: f64, got: Vec<mr_core::WorldUpdate
 /// (the server-to-client crossing), on the generated chunks (a generator on the client's
 /// cpu) and on the client's changes into the renderer.
 struct WorldGates {
-    stream: Option<GateChain>,
-    chunks: Option<GateChain>,
-    client: Option<GateChain>,
+    stream: Option<Gated>,
+    chunks: Option<Gated>,
+    client: Option<Gated>,
 }
 
 impl WorldGates {
     fn new(p: &mr_core::InitParams) -> Self {
-        let chain = |edge: &str, nodes: &[mr_core::gate::GateNode]| (!nodes.is_empty()).then(|| GateChain::new(edge, nodes));
+        let chain = |edge: &str, nodes: &[mr_core::gate::GateNode]| (!nodes.is_empty()).then(|| Gated { chain: GateChain::new(edge, nodes), ledger: Ledger::default() });
         Self { stream: chain("client.changes", &p.gates), chunks: chain("client.chunks", &p.chunk_gates), client: chain("changes", &p.client_gates) }
     }
 
-    fn chains(&self) -> impl Iterator<Item = &GateChain> {
+    fn gated(&self) -> impl Iterator<Item = &Gated> {
         [&self.stream, &self.chunks, &self.client].into_iter().flatten()
     }
 
-    /// Chunk loads inside any of them.
+    fn chains(&self) -> impl Iterator<Item = &GateChain> {
+        self.gated().map(|g| &g.chain)
+    }
+
+    /// Chunks loaded into any of them and not out (on the way or lost).
     fn holes(&self) -> u32 {
-        self.chains().map(|c| c.gates.pieces_in_flight()).sum()
+        self.gated().map(|g| g.ledger.missing.len() as u32).sum()
     }
 }
 
@@ -337,7 +403,7 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
                     *sink.update_ms += t.elapsed().as_secs_f32() * 1e3;
                 }
                 let holes = wg.holes() as usize + generating.as_ref().map_or(0, |g| g.pending());
-                let bytes = wg.stream.as_ref().map_or(free_bytes, |c| c.gates.0[0].stats().bytes);
+                let bytes = wg.stream.as_ref().map_or(free_bytes, |g| g.chain.gates.0[0].stats().bytes);
                 let gates = wg.chains().flat_map(GateChain::reports).collect();
                 let arrivals = Arrivals { bytes, arrived: arrived_bytes, holes: holes as u32, gates };
                 sink.slots.insert(req.frame_id, (slot.filter(|_| req.readback), arrivals, time));
@@ -404,4 +470,39 @@ fn serve(rx: &crossbeam_channel::Receiver<Input>, out: &mut MsgWriter<WorkerMsg>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mr_core::gate::GateSpec;
+    use mr_core::{BlockId, ChunkData, ChunkKey, WorldUpdate};
+
+    fn load(x: i32) -> WorldUpdate {
+        WorldUpdate::ChunkLoad { key: ChunkKey::lod0(mr_core::glam::IVec3::new(x, 0, 0)), data: ChunkData::Uniform(BlockId(1)) }
+    }
+
+    /// Chunks lost in a gate without resend stay holes (they never arrive), until a later
+    /// load of the chunk arrives or it is unloaded; with resend, none is left once all arrived.
+    #[test]
+    fn chunks_lost_without_resend_are_holes() {
+        let gate = |resend: bool| Some(Gated { chain: GateChain::new("client.changes", &[("g".into(), GateSpec { loss: 0.3, resend, seed: 3, ..GateSpec::default() })]), ledger: Ledger::default() });
+        let mut lossy = gate(false);
+        let got = gated(&mut lossy, 0.0, (0..200).map(load).collect());
+        let g = lossy.as_ref().unwrap();
+        let failed = g.chain.gates.0[0].stats().failed as usize;
+        assert!(failed > 20 && g.ledger.missing.len() >= failed && got.len() + g.ledger.missing.len() >= 200, "{failed} lost, {} missing, {} arrived", g.ledger.missing.len(), got.len());
+        // Still holes later; gone when unloaded.
+        let missing: Vec<ChunkKey> = g.ledger.missing.iter().copied().collect();
+        gated(&mut lossy, 1.0, vec![]);
+        assert_eq!(lossy.as_ref().unwrap().ledger.missing.len(), missing.len());
+        let mut lossless = Some(Gated { chain: GateChain::new("client.changes", &[("g".into(), GateSpec::default())]), ledger: std::mem::take(&mut lossy.as_mut().unwrap().ledger) });
+        gated(&mut lossless, 2.0, missing.iter().map(|k| WorldUpdate::ChunkUnload { key: *k }).collect());
+        assert!(lossless.as_ref().unwrap().ledger.missing.is_empty());
+        let mut resent = gate(true);
+        let mut got = gated(&mut resent, 0.0, (0..200).map(load).collect());
+        got.extend(gated(&mut resent, 10.0, vec![]));
+        let g = resent.as_ref().unwrap();
+        assert!(got.len() == 200 && g.ledger.missing.is_empty() && g.chain.gates.0[0].stats().lost_packets > 0);
+    }
 }

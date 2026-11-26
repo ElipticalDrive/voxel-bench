@@ -772,6 +772,26 @@ impl Checked {
         // generator's chunks) and behind the output (the frame) run in the worker, for every
         // executor; gates inside the pipeline are the executor's, on the edges it gives a
         // serialized form.
+        for e in &self.gates {
+            // A gate on a previous-frame edge carries the value its reader gets a frame late:
+            // where the executor hands that value over itself (the CPU discoverer's faces,
+            // the hit records between two GPUs).
+            let when = self.graph.nodes.get(&e.reader).map_or(When::Now, |n| n.when(&e.port));
+            let late_ok = match e.data {
+                super::Data::Faces => builds.id == RegionId::CpuSampler,
+                super::Data::Hits => builds.split,
+                _ => false,
+            };
+            if when != When::Now && !(when == When::Prev && late_ok) {
+                return Err(format!(
+                    "`{}` on `{}`: a gate on an edge with timing `{}` is not modelled for {} in {executor} (gates on `prev` edges run on the CPU discoverer's faces and on the hit records a split's second GPU shades)",
+                    e.gates[0].0,
+                    e.edge(),
+                    when.label(),
+                    e.data.name()
+                ));
+            }
+        }
         for e in self.gates.iter().filter(|e| !e.in_worker()) {
             let at = format!("`{}` on `{}`", e.gates[0].0, e.edge());
             match e.data {
@@ -799,13 +819,15 @@ impl Checked {
                 // The CPU rasteriser's faces: the geometry's meshes, the visibility's
                 // screen triangles.
                 super::Data::Faces if matches!(builds.id, RegionId::CpuRaster) => {}
+                // The CPU discoverer's face set, on its way to the GPU that draws it.
+                super::Data::Faces if builds.id == RegionId::CpuSampler => {}
                 super::Data::Hits => {
                     return Err(format!(
                         "{at}: {executor} gives its hits no serialized form yet (gates on hits run where the hit records can be split off: the CPU ray caster, rasteriser and column marcher, GPU ray casting, face drawers and splats)"
                     ));
                 }
                 super::Data::Faces => {
-                    return Err(format!("{at}: {executor} gives its faces no serialized form yet (gates on faces run in the CPU rasteriser)"));
+                    return Err(format!("{at}: {executor} gives its faces no serialized form yet (gates on faces run in the CPU rasteriser and the CPU discoverer)"));
                 }
                 d => return Err(format!("{at}: no executor runs gates on {} edges yet", d.name())),
             }
