@@ -205,20 +205,25 @@ node reads, one behind something other than the output. Where they run:
 | hits (`shading.hits`) | the CPU executor, a pass between visibility and shading (`placement = "deferred"`; the ray caster's records, the column marcher's and the rasteriser's) | each frame's records, with its frame id | the shading reads the last records that arrived at this size (no hit before any has); it and the passes after it run with the camera of the frame they were cast in (its own frame's when the id was lost) |
 | hits (`shading.hits`) on a GPU | the GPU executor, as a split at the hit records (the shading's own executor, on the same GPU or another, with its own copy of the storages its rays walk): read back, through the gates on the host, written to the shading's edge (`placement = "deferred"`, a drawer writing records, or splats; no meshes node) | each frame's records, with its frame id and size | the shading reads the last records that arrived at this size (sky before any has), with the camera of the frame they were cast in (its own frame's when the id was lost) |
 | faces into the CPU rasteriser's visibility (`visibility.faces`: the geometry's meshes) and drawer (`draw.faces`: the screen triangles) | the CPU executor, a pass between the two | each frame's meshes of the world (not the chunks the geometry remeshes from), or the frame's triangles with the visible chunks' quads they index, its size and frame id | the reader reads the last that arrived (none before; triangles only at this size); the meshes are the same from every camera, so the passes after them keep this frame's camera, while late triangles are drawn and shaded with the camera of their frame |
+| between two passes of one GPU executor: the GPU column marcher's hits (`shading.hits`, `placement = "deferred"`), the beam prepass's ray starts into the walk (`visibility.start`), hole detection's tiles into GPU discovery (`visibility.where`), GPU discovery's faces into its drawer (`draw.faces`) | the GPU executor, before the reader's pass: what the passes before it left in the edge's resources (buffers, render targets) is read back (the frame's commands so far submitted and waited for), sent through the gates on the host, and the last that arrived written in place; after the reader's pass what the producer left is copied back, so state it keeps across frames (the face set, the tiles' history) stays its own | each frame's resources' bytes, with its frame id and size | the reader reads zeros (no hit: sky; no start, tile or face); the hits, starts and tiles (seen from a camera) are read, and the passes after them run, with the camera of the frame they were made in |
 | the frame (behind the output) | the worker, for every executor (read back even when the host asked for no pixels: a GPU pays that) | each frame's pixels | the host gets the last frame that arrived at this size (black before any has) |
 
 The CPU rasteriser's hits are its quad ids with the visible chunks' quads they index (a
 message whose ids do not index its quads fails to decode). Refused by the executors so far,
-naming the gate and the edge: hits of the GPU column marcher (no serialized form yet), hits
+naming the gate and the edge: hits
 with `placement = inline` or of a forward drawer (they never leave the pass that finds them),
 hits beside mesh surfaces on a GPU (the shading past the gate has not their triangles), an image into the post (the post is compiled into its shading,
-no image crosses: put the gate after the post), faces outside the CPU rasteriser, and surfaces, tiles and ray starts.
+no image crosses: put the gate after the post), mesh surfaces on a GPU (drawn in the drawer's
+own pass, or a depth target the rays read, and nothing can be copied into a `Depth32Float`
+target), a GPU executor's geometry (built on the CPU and uploaded as chunks change), faces
+from a visibility on the CPU into a GPU drawer (raster-gpu's culling, CPU discovery: an upload
+each frame, no serialized form at it yet), faces into splats and ray queries' geometry.
 Reports carry `gates`, one entry per gate node: `gate` (its id), `edge`
 (`reader.port`; the world's side: `client.changes` into the client, `client.chunks`,
 `changes` from the client into the renderer; `frame`) and `stats` (messages, bytes, packets, packets lost,
 messages that failed to decode, `encode_ms` / `decode_ms`), so a gate's serialization time
 and bytes are its own. Serialized forms: the world's changes, frames (`gate::Frame`), hit
-records (the CPU executor's `Crossing`; the GPU's `transfer::Records`), plain records
+records (the CPU executor's `Crossing`; the GPU's `transfer::Records`), what a GPU executor holds between two passes (`cross::Crossed`: each resource's bytes), plain records
 (`gate::encode_pod`).
 
 **Sweeps** are edits whose values are lists: `vary = [...]` after `graph` and `edits`

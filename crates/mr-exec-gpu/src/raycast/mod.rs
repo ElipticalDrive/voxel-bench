@@ -48,7 +48,7 @@ fn run<C: Cast + 'static>((core, cast, shading, far): (Core, C, String, Option<c
     let passes = nodes::of::<C>(g)?;
     tracing::debug!("{:?}: {} passes", C::REGION.id, passes.len());
     match far {
-        Some(far) => crate::exec::split(g, crate::exec::Executor::new(core, region, passes), far),
+        Some(far) => crate::exec::split(g, crate::exec::Executor::new(core, region, passes, true), far),
         None => crate::exec::run(core, region, passes),
     }
 }
@@ -175,6 +175,10 @@ trait Cast: Sized {
     /// Whether it ran.
     fn prepass(&mut self, _core: &mut Core, _passes: &Passes, _enc: &mut wgpu::CommandEncoder, _ticket: Ticket, _world: &wgpu::BindGroup, _first: bool) -> bool {
         false
+    }
+    /// The prepass's start per tile, as a gate on the visibility's `start` reads it back.
+    fn starts(&self) -> Option<crate::cross::Part> {
+        None
     }
     /// The caster's bind groups after group 1.
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)>;
@@ -542,6 +546,13 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
     fn quantities(&self) -> &'static [mr_core::Quantity] {
         self.cast.quantities()
     }
+
+    fn crossing(&self, _core: &Core, reader: Role, port: &str, _data: mr_components::graph::Data) -> Option<Vec<crate::cross::Part>> {
+        match (reader, port) {
+            (Role::Visibility, "start") => self.cast.starts().map(|p| vec![p]),
+            _ => None,
+        }
+    }
 }
 
 impl<C: Cast> State for Raycast<C> {
@@ -633,7 +644,7 @@ mod nodes {
     }
 
     /// The nodes of `g`'s passes on the casters' GPU, in frame order.
-    pub(super) fn of<C: Cast + 'static>(g: &graph::Checked) -> anyhow::Result<Vec<Box<dyn Node<Raycast<C>>>>> {
+    pub(super) fn of<C: Cast + 'static>(g: &graph::Checked) -> anyhow::Result<Vec<crate::exec::Pass<Raycast<C>>>> {
         crate::exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<Raycast<C>>>> {
             Some(match role {
                 Role::Traversal => Box::new(Accel),

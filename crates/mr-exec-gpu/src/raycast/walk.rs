@@ -467,6 +467,10 @@ impl Cast for Walk {
         self.prepass
     }
 
+    fn starts(&self) -> Option<crate::cross::Part> {
+        Some(crate::cross::Part::Buffer(self.beam.tiles.clone()))
+    }
+
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)> {
         std::iter::once((3, self.meshes.bind_group())).chain(self.bound.0.iter().map(|(g, b)| (*g, b)))
     }
@@ -570,7 +574,8 @@ impl Beam {
     fn new(gpu: &Gpu, width: u32, height: u32) -> Self {
         let res = || format!("the resolution ({width}x{height})");
         Self {
-            tiles: gpu.storage("beam tiles", width as u64 * height as u64 * 4, wgpu::BufferUsages::STORAGE, res),
+            // Read back and written by a gate on the visibility's starts.
+            tiles: gpu.storage("beam tiles", width as u64 * height as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, res),
             stats: gpu.storage("beam stats", 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, res),
             read: gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("beam stats readback"), size: 16, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
             state: Arc::new(AtomicU32::new(0)),

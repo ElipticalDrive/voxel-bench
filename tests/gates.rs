@@ -274,8 +274,14 @@ fn gates_refused_naming_them() {
     assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
     let (_, log) = launch(&dir(), "raster-gpu-forward", "raster-gpu", &on_hits("draw"));
     assert!(log.contains("`g` on `shading.hits`") && log.contains("no hit records"), "{log}");
-    let (_, log) = launch(&dir(), "columns-gpu", "columns-gpu", &on_hits("visibility").replacen('[', r#"[{ node = "shading", knobs = { placement = "deferred" } }, "#, 1));
-    assert!(log.contains("`g` on `shading.hits`") && log.contains("no serialized form"), "{log}");
+    let (_, log) = launch(&dir(), "columns-gpu-inline", "columns-gpu", &on_hits("visibility"));
+    assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
+    let (_, log) = launch(&dir(), "raycast-gpu-surfaces", "raycast-gpu", &format!("[{}]", gate_on("meshes", "visibility", "meshes", "{}")));
+    assert!(log.contains("`g` on `visibility.meshes`") && log.contains("Depth32Float"), "{log}");
+    let (_, log) = launch(&dir(), "raster-gpu-geometry", "raster-gpu", &format!("[{}]", gate_on("geometry", "visibility", "faces", "{}")));
+    assert!(log.contains("`g` on `visibility.faces`") && log.contains("uploaded"), "{log}");
+    let (_, log) = launch(&dir(), "raster-gpu-culled", "raster-gpu", &format!("[{}]", gate_on("visibility", "draw", "faces", "{}")));
+    assert!(log.contains("`g` on `draw.faces`") && log.contains("on the CPU"), "{log}");
     let post = r#"[
   { add = "post", role = "post", component = "clamp" },
   { add = "g", role = "gate", component = "net" },
@@ -385,4 +391,89 @@ fn the_world_side_gated_at_each_place() {
 ]"#;
     let (_, log) = launch(&dir(), "server-chunks", "raycast-cpu", server);
     assert!(log.contains("`gen` on `client.chunks`") && log.contains("on the server"), "{log}");
+}
+
+/// A gate `g` (knobs `knobs`) taking `reader`.`port` from `from`.
+fn gate_on(from: &str, reader: &str, port: &str, knobs: &str) -> String {
+    format!(r#"{{ add = "g", role = "gate", component = "net" }}, {{ node = "g", input = "in", from = "{from}" }}, {{ node = "g", knobs = {knobs} }}, {{ node = "{reader}", input = "{port}", from = "g" }},"#)
+}
+
+/// Edges whose data a GPU executor holds between two of its passes: the GPU column
+/// marcher's hit records (shading deferred), the beam prepass's ray starts into the walk,
+/// hole detection's tiles into GPU discovery and the discovered faces into the drawer. Each:
+/// the graph, the edits before the edge, the edge's source, reader and port.
+fn between_passes() -> Vec<(&'static str, &'static str, &'static str, &'static str, &'static str)> {
+    vec![
+        ("columns-gpu", r#"{ node = "shading", knobs = { placement = "deferred" } },"#, "visibility", "shading", "hits"),
+        ("raycast-gpu", r#"{ add = "prepass", role = "prepass", component = "beam" }, { node = "prepass", input = "storage", from = "storage" },"#, "prepass", "visibility", "start"),
+        (
+            "discover-gpu",
+            r#"{ add = "holes", role = "holes", component = "coverage" },
+  { node = "draw", input = "faces", when = { iterate = 2 } },
+  { node = "holes", input = "covered", from = "draw" },
+  { node = "holes", input = "sky", from = "draw" },
+  { node = "holes", input = "sky", when = "prev" },"#,
+            "holes",
+            "visibility",
+            "where",
+        ),
+        ("discover-gpu", "", "visibility", "draw", "faces"),
+    ]
+}
+
+/// On a GPU, what crosses between two passes goes through a lossy gate end to end: read back
+/// before the reader's pass, serialized through the gate, the last that arrived written in
+/// place (what the producer keeps across frames restored after). The pass lives through the
+/// losses and reports the gate on its edge. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_edges_between_passes_through_lossy_gates() {
+    for (graph, before, from, reader, port) in between_passes() {
+        let edge = format!("{reader}.{port}");
+        let edits = format!("[{before} {}]", gate_on(from, reader, port, "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, seed = 5 }"));
+        let r = run(&dir(), &format!("{graph}-{reader}-{port}-lossy"), graph, &edits);
+        assert!(r["error"].is_null(), "{edge}: {}", r["error"]);
+        let gs = gates(&r);
+        assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), [format!("g:{edge}")], "{graph}");
+        crossed(&r, true);
+        let g = &gs["g"].1;
+        assert!(g["messages"].as_f64().unwrap() >= r["frames"].as_f64().unwrap(), "{edge}: {g}");
+    }
+}
+
+/// What crosses a viewed edge between passes on a GPU (the column marcher's hit records) late
+/// behind a gate is used with the camera of its frame: with the camera moving, a lossless
+/// gate delaying the records shows exactly an earlier frame of the ungated run. Needs a GPU.
+#[test]
+#[ignore]
+fn gpu_late_records_between_passes_with_their_own_camera() {
+    let (graph, before, from, reader, port) = between_passes()[0];
+    let (plain, gated) = (format!("{graph}-moving-plain"), format!("{graph}-moving-late"));
+    let (ok, log) = launch_saving(&dir(), &plain, graph, &format!("[{before}]"), 1);
+    assert!(ok, "{log}");
+    let (ok, log) = launch_saving(&dir(), &gated, graph, &format!("[{before} {}]", gate_on(from, reader, port, "{ latency_ms = 40 }")), 1);
+    assert!(ok, "{log}");
+    let (plain, gated) = (images(&dir(), &plain), images(&dir(), &gated));
+    let last = gated.last().expect("saved frames");
+    assert!(plain.len() > 4 && plain.last() != plain.get(plain.len() - 4), "the camera does not move visibly");
+    assert!(last != plain.last().unwrap(), "the late records show the current frame");
+    assert!(plain[plain.len() - 5..].contains(last), "the late records do not show an earlier frame as it was");
+}
+
+/// A lossless gate with no delay between two passes on a GPU changes no pixel under a moving
+/// camera: what is read back and written again is what the reader would have read. Needs a
+/// GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_lossless_gates_between_passes_change_no_pixel() {
+    for (graph, before, from, reader, port) in between_passes() {
+        let name = format!("{graph}-{reader}-{port}");
+        let edge = format!("{reader}.{port}");
+        let plain = run(&dir(), &format!("{name}-plain"), graph, &format!(r#"[{before} {{ node = "{reader}", input = "{port}", from = "{from}" }}]"#));
+        assert!(plain["error"].is_null(), "{edge}: {}", plain["error"]);
+        let gated = run(&dir(), &format!("{name}-gated"), graph, &format!("[{before} {}]", gate_on(from, reader, port, "{}")));
+        assert!(gated["error"].is_null(), "{edge}: {}", gated["error"]);
+        crossed(&gated, false);
+        assert!(last_image(&dir(), &format!("{name}-plain")) == last_image(&dir(), &format!("{name}-gated")), "{edge}: a lossless gate changed the frame");
+    }
 }
