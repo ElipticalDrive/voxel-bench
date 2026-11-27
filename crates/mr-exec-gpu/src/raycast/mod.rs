@@ -495,6 +495,14 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
             self.built_shading = self.shading.clone();
             cast.compiled();
         }
+        // A switch to a shading that does not composite layers (`Cap::Layers`): one record
+        // per pixel again, the first surface shaded, as had it run from the start (a switch
+        // back layers them again below).
+        if passes.layered && !caps::provides(mr_components::Kind::Gpu, Role::Shading, &self.shading, Cap::Layers) {
+            passes.layered = false;
+            core.edges.set_layers(&core.gpu, core.width, core.height, 1);
+            passes.unbind();
+        }
         if cast.stale() || self.shading != self.built_shading {
             (passes.plain, passes.extra) = Passes::variant(core, &passes.pipeline_layout, cast, &self.shading, Meshed::No, passes.remote, passes.layered)?;
             passes.meshed = [None, None];

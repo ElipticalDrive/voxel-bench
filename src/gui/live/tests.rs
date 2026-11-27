@@ -577,3 +577,99 @@ fn live_probes_score_settled_frames() {
     let n = live.shared.lock().unwrap().lanes[0].quality.len();
     wait(&live.shared, "a settled probe after moving", 60, |s| s.lanes[0].quality.iter().skip(n).any(|q| q.settled));
 }
+
+/// Transparency and a switch to a shading that cannot composite layers (`pathtrace` lacks
+/// `layers`), and back: live inline on one GPU (the running worker drops its layered records;
+/// it failed compiling `shade_radiance` before), a hot swap where the shading is deferred, on
+/// a second GPU or behind a gate (its `placement` knob is not live). Every lane renders on
+/// (the first surface shaded), and back on `direct` shows the image it had. Needs a GPU
+/// (`--ignored`).
+#[test]
+#[ignore]
+fn live_switch_to_a_shading_without_layers() {
+    let deferred = r#"{ node = "shading", knobs = { placement = "deferred" } }, { remove = "meshes" }"#;
+    let gated = format!(r#"{deferred}, {{ add = "h", role = "gate", component = "net" }}, {{ node = "h", input = "in", from = "visibility" }}, {{ node = "shading", input = "hits", from = "h" }}"#);
+    // On a second GPU (the same one where there is one), with its own storage and kernel.
+    let split = format!(r#"{deferred}, {{ add = "s.storage", role = "storage", component = "bricks" }}, {{ node = "s.storage", input = "changes", from = "world" }}, {{ add = "s.kernel", role = "traversal", component = "refloor" }}, {{ node = "s.kernel", input = "storage", from = "s.storage" }}, {{ node = "shading", input = "shadow", from = "s.kernel" }}, {{ node = "shading", device = "gpu1" }}"#);
+    let plan = Plan::parse(
+        &format!(
+            r#"
+        [scene]
+        generator = {{ type = "glass" }}
+        camera = {{ type = "static", position = [34, 36, 66], target = [23, 2, 16] }}
+        [run]
+        resolution = [64, 36]
+        view_radius = 2
+        isolation = "thread"
+        [[renderer]]
+        graph = "raycast-gpu"
+        label = "inline"
+        [[renderer]]
+        graph = "raycast-gpu"
+        label = "deferred"
+        edits = [{deferred}]
+        [[renderer]]
+        graph = "raycast-gpu"
+        label = "gated"
+        edits = [{gated}]
+        [[renderer]]
+        graph = "raycast-gpu"
+        label = "split"
+        edits = [{split}]
+        "#
+        ),
+        &[],
+    )
+    .unwrap();
+    let control = Control { camera: CameraControl::Path, mode: PassMode::LIT, scene_frame: 0, events: false, fps_cap: 0.0, display_hz: 60.0, probe_interval: 0.0, windows: 0, paper_white: 1.0 };
+    let live = LiveHandle::start(plan, vec![], control, || {});
+    let n = 4;
+    wait(&live.shared, "frames from all lanes", 120, |s| s.lanes.len() == n && s.lanes.iter().all(|l| l.frames > 30));
+    let before: Vec<Arc<Vec<u8>>> = live.shared.lock().unwrap().lanes.iter().map(|l| l.frame.as_ref().unwrap().pixels.clone()).collect();
+    for component in ["pathtrace", "direct"] {
+        let frames: Vec<u64> = live.shared.lock().unwrap().lanes.iter().map(|l| l.frames).collect();
+        for i in 0..n {
+            // The component, and the placement it had (a switch starts the node's knobs anew).
+            let spec = live.shared.lock().unwrap().lanes[i].spec.clone();
+            let g = spec.graph.as_ref().unwrap();
+            let Some(placement) = g.nodes["shading"].knobs.get("placement").cloned() else {
+                live.send(Cmd::SetParam { lane: i, name: "shading.component".into(), value: ParamValue::Choice(component.into()) });
+                continue;
+            };
+            let g = g.edit(&mr_components::graph::Change::component("shading", component)).unwrap();
+            let g = g.edit(&mr_components::graph::Change::Knob("shading".into(), "placement".into(), Some(placement))).unwrap();
+            let mut new = spec.clone();
+            new.graph = Some(g);
+            new.resolve().unwrap_or_else(|e| panic!("lane {}: {component}: {e:#}", i + 1));
+            // As the editor does: the switched node's knobs start anew, and `placement` is
+            // not live, so a hot swap (a graph edit alone would lose the placement in the
+            // worker: refused by name where the hits leave the pass).
+            live.send(Cmd::Swap { lane: i, spec: new });
+        }
+        wait(&live.shared, &format!("every lane rendering on with {component}"), 120, |s| {
+            s.lanes.iter().enumerate().all(|(i, l)| l.frames > frames[i] + 10 && l.spec.graph.as_ref().is_some_and(|g| g.nodes["shading"].component == component))
+                || s.lanes.iter().any(|l| l.status != LaneStatus::Running)
+        });
+        let sh = live.shared.lock().unwrap();
+        for (i, l) in sh.lanes.iter().enumerate() {
+            let bad: Vec<&String> = l.events.iter().map(|(_, e)| e).filter(|e| e.starts_with("refused") || e.starts_with("failed")).collect();
+            assert!(l.status == LaneStatus::Running && bad.is_empty(), "lane {} ({component}): {:?} {bad:?}\n{}", i + 1, l.status, sh.log.join("\n"));
+            // Inline, the switch is live (the layered records dropped in the running worker).
+            let swapped = l.events.iter().any(|(_, e)| e.starts_with("hot swap"));
+            assert_eq!(swapped, l.spec.label() != "inline", "lane {}: {:?}", i + 1, l.events);
+        }
+    }
+    // Back on `direct`: the layers composited as before the switches (a static view; a
+    // fresh worker behind the gate takes a few frames more for its layers to arrive).
+    let same = |s: &Shared, i: usize| s.lanes[i].frame.as_ref().is_some_and(|f| f.pixels == before[i]);
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(30) && !(0..n).all(|i| same(&live.shared.lock().unwrap(), i)) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let sh = live.shared.lock().unwrap();
+    for (i, l) in sh.lanes.iter().enumerate() {
+        let now = &l.frame.as_ref().unwrap().pixels;
+        let differ = now.chunks(4).zip(before[i].chunks(4)).filter(|(a, b)| a != b).count();
+        assert!(differ == 0, "lane {}: not the image it had before the switches: {differ} pixels differ; events {:?}", i + 1, l.events);
+    }
+}

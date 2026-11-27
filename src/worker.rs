@@ -35,7 +35,9 @@ pub struct Worker {
     tx: Sender<HostMsg>,
     pub rx: Receiver<WorkerEvent>,
     child: Option<Child>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    /// Thread isolation: the worker's thread, which returns the error it ended with (also sent
+    /// to the host; the thread's result does not race the socket's reader).
+    thread: Option<std::thread::JoinHandle<Option<String>>>,
     watchdog: Watchdog,
     /// The longest the host has waited on it so far (its build included); None until its
     /// first frame came back (it is still building: the build allowance applies).
@@ -174,9 +176,11 @@ impl Worker {
                 let s = sock.clone();
                 let label = cfg.label.to_string();
                 thread = Some(std::thread::Builder::new().name(format!("worker-{label}")).spawn(move || {
-                    if let Err(e) = mr_worker::run(&s) {
+                    let r = mr_worker::run(&s);
+                    if let Err(e) = &r {
                         tracing::error!("[{label}] worker failed: {e:#}");
                     }
+                    r.err().map(|e| format!("{e:#}"))
                 })?);
             }
         }
@@ -454,7 +458,13 @@ impl Worker {
                 std::thread::sleep(Duration::from_millis(5));
             }
             if t.is_finished() {
-                let _ = t.join();
+                // What it ended with, said also when its message still sits in the socket
+                // (the reader thread forwards it late under load: the error was lost).
+                if let Ok(Some(e)) = t.join()
+                    && problem.is_none()
+                {
+                    problem = Some(format!("failed while stopping: {e}"));
+                }
             } else {
                 problem = Some(format!("{}; its thread abandoned", problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))));
             }

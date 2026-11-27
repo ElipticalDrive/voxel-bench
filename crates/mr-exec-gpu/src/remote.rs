@@ -91,7 +91,7 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
     let dev = &core.gpu.device;
     let layout0 = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("remote shading"), entries: &core.layout_entries() });
     let pipeline_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("remote shading"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
-    let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading, false)?;
+    let shade = compile(&core, &pipeline_layout, &walks, shadow, bounce, spec.shading, Records::One)?;
     core.gpu.save_cache();
     tracing::info!("shading on gpu{slot} ({}): shadow {}, bounce {}", core.gpu.info.name, walks.label(shadow), walks.label(bounce));
     let passes = exec::far_passes(g, slot, |role| -> Option<Box<dyn Node<Shade>>> {
@@ -160,7 +160,7 @@ impl exec::Region for Shade {
     fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
         let layers = core.edges.layers();
         if self.shading != self.built_shading || layers != self.built_layers {
-            self.shade = compile(core, &self.pipeline_layout, &self.walks, self.shadow, self.bounce, &self.shading, layers > 1)?;
+            self.shade = compile(core, &self.pipeline_layout, &self.walks, self.shadow, self.bounce, &self.shading, Records::of(layers > 1, &self.shading))?;
             // A new records buffer (layers): group 0 anew.
             if layers != self.built_layers {
                 self.bind0 = None;
@@ -239,33 +239,60 @@ impl Node<Shade> for Shading {
     }
 }
 
+/// The records the far shading reads, and how it shades them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Records {
+    /// One per pixel: `shade`.
+    One,
+    /// `LAYERS` per pixel, composited front to back: `shade_layers`.
+    Composited,
+    /// `LAYERS` per pixel, the first shaded (`shade`): a shading that does not composite
+    /// layers (`Cap::Layers`), switched to while they arrive (the caster drops them once
+    /// the switch reaches it, but what is on the way still has them).
+    First,
+}
+
+impl Records {
+    fn of(layered: bool, shading: &str) -> Self {
+        match (layered, mr_components::caps::provides(mr_components::Kind::Gpu, Role::Shading, shading, mr_components::Cap::Layers)) {
+            (false, _) => Self::One,
+            (true, true) => Self::Composited,
+            (true, false) => Self::First,
+        }
+    }
+}
+
 /// The deferred shading pass's shader: the shading's walks (or ray queries' services), the
-/// view and the records that arrived, the common pass (`shade`; `layered`: `shade_layers`
-/// over `LAYERS` records per pixel). Returns the program, its root and the root's
-/// dependencies.
-fn program(walks: &Walks, shadow: usize, bounce: usize, shading: &str, layered: bool) -> (mr_gpu::program::Program, String, Vec<String>) {
+/// view and the records that arrived, the common pass (`shade`; composited layers:
+/// `shade_layers` over `LAYERS` records per pixel). Returns the program, its root and the
+/// root's dependencies.
+fn program(walks: &Walks, shadow: usize, bounce: usize, shading: &str, records: Records) -> (mr_gpu::program::Program, String, Vec<String>) {
     let (mut program, rays) = shaders::sites_program(walks, None, shadow, bounce);
     let services: Vec<&str> = rays.iter().map(String::as_str).filter(|r| r.starts_with("rays::")).collect();
     shaders::shading(&mut program, shading, &services, 0, crate::STATE_BINDING);
     let mut root = format!("// Remote shading: shading = {shading}\n{}\n{}\n{}", include_str!("raycast/view.wgsl"), crate::hits_wgsl() + include_str!("raycast/records.wgsl"), mr_components::shading::DEFERRED_PACKED_WGSL);
-    if layered {
-        program.define("LAYERS");
-        program.define("DEFERRED_LAYERS");
-        root = format!("{root}\n{}", include_str!("raycast/layer_records.wgsl"));
+    match records {
+        Records::One => {}
+        Records::Composited => {
+            program.define("LAYERS");
+            program.define("DEFERRED_LAYERS");
+            root = format!("{root}\n{}", include_str!("raycast/layer_records.wgsl"));
+        }
+        Records::First => drop(program.define("RECORDS_LAYERED")),
     }
     let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string()];
     deps.extend(rays);
     (program, root, deps)
 }
 
-fn compile(core: &Core, layout: &wgpu::PipelineLayout, walks: &Walks, shadow: usize, bounce: usize, shading: &str, layered: bool) -> anyhow::Result<wgpu::ComputePipeline> {
-    let (mut program, root, deps) = program(walks, shadow, bounce, shading, layered);
+fn compile(core: &Core, layout: &wgpu::PipelineLayout, walks: &Walks, shadow: usize, bounce: usize, shading: &str, records: Records) -> anyhow::Result<wgpu::ComputePipeline> {
+    let (mut program, root, deps) = program(walks, shadow, bounce, shading, records);
     core.bind_program(&mut program, "0u");
     let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
     let dev = &core.gpu.device;
     let scope = dev.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = mr_gpu::program::compile(dev, "remote shading", &program, &root, &deps);
-    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("remote shade"), layout: Some(layout), module: &module, entry_point: Some(if layered { "shade_layers" } else { "shade" }), compilation_options: Default::default(), cache: core.gpu.cache() });
+    let pipeline = dev.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("remote shade"), layout: Some(layout), module: &module, entry_point: Some(if records == Records::Composited { "shade_layers" } else { "shade" }), compilation_options: Default::default(), cache: core.gpu.cache() });
     if let Some(e) = pollster::block_on(scope.pop()) {
         anyhow::bail!("compiling the remote shading pass: {e}");
     }
@@ -313,12 +340,13 @@ mod tests {
                 assert_eq!((ck.devices["s.kernel"], ck.devices["s.storage"], ck.devices["kernel"]), (Device::Gpu(1), Device::Gpu(1), Device::Gpu(0)));
                 let mut walks = Walks::of(&ck);
                 let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);
-                // Layered records where the shading composites them.
-                for layered in [false, true].into_iter().filter(|&l| !l || mr_components::caps::provides(mr_components::Kind::Gpu, Role::Shading, shading, mr_components::Cap::Layers)) {
-                    let (program, root, deps) = program(&walks, shadow, shadow, shading, layered);
+                // Layered records: composited where the shading can, else the first shaded.
+                for layered in [false, true] {
+                    let records = Records::of(layered, shading);
+                    let (program, root, deps) = program(&walks, shadow, shadow, shading, records);
                     let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
-                    let m = program.naga(&root, &deps).unwrap_or_else(|e| panic!("{st} {k} {shading} {layered}: {e}"));
-                    Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{st} {k} {shading} {layered}: {e:?}"));
+                    let m = program.naga(&root, &deps).unwrap_or_else(|e| panic!("{st} {k} {shading} {records:?}: {e}"));
+                    Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{st} {k} {shading} {records:?}: {e:?}"));
                 }
             }
         }

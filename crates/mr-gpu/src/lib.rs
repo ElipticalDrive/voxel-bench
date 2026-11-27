@@ -1299,10 +1299,19 @@ mod tests {
         assert!(gpu.alloc_peak().get() >= base + (64 << 20), "growth peak {} from {base}", gpu.alloc_peak().get());
 
         // Budgeted: a sample defers the next by a hundred times its cost.
+        // (Against the time before the call, not after it: the deferral is a hundred times a
+        // sample of a few microseconds, which a preempted test thread outlasts under load.)
         let fresh = AllocPeak::new(&gpu.device, Default::default());
+        let before = std::time::Instant::now();
         fresh.sample_budgeted();
         assert!(fresh.get() > 0);
-        assert!(*fresh.0.next.lock().unwrap() > std::time::Instant::now(), "no deferral after a sample");
+        let next = *fresh.0.next.lock().unwrap();
+        assert!(next > before, "no deferral after a sample");
+        // A sample asked before then is skipped (the peak would show one past the device's).
+        fresh.0.peak.store(0, Ordering::Relaxed);
+        *fresh.0.next.lock().unwrap() = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        fresh.sample_budgeted();
+        assert_eq!(fresh.get(), 0, "a deferred sample ran");
     }
 
     /// A growable buffer grows to its maximum, holds what fits, and fails the device (never

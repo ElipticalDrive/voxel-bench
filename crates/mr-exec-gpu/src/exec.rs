@@ -201,11 +201,18 @@ impl Hits {
     }
 
     /// The declaration a program attaches the records with, and `record_at` (the common
-    /// deferred pass's reader); the root provides `cam` (the frame's width).
+    /// deferred pass's reader); the root provides `cam` (the frame's width). With the def
+    /// `RECORDS_LAYERED` the records are `LAYERS` per pixel and `record_at` reads the first (a
+    /// shading that does not composite layers, given layered records).
     pub fn wgsl(group: u32, binding: u32) -> String {
+        let layers = mr_components::visibility::record::LAYERS;
         format!(
             "@group({group}) @binding({binding}) var<storage, read_write> records: array<vec2<u32>>;\n\
-             fn record_at(px: vec2<u32>) -> vec2<u32> {{ return records[px.y * cam.width + px.x]; }}\n"
+             #ifdef RECORDS_LAYERED\n\
+             fn record_at(px: vec2<u32>) -> vec2<u32> {{ return records[(px.y * cam.width + px.x) * {layers}u]; }}\n\
+             #else\n\
+             fn record_at(px: vec2<u32>) -> vec2<u32> {{ return records[px.y * cam.width + px.x]; }}\n\
+             #endif\n"
         )
     }
 
