@@ -222,13 +222,13 @@ names (`multirenderer audit --refused` prints the table; the test
 
 | gap | reason | graphs (2026-11-26) | what is missing |
 |---|---|---|---|
-| no region of that shape | no region has the shape | 33 | a drawer fed straight by the geometry (no culling node), a drawer on the CPU behind discovery, raycast over a face set |
+| no region of that shape | no region has the shape | 28 (33 before the CPU's unfused passes) | a GPU drawer fed straight by the geometry (no culling node), a CPU drawer behind discovery, raycast over a face set |
 | no region of that shape | the shape is the other executor's | 6 | the visibility on one device kind, the drawer on the other |
 | node outside the declarations | role not built | 5 | e.g. mesh records in the meshing region |
 | node outside the declarations | role on the other device kind | 10 | a kernel, a culling or a shading on the other device than its region's |
-| node outside the declarations | component not built | 19 | e.g. the heightfield march over a voxel ray caster, quadtree visibility into the meshing drawer |
-| node outside the declarations | number of nodes of a role | 37 | a second storage (the face source's lookup, the exposure tests), no kernel where a region wants one |
-| node outside the declarations | what a port reads | 10 | a lookup storage the region ignores, an unbound shadow site |
+| node outside the declarations | component not built | 19 | e.g. the heightfield march over a voxel ray caster, quadtree visibility into a drawer, boxes and points drawn by the CPU rasteriser |
+| node outside the declarations | number of nodes of a role | 24 (37) | a second storage or no kernel in the GPU regions |
+| node outside the declarations | what a port reads | 9 (10) | an unbound shadow site in the GPU regions |
 | edge without a resource form | edge timing | 32 (41 before the CPU's `prev` edges) | `prev` on any GPU edge but the split's hits and the discoverer's faces |
 | edge without a resource form | device boundary | 5 | a second GPU anywhere but at the split's hit records |
 
@@ -267,6 +267,28 @@ was made with, so a frame of hits a frame late is exactly the previous frame (th
 meshes are read with this frame's camera); a shading reading its hits late runs in a pass of
 its own whatever its `placement`; the world's changes into a node timed `prev` reach it a frame
 late (`tests/late.rs`).
+
+**Done: the CPU's first unfused shapes** (157 -> 138 refused). The CPU rasteriser and column
+march build each node as a pass of its own where their declarations used to stop
+(`graph::CPU_RASTER`, `CPU_COLUMNS`; `tests/unfused.rs` runs each and compares with the
+shipped graph where the image is the same):
+
+- a drawer reading the geometry's faces straight (no culling node) transforms and clips them
+  in its own pass (a `Faces` of its own; pixel-equal to the graph with the culling node);
+- a culling may read another culling's visible set (culled again for the frame's camera);
+- a face source's lookup storage is kept as a pass of its own, any CPU storage (voxels or a
+  heightmap), never read: the CPU geometries merge only faces of one block (the shadow rays'
+  storage bound there is the one pass);
+- cubes (`Cap::Cubes`) are drawn as their six unit faces (the depth test leaves the exposed
+  ones: pixel-equal to greedy's quads);
+- a shading without a shadow site lights without shadow rays (raster and columns);
+- the column march's shadow rays walk a heightmap of their own (the march's storage and
+  the shadow site's are a pass each; the deferred shading decodes its records against the
+  march's).
+
+Each pass is the region's own node code, monomorphised as before; the shipped graphs build the
+same passes in the same order. One cost added to the shipped graphs, not measured yet: the
+column march's shadow heightmap is an `Option` (no shadow site: none), checked per shadow ray.
 
 ## Migration
 

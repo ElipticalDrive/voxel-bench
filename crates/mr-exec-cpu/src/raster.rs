@@ -109,7 +109,7 @@ fn params() -> Vec<ParamSpec> {
     for (k, size) in [(1, 2), (2, 4), (3, 8), (4, 16)] {
         p.push(ParamSpec::bool(&format!("skip{size}"), &format!("incremental: use {size}^3 cubes (level {k}) if the storage has them"), true, true).of("traversal", &["incremental"]));
     }
-    p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours", true, true).of("geometry", &["naive"]));
+    p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours; cubes: skip blocks hidden on every side", true, true).of("geometry", &["naive", "cubes"]));
     p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("draw", &["raster"]));
     p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true).of("draw", &["raster"]));
     // A compiled build of this region folds none of them (it shades with the reference model,
@@ -328,9 +328,12 @@ impl exec::Crossing for Meshes {
 }
 
 /// Visibility `faces`: per-chunk frustum culling and per-face-direction culling, transform,
-/// homogeneous clipping, fan triangulation.
+/// homogeneous clipping, fan triangulation. It reads the geometry's meshes, or another
+/// culling's visible set (culled again for this frame's camera); a drawer reading the
+/// geometry straight runs one of its own (`stage`: its name in the reports).
 struct Faces {
     nodes: Vec<String>,
+    stage: &'static str,
 }
 
 impl Node for Faces {
@@ -338,8 +341,19 @@ impl Node for Faces {
         Box::new(Tris { visible: vec![], tris: vec![], size: (0, 0) })
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
+        match ins[0].downcast_ref::<Tris>() {
+            Some(t) => self.cull(cx, t.visible.iter().map(|(p, m, _)| (p, m)), out, report),
+            None => self.cull(cx, meshes(ins[0]).meshes.iter(), out, report),
+        }
+    }
+    fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        Some(exec::GatePass::<Tris>::boxed(chain, late, w, h))
+    }
+}
+
+impl Faces {
+    fn cull<'m>(&mut self, cx: &Cx, chunks: impl Iterator<Item = (&'m IVec3, &'m Arc<Mesh>)>, out: &mut Res, report: &mut Report) {
         let start = Instant::now();
-        let m = meshes(ins[0]);
         let (w, h) = (cx.width, cx.height);
         let cam = cx.req.camera;
         let (cam_block, frac) = cam.split_position();
@@ -351,7 +365,7 @@ impl Node for Faces {
         let visible = &mut out.visible;
         visible.clear();
         let mut next_id = 1u32;
-        for (pos, m) in &m.meshes {
+        for (pos, m) in chunks {
             let min = (*pos * 32 - cam_block).as_vec3() - frac;
             if aabb_visible(&planes, min, min + 32.0) {
                 visible.push((*pos, m.clone(), next_id));
@@ -407,11 +421,8 @@ impl Node for Faces {
                 out
             }));
         let t = start.elapsed().as_secs_f64() * 1e3;
-        report.stages.push(StageTime::cpu("transform", &self.nodes, t as f32));
+        report.stages.push(StageTime::cpu(self.stage, &self.nodes, t as f32));
         report.counters.extend([("chunks_drawn".into(), visible.len() as f64), ("triangles".into(), tris.len() as f64), ("geometry_ms".into(), t)]);
-    }
-    fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
-        Some(exec::GatePass::<Tris>::boxed(chain, late, w, h))
     }
 }
 
@@ -496,7 +507,9 @@ impl exec::Crossing for Ids {
 /// Draw `raster`: bins the triangles into (band, tile) cells, rasterises each band in
 /// parallel into the depth buffer and quad ids (its output, [`Ids`]); `fused`
 /// (`placement = inline`): shading compiled in, each fragment passing the depth test shaded
-/// into the image (its output); the shading's shadow rays walk the storage (`ins[1]`).
+/// into the image (its output); the shading's shadow rays walk the storage (`ins[1]`, none:
+/// no shadow rays). Reading the geometry's meshes straight (no culling node), it transforms
+/// and clips them itself (`transform`: a [`Faces`] of its own and its triangles).
 struct Draw<P> {
     fused: bool,
     occluded: Occluded,
@@ -504,7 +517,15 @@ struct Draw<P> {
     band_height: u32,
     depth: Vec<f32>,
     nodes: Vec<String>,
+    transform: Option<(Faces, Res)>,
+    /// The storage read when no shadow site is bound (`occluded` is then [`never`]).
+    none: Res,
     px: std::marker::PhantomData<P>,
+}
+
+/// The walk of a shading without a shadow site: nothing occludes.
+fn never(_: &Res, _: IVec3, _: Vec3, _: Vec3, _: f32) -> bool {
+    false
 }
 
 impl<P: Pixel> Node for Draw<P> {
@@ -513,8 +534,15 @@ impl<P: Pixel> Node for Draw<P> {
         if self.fused { exec::image::<P>(w, h) } else { Box::new(Ids { ids: vec![0u32; (w * h) as usize], visible: vec![] }) }
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
+        let mut own = self.transform.take();
+        let t: &Tris = match own.as_mut() {
+            Some((faces, tris)) if ins[0].is::<Meshes>() => {
+                faces.run(cx, &ins[..1], tris, report);
+                tris.downcast_ref().expect("triangles")
+            }
+            _ => ins[0].downcast_ref::<Tris>().expect("triangles"),
+        };
         let start = Instant::now();
-        let t = ins[0].downcast_ref::<Tris>().expect("triangles");
         let (w, h) = (cx.width, cx.height);
         let (fw, fh) = (w as f32, h as f32);
         let tris = &t.tris;
@@ -541,7 +569,7 @@ impl<P: Pixel> Node for Draw<P> {
         // Rasterise: each band owns its rows of the depth buffer and of the output.
         let rows = (bh * w) as usize;
         if self.fused {
-            let quads = Quads::new(&t.visible, (ins[1], self.occluded), cx);
+            let quads = Quads::new(&t.visible, (ins.get(1).copied().unwrap_or(&self.none), self.occluded), cx);
             let raster = Raster { tris, bins: &bins, tiles_x, tw, bh, w, shade: |id, x, y| quads.shade::<P>(id, x, y), sky: cx.world.sky() };
             let pixels = out.downcast_mut::<Vec<P>>().expect("an image");
             self.depth.par_chunks_mut(rows).zip(pixels.par_chunks_mut(rows)).enumerate().for_each(|(band, (depth, pixels))| raster.band::<true>(band, depth, &mut [], pixels));
@@ -552,6 +580,7 @@ impl<P: Pixel> Node for Draw<P> {
             self.depth.par_chunks_mut(rows).zip(out.ids.par_chunks_mut(rows)).enumerate().for_each(|(band, (depth, ids))| raster.band::<false>(band, depth, ids, &mut []));
             out.visible.clone_from(&t.visible);
         }
+        self.transform = own;
         let t = start.elapsed().as_secs_f64() * 1e3;
         report.stages.push(StageTime::cpu(if self.fused { "raster+shade" } else { "raster" }, &self.nodes, t as f32));
         report.counters.push(("raster_ms".into(), t));
@@ -578,6 +607,8 @@ impl<P: Pixel> Node for Draw<P> {
 /// The common deferred pass over the quad ids; its shadow rays walk the storage (`ins[1]`).
 struct Shading<P> {
     occluded: Occluded,
+    /// The storage read when no shadow site is bound (`occluded` is then [`never`]).
+    none: Res,
     nodes: Vec<String>,
     px: std::marker::PhantomData<P>,
 }
@@ -589,7 +620,7 @@ impl<P: Pixel> Node for Shading<P> {
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = Instant::now();
         let r = ins[0].downcast_ref::<Ids>().expect("quad ids");
-        let quads = Quads::new(&r.visible, (ins[1], self.occluded), cx);
+        let quads = Quads::new(&r.visible, (ins.get(1).copied().unwrap_or(&self.none), self.occluded), cx);
         mr_components::shading::deferred::shade(&QuadIds { ids: &r.ids, quads: &quads, sky: cx.world.sky() }, cx.width, out.downcast_mut::<Vec<P>>().expect("an image"));
         let t = start.elapsed().as_secs_f64() * 1e3;
         report.stages.push(StageTime::cpu("shade", &self.nodes, t as f32));
@@ -608,9 +639,10 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     let shading: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
     let deferred = exec::deferred(g, &shading.placement)?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-    let site = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("raster-cpu: the shading's shadow rays walk no storage"))?;
-    let mut walked = Some(crate::raycast::walked::<S>(p, g, site)?);
-    let occluded = walked.as_ref().expect("walked").occluded;
+    // The shading's shadow rays' storage and kernel (none bound: no shadow rays).
+    let site = g.site(Role::Shading, "shadow");
+    let mut walked = site.map(|site| crate::raycast::walked::<S>(p, g, site)).transpose()?;
+    let occluded = walked.as_ref().map_or(never as Occluded, |w| w.occluded);
     let (mut passes, mut index): (Vec<Pass>, HashMap<String, usize>) = (vec![], HashMap::new());
     let storage_first = |p: &&mr_components::graph::Pass| g.node(&p.node).role == Role::Storage;
     for pass in schedule.passes().filter(storage_first).chain(schedule.passes().filter(|p| !storage_first(p))) {
@@ -618,13 +650,15 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
         let mut ins = vec![];
         exec::reads(g, id, &index, &mut ins);
         let node: Box<dyn Node> = match g.node(id).role {
-            Role::Storage => walked.take().expect("one storage node").node,
+            // The shadow rays' storage, else one only read (a face source's lookup).
+            Role::Storage if site.is_some_and(|s| s.storage == id) => walked.take().expect("one walked storage").node,
+            Role::Storage => crate::raycast::unwalked(p, g, id)?,
             Role::Geometry => {
                 let mesh = mesh_fn(&g.node(id).component);
                 let k: GeometryKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: k.cull, ..Default::default() }, nodes: vec![id.to_string()] })
             }
-            Role::Visibility => Box::new(Faces { nodes: vec![id.to_string()] }),
+            Role::Visibility => Box::new(Faces { nodes: vec![id.to_string()], stage: "transform" }),
             // Inline, the fused shading's inputs too: its shadow rays' storage.
             Role::Draw => {
                 if !deferred {
@@ -633,11 +667,18 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
                 }
                 let k: DrawKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Draw, Role::Shading]) };
-                Box::new(Draw::<P> { fused: !deferred, occluded, tile_width: k.tile_width, band_height: k.band_height, depth: vec![], nodes, px: std::marker::PhantomData })
+                // Faces straight from the geometry: transformed in the draw's pass.
+                let straight = g.node(id).inputs.get("faces").is_some_and(|f| g.node(f).role == Role::Geometry);
+                let transform = straight.then(|| {
+                    let mut f = Faces { nodes: vec![id.to_string()], stage: "transform" };
+                    let tris = f.output(p.width, p.height);
+                    (f, tris)
+                });
+                Box::new(Draw::<P> { fused: !deferred, occluded, tile_width: k.tile_width, band_height: k.band_height, depth: vec![], nodes, transform, none: Box::new(()), px: std::marker::PhantomData })
             }
             // Fused into the draw pass.
             Role::Shading if !deferred => continue,
-            Role::Shading => Box::new(Shading::<P> { occluded, nodes: vec![id.to_string()], px: std::marker::PhantomData }),
+            Role::Shading => Box::new(Shading::<P> { occluded, none: Box::new(()), nodes: vec![id.to_string()], px: std::marker::PhantomData }),
             _ => continue,
         };
         index.insert(id.to_string(), passes.len());
@@ -651,7 +692,22 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
 
 /// The CPU mesher of a geometry component (quads with per-face counts: greedy, naive).
 fn mesh_fn(name: &str) -> MeshFn {
-    mr_components::geometry::gpu(name).expect("validated").mesh
+    match name {
+        // Cube instances drawn as their six faces.
+        "cubes" => |c, n, slot, k| cube_faces(&mr_components::geometry::cubes::mesh(c, n, slot, k.cull)),
+        _ => mr_components::geometry::gpu(name).expect("validated").mesh,
+    }
+}
+
+/// The six unit faces of each cube instance (`[x | y << 5 | z << 10, block | slot << 16]`),
+/// grouped per face as the quads' encoding has them.
+fn cube_faces(cubes: &Mesh) -> Mesh {
+    let n = cubes.quads.len();
+    let mut quads = Vec::with_capacity(n * 6);
+    for f in 0..6u32 {
+        quads.extend(cubes.quads.iter().map(|q| [q[0] | f << 25, q[1]]));
+    }
+    Mesh { quads, counts: [n as u32; 6] }
 }
 
 fn frustum_planes(m: Mat4) -> [Vec4; 5] {

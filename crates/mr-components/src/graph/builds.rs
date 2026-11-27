@@ -380,6 +380,9 @@ const RT_GEOMETRY: Pick = Pick::Providing(Cap::Accel);
 /// The column storages' ray marches (a traversal reading a storage's heights).
 const MARCHES: Pick = Pick::Needing(Role::Storage, Cap::Heights);
 const DRAWN_GEOMETRY: Pick = Pick::Any(&[Pick::Providing(Cap::Quads), Pick::Providing(Cap::Cubes)]);
+/// The CPU rasteriser's storages: the shadow rays' (voxels) and a face source's lookup (any
+/// storage it keeps as a pass of its own: voxels or heights).
+const LOOKUPS: Pick = Pick::Any(&[Pick::Providing(Cap::Voxels), Pick::Providing(Cap::Heights)]);
 
 /// Ray queries trace an acceleration structure built from one of `RT_GEOMETRY` (only ray
 /// queries have a `geometry` port).
@@ -432,14 +435,19 @@ pub const CPU_RAYCAST: Builds = Builds {
 };
 
 /// `raster-cpu`: the geometry's quads, their culling, the rasteriser and the shading, its
-/// shadow rays through a storage and kernel of the ray caster's.
+/// shadow rays through a storage and kernel of the ray caster's. Each node is a pass of its
+/// own: a drawer reading the geometry's faces straight transforms them itself (unculled), a
+/// culling may read another's culled set, a shading without a shadow site lights without
+/// shadow rays, a face source's lookup storage is a pass of its own (its geometry merges
+/// only faces of one block: nothing is looked up in it).
 pub const CPU_RASTER: Builds = Builds {
     nodes: &[
-        Build::providing(Role::Geometry, Cap::Quads, impls::CPU_SCALAR),
-        Build::one(Role::Visibility, &["faces"], impls::CPU_SCALAR),
+        // Quads, or cubes drawn as their six faces.
+        Build::picking(Role::Geometry, DRAWN_GEOMETRY, impls::CPU_SCALAR),
+        Build::one(Role::Visibility, &["faces"], impls::CPU_SCALAR).count(0, 2),
         Build::picking(Role::Draw, Pick::Every, impls::CPU_SCALAR),
-        Build::providing(Role::Storage, Cap::Voxels, impls::CPU_SCALAR),
-        Build::picking(Role::Traversal, WALKS, impls::CPU_SCALAR),
+        Build::picking(Role::Storage, LOOKUPS, impls::CPU_SCALAR).count(0, 2),
+        Build::picking(Role::Traversal, WALKS, impls::CPU_SCALAR).count(0, 1),
         Build::picking(Role::Shading, Pick::Every, impls::CPU_SCALAR),
     ],
     same: &[],
@@ -449,14 +457,13 @@ pub const CPU_RASTER: Builds = Builds {
             of: &[],
             port: "shadow",
             components: WALKS,
-            bound: true,
+            bound: false,
         },
-        // Its geometry merges only faces of one block: no lookup.
         Only {
             role: Role::Visibility,
             of: &[],
             port: "storage",
-            components: Pick::Named(&[]),
+            components: LOOKUPS,
             bound: false,
         },
     ],
@@ -468,8 +475,10 @@ pub const CPU_RASTER: Builds = Builds {
 /// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the shading.
 pub const CPU_COLUMNS: Builds = Builds {
     nodes: &[
-        Build::providing(Role::Storage, Cap::Heights, impls::CPU_SCALAR),
-        Build::picking(Role::Traversal, MARCHES, impls::CPU_SCALAR),
+        // The march's heightmap and the one the shadow rays walk (the same or another: a
+        // pass each), or no shadow rays (no march bound to the shading).
+        Build::providing(Role::Storage, Cap::Heights, impls::CPU_SCALAR).count(1, 2),
+        Build::picking(Role::Traversal, MARCHES, impls::CPU_SCALAR).count(0, 1),
         Build::one(Role::Visibility, &["columns"], impls::CPU_SCALAR),
         Build::picking(Role::Shading, Pick::Every, impls::CPU_SCALAR),
     ],

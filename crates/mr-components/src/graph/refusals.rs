@@ -218,16 +218,20 @@ mod tests {
         if std::env::var_os("MR_REFUSED_ALL").is_some() {
             for x in &r {
                 println!("{:?}\t{}\t{}", x.why, x.graph.label().unwrap_or_default(), x.message);
+                // `MR_REFUSED_ALL=graphs`: each graph's canonical form under its line.
+                if std::env::var("MR_REFUSED_ALL").as_deref() == Ok("graphs") {
+                    println!("{}", x.graph.canonical().unwrap_or_default());
+                }
             }
         }
         let most: &[(Why, usize)] = &[
-            (Why::NoRegion, 33),
+            (Why::NoRegion, 28),
             (Why::OtherExecutor, 6),
             (Why::Role, 5),
             (Why::Kind, 10),
             (Why::Component, 19),
-            (Why::Count, 37),
-            (Why::Port, 10),
+            (Why::Count, 24),
+            (Why::Port, 9),
             (Why::Timing, 32),
             (Why::Devices, 5),
             (Why::Api, 0),

@@ -117,6 +117,31 @@ fn walked_in<R: Repr, S: Spec>(p: &InitParams, g: &Checked, site: mr_components:
     Ok(Walked { node, occluded: |r, cam, p, d, dist| nodes::scene::<R>(r).occluded::<S>(cam, p, d, dist) })
 }
 
+/// Storage node `id` of graph `g` as a pass no kernel here walks (a face source's lookup):
+/// kept up to date, monomorphised for its storage, handed to the nodes reading it.
+pub(crate) fn unwalked(p: &InitParams, g: &Checked, id: &str) -> anyhow::Result<Box<dyn crate::exec::Node>> {
+    if g.node(id).component == "heightmap" {
+        return Ok(crate::columns::storage(p));
+    }
+    by_storage!(g.node(id).component.as_str(), unwalked_in::<_>(p, g, id))
+}
+
+fn unwalked_in<R: Repr>(p: &InitParams, g: &Checked, id: &str) -> anyhow::Result<Box<dyn crate::exec::Node>> {
+    if g.node(id).component == "u8" && p.blocks.blocks.len() > 256 {
+        anyhow::bail!("storage u8 needs <= 256 block types, registry has {}", p.blocks.blocks.len());
+    }
+    let scene = Scene::<R> {
+        chunks: HashMap::new(),
+        grid: Grid::default(),
+        grid_dirty: false,
+        traversal: Traversal::Refloor,
+        levels: level_mask([true; 4]),
+        shadow: None,
+        blocks: p.blocks.clone(),
+    };
+    Ok(nodes::unwalked(scene, vec![id.to_string()]))
+}
+
 fn of<R: Repr, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     executor::<R, Generic, P>(p, g)
 }
@@ -1346,7 +1371,9 @@ mod nodes {
     struct Storage<R> {
         /// The scene before the first frame (taken by [`Node::output`]).
         init: Option<Scene<R>>,
-        kernel: Kernel,
+        /// The kernel walking it, whose knobs are set on it (`None`: a storage no kernel of
+        /// this executor walks, kept for the node reading it: a face source's lookup).
+        kernel: Option<Kernel>,
         nodes: Vec<String>,
     }
 
@@ -1356,7 +1383,13 @@ mod nodes {
 
     /// The storage node of `scene`, the kernel's knobs set on it.
     pub(super) fn storage<R: Repr>(scene: Scene<R>, kernel: Kernel, nodes: Vec<String>) -> Box<dyn Node> {
-        Box::new(Storage::<R> { init: Some(scene), kernel, nodes })
+        Box::new(Storage::<R> { init: Some(scene), kernel: Some(kernel), nodes })
+    }
+
+    /// The storage node of `scene` walked by no kernel here (its knobs none, its counters
+    /// left to the walked storage's).
+    pub(super) fn unwalked<R: Repr>(scene: Scene<R>, nodes: Vec<String>) -> Box<dyn Node> {
+        Box::new(Storage::<R> { init: Some(scene), kernel: None, nodes })
     }
 
     impl<R: Repr> Node for Storage<R> {
@@ -1370,10 +1403,12 @@ mod nodes {
         fn run(&mut self, _: &Cx, _: &[&Res], out: &mut Res, report: &mut Report) {
             let s = out.downcast_mut::<Scene<R>>().expect("a scene");
             s.prepare(&self.nodes, &mut report.stages);
-            report.counters.extend(s.counters());
+            if self.kernel.is_some() {
+                report.counters.extend(s.counters());
+            }
         }
         fn set_param(&mut self, out: &mut Res, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
-            self.kernel.set(out.downcast_mut::<Scene<R>>().expect("a scene"), name, value).map(|k| k.then_some(())).transpose()
+            self.kernel.as_mut()?.set(out.downcast_mut::<Scene<R>>().expect("a scene"), name, value).map(|k| k.then_some(())).transpose()
         }
         fn memory(&self, out: &Res) -> u64 {
             scene::<R>(out).memory()
