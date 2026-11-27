@@ -15,6 +15,14 @@
 //!
 //! Meshes (mesh mode) share the depth buffer (`mr_gpu::meshes::GpuMeshes`): shaded forward
 //! with `raster`, written into the ids or records with the deferred drawers.
+//!
+//! A gate on the geometry's faces (the visibility's `faces` edge) sits at the per-chunk
+//! upload: each remeshed or dropped chunk crosses as one message ([`ChunkFaces`]: position,
+//! slot, per-face counts, quads), one ordered stream per chunk, and the GPU's quads are
+//! written as messages arrive. A chunk on its way keeps its old faces (or none); a lost one
+//! keeps them until the chunk is remeshed. Slots are the sender's: under `reorder` a slot
+//! freed and taken by another chunk can be drawn at the newer chunk's position until the
+//! older chunk's drop arrives.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -27,6 +35,7 @@ use mr_components::graph::{Checked, Role};
 use mr_components::storage::gpu_data::Bound;
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
+use mr_core::gate::{GateChain, GateReport, Get, Put, Wire, WireError};
 use mr_core::*;
 use mr_gpu::meshes::{ForwardSpec, GpuMeshes, MeshPass};
 use mr_gpu::voxels::{Shadows, shadows_param};
@@ -184,6 +193,73 @@ const QUAD_BYTES: u64 = 8;
 /// Quads staged for upload before the writes are sent.
 const FLUSH_BYTES: u64 = 256 << 20;
 
+/// A chunk's faces as they leave the geometry for the GPU: its position, its slot in the
+/// chunk positions, and its mesh (`None`: the chunk is gone).
+struct ChunkFaces {
+    pos: IVec3,
+    slot: u16,
+    mesh: Option<mr_components::geometry::Mesh>,
+}
+
+impl Wire for ChunkFaces {
+    /// One stream per chunk: its remeshes and its drop stay in order.
+    fn stream(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.pos.to_array().hash(&mut h);
+        Some(h.finish() | 1)
+    }
+
+    fn pieces(&self) -> u32 {
+        self.mesh.is_some() as u32
+    }
+
+    fn encode(&self, out: &mut Vec<u8>) {
+        let quads = self.mesh.as_ref().map_or(0, |m| m.quads.len());
+        out.reserve(48 + quads * 8);
+        let mut p = Put(out);
+        self.pos.to_array().into_iter().for_each(|c| p.i32(c));
+        p.u16(self.slot);
+        p.u8(self.mesh.is_some() as u8);
+        if let Some(m) = &self.mesh {
+            m.counts.iter().for_each(|&c| p.u32(c));
+            p.u32(m.quads.len() as u32);
+            p.bytes(bytemuck::cast_slice(&m.quads));
+        }
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut g = Get(bytes);
+        let pos = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
+        let slot = g.u16()?;
+        let mesh = match g.u8()? {
+            0 => None,
+            1 => {
+                let mut counts = [0u32; 6];
+                for c in &mut counts {
+                    *c = g.u32()?;
+                }
+                let n = g.count(8)?;
+                let mut quads = vec![[0u32; 2]; n];
+                bytemuck::cast_slice_mut::<[u32; 2], u8>(&mut quads).copy_from_slice(g.take(n * 8)?);
+                if counts.iter().map(|&c| c as u64).sum::<u64>() != n as u64 {
+                    return Err(WireError("a chunk's face counts do not add up to its quads".into()));
+                }
+                Some(mr_components::geometry::Mesh { quads, counts })
+            }
+            k => return Err(WireError(format!("a chunk's faces of kind {k}"))),
+        };
+        g.end()?;
+        Ok(ChunkFaces { pos, slot, mesh })
+    }
+}
+
+/// The gates on the geometry's faces and the host's time in them this frame.
+struct FacesGate {
+    chain: GateChain,
+    ms: f32,
+}
+
 struct ChunkMesh {
     slot: u16,
     /// Its quads' page of the quad buffer and their offset in it.
@@ -223,9 +299,14 @@ pub(crate) struct Meshing {
     /// drawer's are the core's).
     geometry_nodes: Vec<String>,
     cull_nodes: Vec<String>,
+    /// The GPU's side: the meshed chunks as they arrived.
     meshes: HashMap<IVec3, ChunkMesh>,
+    /// The geometry's side: the chunks meshed and their slots, the ones to remesh.
+    slots: HashMap<IVec3, u16>,
     dirty: HashSet<IVec3>,
     free_slots: Vec<u16>,
+    /// The gates on the faces between the geometry and the GPU, if any.
+    gate: Option<FacesGate>,
     /// This frame's state: what its nodes did so far, its counters and its groups.
     frame: Frame,
 }
@@ -261,6 +342,7 @@ impl Meshing {
         let opts: Options = p.options()?;
         let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {role:?} node"));
         let (geometry_id, draw_id) = (node(Role::Geometry)?, node(Role::Draw)?);
+        let gate = g.gates_on(node(Role::Visibility)?, "faces").map(|e| FacesGate { chain: GateChain::new(&e.edge(), &e.gates), ms: 0.0 });
         let geometry = g.node(geometry_id).component.clone();
         let draw = g.node(draw_id).component.clone();
         let shading = g.node(g.shading()).component.clone();
@@ -330,6 +412,8 @@ impl Meshing {
             geometry_nodes: g.ids(&[Role::Geometry]),
             cull_nodes: g.ids(&[Role::Draw]),
             meshes: HashMap::new(),
+            slots: HashMap::new(),
+            gate,
             dirty: HashSet::new(),
             free_slots: (0..MAX_SLOTS as u32).rev().map(|s| s as u16).collect(),
             frame: Frame::default(),
@@ -345,21 +429,33 @@ impl Meshing {
     }
 
     fn remesh_all(&mut self) {
-        self.dirty.extend(self.meshes.keys().copied());
-    }
-
-    fn drop_mesh(&mut self, pos: IVec3) {
-        if let Some(m) = self.meshes.remove(&pos) {
-            self.quads.free(m.page, m.offset, m.len());
-            self.free_slots.push(m.slot);
-        }
+        self.dirty.extend(self.slots.keys().copied());
     }
 
     /// Remeshes dirty chunks in parallel, nearest to `near` first, at most `mesh_budget` per
-    /// call, and uploads the results (the faces' transfer).
-    fn remesh(&mut self, core: &Core, near: IVec3) -> usize {
+    /// call, and uploads the results (the faces' transfer), through the gates on the faces
+    /// if any (at `now`). Returns the chunks remeshed.
+    fn remesh(&mut self, core: &Core, near: IVec3, now: f64) -> usize {
+        let sent = self.mesh_dirty(core, near);
+        let n = sent.iter().filter(|c| c.mesh.is_some()).count();
+        let arrived = match &mut self.gate {
+            Some(g) => {
+                let start = Instant::now();
+                let got = g.chain.gates.pass_all(now, sent);
+                g.ms = start.elapsed().as_secs_f32() * 1e3;
+                got
+            }
+            None => sent,
+        };
+        self.upload(core, arrived);
+        n
+    }
+
+    /// The geometry's side: the dirty chunks meshed (or dropped), at most `mesh_budget`,
+    /// nearest to `near` first.
+    fn mesh_dirty(&mut self, core: &Core, near: IVec3) -> Vec<ChunkFaces> {
         if self.dirty.is_empty() {
-            return 0;
+            return vec![];
         }
         let mut dirty: Vec<IVec3> = self.dirty.drain().collect();
         if self.opts.mesh_budget > 0 && dirty.len() > self.opts.mesh_budget {
@@ -369,18 +465,20 @@ impl Meshing {
             }
         }
         let (gpu, world) = (&core.gpu, &core.world);
-        let mut work = vec![];
+        let (mut work, mut out) = (vec![], vec![]);
         for pos in dirty {
             if world.chunk(pos).is_none() {
-                self.drop_mesh(pos);
+                if let Some(slot) = self.slots.remove(&pos) {
+                    self.free_slots.push(slot);
+                    out.push(ChunkFaces { pos, slot, mesh: None });
+                }
                 continue;
             }
-            let slot = match self.meshes.get(&pos) {
-                Some(m) => m.slot,
+            let slot = match self.slots.get(&pos) {
+                Some(&s) => s,
                 None => match self.free_slots.pop() {
                     Some(s) => {
-                        self.meshes.insert(pos, ChunkMesh { slot: s, page: 0, offset: 0, counts: [0; 6] });
-                        gpu.queue.write_buffer(&self.chunk_buf, s as u64 * 16, bytemuck::cast_slice(&[pos.x, pos.y, pos.z, 0]));
+                        self.slots.insert(pos, s);
                         s
                     }
                     None => {
@@ -392,18 +490,29 @@ impl Meshing {
             work.push((pos, slot));
         }
         let (mesh_fn, knobs) = (geometry(&self.built).mesh, self.knobs());
-        let results: Vec<(IVec3, mr_components::geometry::Mesh)> = work
-            .par_iter()
-            .map(|&(pos, slot)| {
-                let center = world.chunk(pos).unwrap();
-                let neighbors = Face::ALL.map(|f| world.chunk(pos + f.normal()));
-                (pos, mesh_fn(center, neighbors, slot, knobs))
-            })
-            .collect();
-        let n = results.len();
+        out.par_extend(work.par_iter().map(|&(pos, slot)| {
+            let center = world.chunk(pos).unwrap();
+            let neighbors = Face::ALL.map(|f| world.chunk(pos + f.normal()));
+            ChunkFaces { pos, slot, mesh: Some(mesh_fn(center, neighbors, slot, knobs)) }
+        }));
+        out
+    }
+
+    /// The GPU's side: the chunks' faces written into the quads (a chunk's old ones freed),
+    /// dropped chunks' freed.
+    fn upload(&mut self, core: &Core, chunks: Vec<ChunkFaces>) {
+        let gpu = &core.gpu;
         let mut staged = 0;
-        for (pos, mesh) in results {
-            let m = self.meshes.get_mut(&pos).unwrap();
+        for ChunkFaces { pos, slot, mesh } in chunks {
+            let Some(mesh) = mesh else {
+                if let Some(m) = self.meshes.remove(&pos) {
+                    self.quads.free(m.page, m.offset, m.len());
+                }
+                continue;
+            };
+            let m = self.meshes.entry(pos).or_insert(ChunkMesh { slot, page: 0, offset: 0, counts: [0; 6] });
+            m.slot = slot;
+            gpu.queue.write_buffer(&self.chunk_buf, slot as u64 * 16, bytemuck::cast_slice(&[pos.x, pos.y, pos.z, 0]));
             let old = (m.page, m.offset, m.len());
             m.counts = [0; 6];
             self.quads.free(old.0, old.1, old.2);
@@ -427,7 +536,6 @@ impl Meshing {
                 staged = 0;
             }
         }
-        n
     }
 }
 
@@ -611,7 +719,7 @@ impl State for Meshing {
             self.dirty.insert(pos);
             for f in Face::ALL {
                 let nb = pos + f.normal();
-                if self.meshes.contains_key(&nb) || core.world.chunk(nb).is_some() {
+                if self.slots.contains_key(&nb) || core.world.chunk(nb).is_some() {
                     self.dirty.insert(nb);
                 }
             }
@@ -712,7 +820,7 @@ impl Region for Meshing {
     /// then the frame's camera and world.
     fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
         let start = Instant::now();
-        let remeshed = self.remesh(core, req.camera.split_position().0 >> 5);
+        let remeshed = self.remesh(core, req.camera.split_position().0 >> 5, req.time);
         if self.quads.pages() > 1 && self.drawing.drawer.mode() == DrawMode::Visbuffer {
             // Its ids name an instance of one page (at most 2^28, about what one binds), and
             // its shading pass binds one.
@@ -750,8 +858,13 @@ impl Region for Meshing {
         .chain(accel)
         .chain(core.accum.counter(req.mode))
         .collect();
-        let stages = [StageTime::cpu("geometry", &self.geometry_nodes, f.mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, f.cull_ms)].into_iter().chain(accel_stages).collect();
+        let gate = self.gate.as_ref().map(|g| StageTime::cpu("gate", &g.chain.nodes.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), g.ms));
+        let stages = [StageTime::cpu("geometry", &self.geometry_nodes, f.mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, f.cull_ms)].into_iter().chain(gate).chain(accel_stages).collect();
         (counters, None, stages)
+    }
+
+    fn gates(&self) -> Vec<GateReport> {
+        self.gate.as_ref().map_or(vec![], |g| g.chain.reports())
     }
 
     fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}

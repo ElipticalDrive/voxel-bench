@@ -283,8 +283,6 @@ fn gates_refused_naming_them() {
     assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
     let (_, log) = launch(&dir(), "raycast-gpu-surfaces", "raycast-gpu", &format!("[{}]", gate_on("meshes", "visibility", "meshes", "{}")));
     assert!(log.contains("`g` on `visibility.meshes`") && log.contains("Depth32Float"), "{log}");
-    let (_, log) = launch(&dir(), "raster-gpu-geometry", "raster-gpu", &format!("[{}]", gate_on("geometry", "visibility", "faces", "{}")));
-    assert!(log.contains("`g` on `visibility.faces`") && log.contains("uploaded"), "{log}");
     let (_, log) = launch(&dir(), "raster-gpu-culled", "raster-gpu", &format!("[{}]", gate_on("visibility", "draw", "faces", "{}")));
     assert!(log.contains("`g` on `draw.faces`") && log.contains("on the CPU"), "{log}");
     let post = r#"[
@@ -547,4 +545,31 @@ fn gpu_lossless_gates_between_passes_change_no_pixel() {
         crossed(&gated, false);
         assert!(last_image(&dir(), &format!("{name}-plain")) == last_image(&dir(), &format!("{name}-gated")), "{edge}: a lossless gate changed the frame");
     }
+}
+
+/// On the GPU rasteriser, the geometry's faces cross a lossy gate chunk by chunk at their
+/// upload: the pass lives through the losses and reports the gate, one message per chunk
+/// meshed or dropped. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_geometry_faces_through_a_lossy_gate() {
+    let edits = format!("[{}]", gate_on("geometry", "visibility", "faces", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, reorder = true, seed = 5 }"));
+    let r = run(&dir(), "raster-gpu-geometry-lossy", "raster-gpu", &edits);
+    assert!(r["error"].is_null(), "{}", r["error"]);
+    let gs = gates(&r);
+    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["g:visibility.faces"]);
+    crossed(&r, true);
+}
+
+/// A lossless gate with no delay on the GPU rasteriser's geometry changes no pixel: every
+/// chunk's faces arrive in the frame they were meshed in. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_lossless_geometry_gate_changes_no_pixel() {
+    let plain = run(&dir(), "raster-gpu-geometry-plain", "raster-gpu", "[]");
+    assert!(plain["error"].is_null(), "{}", plain["error"]);
+    let gated = run(&dir(), "raster-gpu-geometry-gated", "raster-gpu", &format!("[{}]", gate_on("geometry", "visibility", "faces", "{}")));
+    assert!(gated["error"].is_null(), "{}", gated["error"]);
+    crossed(&gated, false);
+    assert!(last_image(&dir(), "raster-gpu-geometry-plain") == last_image(&dir(), "raster-gpu-geometry-gated"), "a lossless gate changed the frame");
 }

@@ -208,6 +208,7 @@ on the hit records a split's second GPU shades). Where they run:
 | hits (`shading.hits`) on a GPU | the GPU executor, as a split at the hit records (the shading's own executor, on the same GPU or another, with its own copy of the storages its rays walk): read back, through the gates on the host, written to the shading's edge (`placement = "deferred"`, a drawer writing records, or splats; no meshes node) | each frame's records, with its frame id and size (one surface a pixel: transparency is left out behind the gate, naming it) | the shading reads the last records that arrived at this size (sky before any has), with the camera of the frame they were cast in (its own frame's when the id was lost) |
 | faces into the CPU rasteriser's visibility (`visibility.faces`: the geometry's meshes) and drawer (`draw.faces`: the screen triangles) | the CPU executor, a pass between the two | each frame's meshes of the world (not the chunks the geometry remeshes from), or the frame's triangles with the visible chunks' quads they index, its size and frame id | the reader reads the last that arrived (none before; triangles only at this size); the meshes are the same from every camera, so the passes after them keep this frame's camera, while late triangles are drawn and shaded with the camera of their frame |
 | faces into the CPU discoverer's drawer (`draw.faces`, discovery a frame ahead with timing `prev`, or within the frame) | the GPU executor, on the host between discovery and the upload to the GPU that draws them | each frame's whole face set (anchor, records, the view's tags) with its frame id | the drawer draws the last set that arrived (none before; only the records that differ from what it holds are uploaded); the faces are in world space, drawn from this frame's camera |
+| faces into the GPU rasteriser's visibility (`visibility.faces`: the geometry's faces, meshed on the CPU) | the GPU executor, on the host between the geometry and the per-chunk upload into the quad buffers | each chunk remeshed or dropped: its position, slot, per-face counts and quads (one ordered stream per chunk; counts that do not add up to the quads fail to decode) | the GPU keeps the chunk's old faces (none for a new chunk) until a message arrives; a lost one keeps them until the chunk is next remeshed; with `reorder`, a slot freed and taken by another chunk can draw the older chunk's faces at the newer one's position until its drop arrives. The faces are in world space, drawn from this frame's camera |
 | between two passes of one GPU executor: the GPU column marcher's hits (`shading.hits`, `placement = "deferred"`), the beam prepass's ray starts into the walk (`visibility.start`), hole detection's tiles into GPU discovery (`visibility.where`), GPU discovery's faces into its drawer (`draw.faces`) | the GPU executor, before the reader's pass: what the passes before it left in the edge's resources (buffers, render targets) is read back (the frame's commands so far submitted and waited for), sent through the gates on the host, and the last that arrived written in place; after the reader's pass what the producer left is copied back, so state it keeps across frames (the face set, the tiles' history) stays its own | each frame's resources' bytes, with its frame id and size | the reader reads zeros (no hit: sky; no start, tile or face); the hits, starts and tiles (seen from a camera) are read, and the passes after them run, with the camera of the frame they were made in |
 | the frame (behind the output) | the worker, for every executor (read back even when the host asked for no pixels: a GPU pays that) | each frame's pixels | the host gets the last frame that arrived at this size (black before any has) |
 
@@ -218,15 +219,16 @@ with `placement = inline` or of a forward drawer (they never leave the pass that
 hits beside mesh surfaces on a GPU (the shading past the gate has not their triangles), an image into the post (the post is compiled into its shading,
 no image crosses: put the gate after the post), mesh surfaces on a GPU (drawn in the drawer's
 own pass, or a depth target the rays read, and nothing can be copied into a `Depth32Float`
-target), a GPU executor's geometry (built on the CPU and uploaded as chunks change), faces
+target), a GPU executor's geometry other than the rasteriser's faces (ray queries' and
+splats' geometry, uploaded as chunks change), faces
 from raster-gpu's CPU culling into its GPU drawer (an upload each frame, no serialized form at it
-yet), faces into splats and ray queries' geometry.
+yet).
 Reports carry `gates`, one entry per gate node: `gate` (its id), `edge`
 (`reader.port`; the world's side: `client.changes` into the client, `client.chunks`,
 `changes` from the client into the renderer; `frame`) and `stats` (messages, bytes, packets, packets lost,
 messages that failed to decode, `encode_ms` / `decode_ms`), so a gate's serialization time
 and bytes are its own. Serialized forms: the world's changes, frames (`gate::Frame`), hit
-records (the CPU executor's `Crossing`; the GPU's `transfer::Records`), what a GPU executor holds between two passes (`cross::Crossed`: each resource's bytes), plain records
+records (the CPU executor's `Crossing`; the GPU's `transfer::Records`), what a GPU executor holds between two passes (`cross::Crossed`: each resource's bytes), the GPU rasteriser's chunk faces (`faces::mesh::ChunkFaces`), plain records
 (`gate::encode_pod`).
 
 **Sweeps** are edits whose values are lists: `vary = [...]` after `graph` and `edits`
