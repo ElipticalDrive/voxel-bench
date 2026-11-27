@@ -86,10 +86,45 @@ sampling functions copied from `pathtrace`; they are shared (`shading/sampling.w
 Both together grew the full sweep (`scripts/full-sweep.toml`, every `*`) from 1883 to 2794
 passes (+48 %): one more choice multiplies every graph varying that node with others.
 
-## A walk or traversal
+## A GPU walk (rehearsed with `topdown`)
 
-Not rehearsed yet. Expect: a CPU `Kernel` and/or a GPU kernel module, the registry entry
-with `needs` on the storage's caps, the walk agreement test.
+1. Write `crates/mr-components/src/traversal/NAME/gpu.wgsl`: `ctrace(o, d, max_t) -> Hit`
+   (camera-relative origin; the first solid cell past the start cell, its entry `t` and entry
+   `axis`, 3 when the ray starts inside the bounds), written only against the storage
+   interface: `s_top(key)` (`EMPTY`, `UNIFORM_BIT | block`, or the chunk's handle),
+   `s_probe`, `s_occupied` at the levels in `LEVEL_MASK`, `s_block`, and what
+   `storage/adapters.wgsl` derives (`s_dist`, `s_row`). Count iterations in `ct_iters` (the
+   `steps` view), stop after `MAX_STEPS`, clip to `vp.bounds_min/max` and `max_t`. Skipping
+   the start cell is what lets the layer walk resume through the kernel (`Cap::Layers`).
+2. Add the source to `traversal::gpu_wgsl` (`traversal/mod.rs`) and the registry entry: its
+   caps (`Steps`, `Layers`; `Lod` only if it walks the LOD levels) and `needs` on the
+   storage's caps (`Voxels`; `Dist`, `Row` for a walk relying on those).
+3. What is derived: the walk joins every GPU site that reads a kernel (primary rays, shadow
+   and bounce inputs, discovery's sampler), the sweeps' `*`, the GUI's choices, the catalogue.
+   Test: `cargo test -p mr-components --lib secondary_walks` composes it as primary and as
+   secondary walk over every GPU voxel storage (from the registry); `scripts/check.py`; if
+   only the sweep sizes fail, `scripts/new.py accept-sweep`.
+4. Pixel check: `scripts/run1.py` with `{node="kernel",component="NAME"}` and each GPU storage
+   on `raycast-gpu`, on terrain and the stress worlds (lattice, mandelbulb), unlit and lit
+   (the lit pass sends its shadow rays through the same kernel), against the reference;
+   compare with `refloor` in the same run. There is no GPU walk agreement test: the pixels
+   are it.
+5. Docs: the traversal row of `docs/pipelines.md` names the kernels.
+6. Timing (background): `.agent/bin/idle add -- env OUT=target/sweep/NAME scripts/sweep.py
+   terrain` with `vary` on the kernel and storage.
+
+Measured (`topdown`, 2026-11-26): files touched outside the component: the registry,
+`traversal/mod.rs` (one hand-kept line), `docs/pipelines.md`; two tests that listed kernels
+by hand made to derive or not to care. About 30 minutes, most of it the walk itself. Pixels
+equal to `refloor` in the same run on every storage (terrain 58.6 dB unlit, 55.9 lit; lattice
+52.4 / 52.3; mandelbulb 59.6 / 57.8; at most 0.01 % bad); first try. The full sweep grew
+2794 -> 3433 passes.
+
+A CPU walk is not rehearsed: it is a `Kernel` type with its trace function, and today it also
+needs a `Traversal` variant and its dispatch in `mr-exec-cpu/src/raycast.rs` (`traversal`,
+`trace_one`, the primary loop, the counters) and the hand list of CPU kernels in the
+registry's site check (`lib.rs`, `["refloor", "incremental"]`); `traversal/cpu_tests.rs`'s
+agreement test compares CPU kernels with the reference walk.
 
 ## A new shape (a drawer with its own region)
 
@@ -137,6 +172,9 @@ Fixed while rehearsing:
   generator went untested unless added); it now takes every `GENERATORS` entry.
 - The scenario plans were three hand-kept lists (sweep.py, turn-sweep.py, suite.py, which had
   drifted apart); now one, `SCENARIOS` in `scripts/mr.py`.
+- The GPU walk composition test listed storages and kernels by hand (a new kernel or GPU
+  storage went uncomposed); both now come from the registry. A graph test spelled
+  out every kernel in an expected error message; it now checks only what it is about.
 
 Open:
 
@@ -144,7 +182,9 @@ Open:
   reference option in `main.rs`) and the reference: the reference's models could be a
   registry of their own keyed by cap.
 - `new.py` scaffolds CPU storages only; shadings, walks and GPU storages are written by hand.
-- `shading::gpu_wgsl` is a hand-kept match of names to sources.
+- `shading::gpu_wgsl` and `traversal::gpu_wgsl` are hand-kept matches of names to sources.
+- A CPU walk needs a `Traversal` variant and its dispatch in `raycast.rs` in four places, and
+  the registry's site check lists CPU kernels by hand.
 - `scripts/new.py accept-sweep` builds and runs the release test suite to read the new size;
   it takes minutes (the size could be printed by `multirenderer` from the plan instead).
 - The full sweep grows by the product of the choices it varies together; with S adding many

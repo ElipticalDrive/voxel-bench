@@ -492,6 +492,17 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     },
     ComponentInfo {
         role: Role::Traversal,
+        name: "topdown",
+        description: "Top-down octree walk (Revelles et al. 2000, ESVO's pop): enter occupied nodes by midplane times, leave empty ones and pop to the highest level whose cell changed. Fast where the storage answers every level (octrees).",
+        impls: &[Impl {
+            kind: Kind::Gpu,
+            apis: SHADER,
+            provides: &[Cap::Steps, Cap::Layers],
+        }],
+        needs: &[(Role::Storage, Cap::Voxels)],
+    },
+    ComponentInfo {
+        role: Role::Traversal,
         name: "rayquery",
         description: "Hardware ray queries against the acceleration structure (RT cores) for primary, shadow and bounce rays. Knob: cull (triangle facing culled for primary rays).",
         impls: &[Impl {

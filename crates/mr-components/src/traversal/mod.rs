@@ -23,6 +23,7 @@ pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
         "incremental" => include_str!("incremental/gpu.wgsl"),
         "sphere" => include_str!("sphere/gpu.wgsl"),
         "rowrun" => include_str!("rowrun/gpu.wgsl"),
+        "topdown" => include_str!("topdown/gpu.wgsl"),
         _ => return None,
     })
 }
@@ -41,16 +42,21 @@ mod tests {
     use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
 
     /// A primary walk plus a secondary walk of every other storage and kernel form one
-    /// valid shader as modules, without renaming (as raycast-gpu assembles them).
+    /// valid shader as modules, without renaming (as raycast-gpu assembles them). Every GPU
+    /// voxel storage and every GPU walk in the registry.
     #[test]
     fn secondary_walks_compile_next_to_the_primary() {
-        let storages = [
-            "bricks", "hier", "prefix", "distance", "rows", "tree64", "svo_dag", "clipmap",
-        ];
-        let kernels = ["refloor", "incremental", "sphere", "rowrun"];
-        for primary in storages {
-            for secondary in storages {
-                for k in kernels {
+        use crate::{Cap, Kind, Role, components};
+        let storages: Vec<&str> = components(Role::Storage)
+            .filter(|c| c.on(Kind::Gpu).is_some_and(|i| i.provides.contains(&Cap::Voxels)))
+            .map(|c| c.name)
+            .collect();
+        let kernels: Vec<&str> =
+            components(Role::Traversal).map(|c| c.name).filter(|k| super::gpu_wgsl(k).is_some()).collect();
+        assert!(storages.len() >= 8 && kernels.len() >= 5, "{storages:?} {kernels:?}");
+        for &primary in &storages {
+            for &secondary in &storages {
+                for &k in &kernels {
                     let mut p = Program::world(Some("shadow::rays"));
                     let w = shaders::walk(
                         &mut p,

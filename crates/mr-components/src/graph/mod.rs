@@ -1248,7 +1248,7 @@ mod tests {
             .inputs
             .insert("shadow".into(), "rq".into());
         let e = g.validate().unwrap_err();
-        assert!(e.contains("`meshes`.shadow → `rq`: the gpu executor (for this shape) reads `refloor`, `incremental`, `sphere`, `rowrun` here, not `rayquery`"), "{e}");
+        assert!(e.contains("`meshes`.shadow → `rq`: the gpu executor (for this shape) reads `refloor`, `incremental`, ") && e.ends_with("here, not `rayquery`"), "{e}");
         let mut g = of("raycast-gpu");
         g.nodes
             .insert("st".into(), Node::new(Role::Storage, "palette"));
