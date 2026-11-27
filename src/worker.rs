@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -242,7 +242,7 @@ impl Worker {
         let ready = recv_timeout(&rx, left()).map_err(|e| {
             // A process gone while building says how (a signal names a crash it could not report).
             let closed = e.to_string().starts_with("worker exited");
-            match child.0.as_mut().and_then(|c| if closed { c.wait().ok() } else { c.try_wait().ok().flatten() }) {
+            match wait_within(&mut child.0, if closed { left() } else { Duration::ZERO }) {
                 Some(status) => e.context(format!("worker process ended: {status}")),
                 None => hung(e),
             }
@@ -328,8 +328,9 @@ impl Worker {
         let fate = match &mut self.child {
             Some(c) => {
                 let _ = c.kill();
-                let _ = c.wait();
-                "its process killed"
+                // The kill gets the worker's own deadline to land before the host says it did not.
+                let d = self.deadline();
+                if wait_within(&mut self.child, d).is_some() { "its process killed" } else { "its process killed, but not yet ended (stuck in the kernel, e.g. a GPU driver tearing down a lost device; reaped when it lets go)" }
             }
             None => "its thread abandoned",
         };
@@ -412,9 +413,8 @@ impl Worker {
     /// so all its descriptors are: it is exiting) this waits for the exit, no deadline needed;
     /// otherwise it only looks.
     pub fn exit_status(&mut self, closed: bool) -> Option<String> {
-        let c = self.child.as_mut()?;
-        let status = if closed { c.wait().ok() } else { c.try_wait().ok().flatten() };
-        status.map(|s| s.to_string())
+        let d = if closed { self.deadline() } else { Duration::ZERO };
+        wait_within(&mut self.child, d).map(|s| s.to_string())
     }
 
     /// Asks it to stop and waits for its end, within [`Self::deadline`]: None when it ended
@@ -482,7 +482,7 @@ impl Worker {
                 }
                 if Instant::now() >= until {
                     let _ = c.kill();
-                    let _ = c.wait();
+                    wait_within(&mut Some(c), Duration::ZERO);
                     problem = Some(format!("{}; its process killed", problem.unwrap_or_else(|| format!("did not stop within {wait:.1?}"))));
                     break;
                 }
@@ -503,8 +503,8 @@ impl Drop for KillOnDrop {
     fn drop(&mut self) {
         if let Some(c) = &mut self.0 {
             let _ = c.kill();
-            let _ = c.wait();
         }
+        wait_within(&mut self.0, Duration::ZERO);
     }
 }
 
@@ -512,9 +512,30 @@ impl Drop for Worker {
     fn drop(&mut self) {
         if let Some(c) = &mut self.child {
             let _ = c.kill();
-            let _ = c.wait();
+        }
+        wait_within(&mut self.child, Duration::ZERO);
+    }
+}
+
+/// Waits up to `d` for the process in `slot` to end and returns how it ended. Past `d` (at once
+/// for `Duration::ZERO`) the child goes to a thread that reaps it whenever it ends, and None is
+/// returned: the host never blocks on a worker. A process can stay unkillable for minutes or for
+/// good while it is inside the kernel (seen: a worker whose GPU was lost, stuck in the amdgpu
+/// driver's teardown with SIGKILL pending; the host had waited for it forever).
+fn wait_within(slot: &mut Option<Child>, d: Duration) -> Option<ExitStatus> {
+    let until = Instant::now() + d;
+    loop {
+        match slot.as_mut()?.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(5)),
+            _ => break,
         }
     }
+    let mut c = slot.take()?;
+    let _ = std::thread::Builder::new().name("reaper".into()).spawn(move || {
+        let _ = c.wait();
+    });
+    None
 }
 
 /// Receives the next protocol message, turning worker errors and disconnects into errors.
@@ -564,5 +585,24 @@ pub fn rgba8(format: PixelFormat, px: Vec<u8>) -> (Vec<u8>, Option<Vec<u8>>) {
     match format {
         PixelFormat::Rgba8 => (px, None),
         PixelFormat::Rgba16F => (mr_core::lighting::hdr_to_rgba8(&px), Some(px)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A process that does not end in time is handed to a reaper: the caller never blocks on
+    /// it (what a worker stuck in the kernel, unkillable, needs); one that ends is waited for.
+    #[cfg(unix)]
+    #[test]
+    fn waiting_for_a_worker_never_blocks_past_its_deadline() {
+        let mut slot = Some(Command::new("sleep").arg("2").spawn().unwrap());
+        let t = Instant::now();
+        assert!(wait_within(&mut slot, Duration::from_millis(50)).is_none());
+        assert!(slot.is_none(), "the child went to the reaper");
+        assert!(t.elapsed() < Duration::from_secs(5));
+        let mut slot = Some(Command::new("true").spawn().unwrap());
+        assert!(wait_within(&mut slot, Duration::from_secs(30)).is_some_and(|s| s.success()));
     }
 }

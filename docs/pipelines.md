@@ -305,7 +305,9 @@ Compiled workers are cached in `~/.cache/multirenderer/pipelines` (Windows:
 source, the sources it builds against, the toolchain and the CPU. The first build fills a
 shared target directory; later ones take seconds. Before a new build is used, it renders a
 short terrain flight next to the generic build and must match it pixel for pixel
-(`.trusted` / `.rejected` next to the worker). In the GUI the generic build runs while the
+(`.trusted` / `.rejected` next to the worker). Builds target this CPU; `MR_TARGET_CPU`
+names another (any `-C target-cpu`, part of the cache key): `MR_TARGET_CPU=x86-64-v3` builds
+for an AVX2 CPU without AVX-512, and its pixel check then runs here. In the GUI the generic build runs while the
 pipeline compiles, and the compiled one then hot-swaps in. Its label gains ` [native]` or
 ` [break-in]`. A baked knob cannot change live: changing it needs another build.
 

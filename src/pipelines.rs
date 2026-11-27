@@ -304,7 +304,7 @@ pub fn key(b: &Bake, level: Compile) -> anyhow::Result<String> {
     h = fnv(h, manifest(repo(), b.executor).as_bytes());
     h = fnv(h, &sources_hash(repo(), b.executor)?.to_le_bytes());
     h = fnv(h, machine_id()?.as_bytes());
-    h = fnv(h, FLAGS.as_bytes());
+    h = fnv(h, flags().as_bytes());
     if level == Compile::BreakIn {
         h = fnv(h, format!("{BREAK_IN:?}").as_bytes());
     }
@@ -316,10 +316,15 @@ pub fn key(b: &Bake, level: Compile) -> anyhow::Result<String> {
     Ok(format!("{prefix}-{}-{h:016x}{suffix}", b.graph.key().map_err(anyhow::Error::msg)?))
 }
 
-/// The same forced code alignment as the workspace (`.cargo/config.toml`), plus this CPU.
-const FLAGS: &str = "-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5 -C target-cpu=native";
+/// The same forced code alignment as the workspace (`.cargo/config.toml`), plus the CPU to
+/// compile for: this one (`native`), or `$MR_TARGET_CPU` (any `-C target-cpu`, e.g.
+/// `x86-64-v3` for an AVX2 CPU without AVX-512: its pixel check then runs here).
+fn flags() -> String {
+    let cpu = std::env::var("MR_TARGET_CPU").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "native".into());
+    format!("-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=5 -C target-cpu={cpu}")
+}
 
-/// Builds the crate in `src` with `profile` into `target` (`RUSTFLAGS` = [`FLAGS`] + `extra`)
+/// Builds the crate in `src` with `profile` into `target` (`RUSTFLAGS` = [`flags`] + `extra`)
 /// and returns the worker executable.
 fn cargo(key: &str, src: &Path, target: &Path, profile: &str, extra: &str) -> anyhow::Result<PathBuf> {
     tracing::info!("compiling pipeline {key} (cargo, profile {profile}, target {})", target.display());
@@ -327,7 +332,7 @@ fn cargo(key: &str, src: &Path, target: &Path, profile: &str, extra: &str) -> an
         .args(["build", "--quiet", "--profile", profile, "--manifest-path"])
         .arg(src.join("Cargo.toml"))
         .env("CARGO_TARGET_DIR", target)
-        .env("RUSTFLAGS", format!("{FLAGS} {extra}"))
+        .env("RUSTFLAGS", format!("{} {extra}", flags()))
         .output()
         .context("running cargo (a Rust toolchain builds the pipelines)")?;
     if !out.status.success() {
