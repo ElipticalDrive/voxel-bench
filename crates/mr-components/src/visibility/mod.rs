@@ -1,8 +1,8 @@
 //! Visibility strategies: how primary visibility is organised. `raycast` casts one ray per
 //! pixel through the traversal kernel (`crate::traversal`); `faces` hands every face of the
 //! geometry component to the draw stage (`crate::draw`); discovery (`quadtree`, `cluster`)
-//! finds the visible faces with few rays and hands that set to the draw stage; `splat` and
-//! `columns` fill their own buffers. Discovery's code is here ([`discover`],
+//! finds the visible faces with few rays and hands that set to the draw stage; `splat`,
+//! `slices` (plane sweeping) and `columns` fill their own buffers. Discovery's code is here ([`discover`],
 //! [`quadtree`], [`cluster`]; its hole detection in `crate::holes`), and splat's and columns'
 //! ([`splat`] over `crate::geometry::points`, [`columns`]).
 //!
@@ -20,6 +20,7 @@ pub mod columns;
 pub mod discover;
 pub mod quadtree;
 pub mod record;
+pub mod slices;
 pub mod splat;
 
 /// The layer walk on the GPU (transparency): the surfaces along a ray front to back through a

@@ -22,7 +22,7 @@ only: gaps not filled yet, and those refused on a kind by their nature (`REFUSED
 | `geometry` | faces | faces made from chunks (`greedy`, `naive`, `cubes`, `boxes`, `points`) |
 | `traversal` | rays | a ray-query service: a kernel walking a storage (`refloor`, `incremental`, `sphere`, `rowrun`, `topdown`, `rayquery`; `heightfield`, the heightmap's own march, casts the columns pipelines' shadow and bounce rays) |
 | `prepass` | starts | where each primary ray may start (`beam`) |
-| `visibility` | hits or faces | what is visible per pixel: `raycast`, `faces` (rasterise everything), discovery `quadtree` / `cluster`, `splat`, `columns` |
+| `visibility` | hits or faces | what is visible per pixel: `raycast`, `faces` (rasterise everything), discovery `quadtree` / `cluster`, `splat`, `slices` (plane sweeping: every integer plane rasterised, fragments kept on block faces by two storage lookups), `columns` |
 | `holes` | tiles | which screen tiles discovery looks at (`coverage`: only where something may have changed) |
 | `draw` | hits | the shared face drawer: `raster`, `visbuffer` (face ids) or `gbuffer` (hit records) |
 | `meshes` | surfaces | how triangle meshes join the image (`composite`, `depth`) |
@@ -56,7 +56,7 @@ A graph runs on the executor of one device kind: `executor = "gpu"` (the default
 `crates/mr-exec-gpu`) or `"cpu"` (`crates/mr-exec-cpu`), where the image is made; nodes without a
 `device` run there when their component can. The graph's shape names a preset, the region of
 that executor that builds it: `raycast-gpu`, `raster-gpu`, `rayquery-gpu`, `discover-gpu`,
-`discover-cpu` (discovery on the CPU, drawn on the GPU), `splat-gpu`, `columns-gpu` on the GPU,
+`discover-cpu` (discovery on the CPU, drawn on the GPU), `splat-gpu`, `slices-gpu`, `columns-gpu` on the GPU,
 `raycast-cpu`, `raster-cpu`, `columns-cpu` on the CPU. A preset is named by technique and device. It is derived from the graph and never
 chosen. A renderer is started from a graph file: one is shipped per region (`pipelines/*.toml`,
 named alike), and the GUI's "+ renderer" and "start from…" list them. `cpu-reference`, which defines the reference images, is the one renderer that

@@ -1,0 +1,37 @@
+# GPU plane sweeping: every integer plane of the loaded region drawn as a quad, a fragment kept where it holds a block face looking at the camera (two storage lookups), records shaded deferred; lit-mode shadow rays walk the storage
+# A pipeline graph: start a renderer from it with `graph = "slices-gpu"` and `edits`.
+
+executor = "gpu"
+
+[nodes.kernel]
+role = "traversal"
+component = "refloor"
+
+[nodes.kernel.inputs]
+storage = "storage"
+
+[nodes.shading]
+role = "shading"
+component = "direct"
+
+[nodes.shading.inputs]
+hits = "visibility"
+shadow = "kernel"
+
+[nodes.storage]
+role = "storage"
+component = "bricks"
+
+[nodes.storage.inputs]
+changes = "world"
+
+[nodes.visibility]
+role = "visibility"
+component = "slices"
+
+[nodes.visibility.inputs]
+storage = "storage"
+
+[nodes.world]
+role = "world"
+component = "world"

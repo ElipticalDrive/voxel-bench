@@ -333,6 +333,17 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     },
     ComponentInfo {
         role: Role::Visibility,
+        name: "slices",
+        description: "Plane sweeping on the rasteriser: every integer plane of the loaded region along each axis drawn as one quad, nearest first; a plane's pixel is kept where it holds a block face looking at the camera (two storage lookups) and writes that face's hit record behind the depth test; the common deferred pass shades. No geometry or meshing; costs the planes' fill.",
+        impls: &[Impl {
+            kind: Kind::Gpu,
+            apis: &[Api::Raster],
+            provides: &[],
+        }],
+        needs: &[(Role::Storage, Cap::Voxels)],
+    },
+    ComponentInfo {
+        role: Role::Visibility,
         name: "columns",
         description: "Voxel Space column march (Comanche, 1992): per screen column, front to back over the heightmap, drawing spans with a y-buffer.",
         impls: &[
@@ -816,6 +827,9 @@ mod tests {
                         (GpuSplat, Role::Visibility) => c == "splat",
                         (GpuSplat, Role::Storage) => storage::gpu(c).is_some(),
                         (GpuSplat, Role::Traversal) => traversal::gpu_wgsl(c).is_some(),
+                        (GpuSlices, Role::Visibility) => c == "slices",
+                        (GpuSlices, Role::Storage) => storage::gpu(c).is_some(),
+                        (GpuSlices, Role::Traversal) => traversal::gpu_wgsl(c).is_some(),
                         (GpuColumns | CpuColumns, Role::Storage) => c == "heightmap",
                         (GpuColumns | CpuColumns, Role::Traversal) => c == "heightfield",
                         (GpuColumns | CpuColumns, Role::Visibility) => c == "columns",

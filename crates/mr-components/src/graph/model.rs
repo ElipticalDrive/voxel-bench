@@ -380,7 +380,7 @@ pub fn inputs(role: Role, name: &str) -> &'static [Port] {
         (Role::Visibility, "quadtree") => QUADTREE,
         (Role::Visibility, "cluster") => DISCOVER,
         (Role::Visibility, "splat") => SPLAT,
-        (Role::Visibility, "columns") => ON_STORAGE,
+        (Role::Visibility, "columns" | "slices") => ON_STORAGE,
         (Role::Visibility, _) => FACES,
         (Role::Holes, _) => COVERAGE,
         (Role::Draw, _) => DRAW,

@@ -41,6 +41,7 @@ impl Graph {
         match (hits.component.as_str(), gpu(hits)) {
             ("columns", g) => Some(if g { &GPU_COLUMNS } else { &CPU_COLUMNS }),
             ("splat", true) => Some(&GPU_SPLAT),
+            ("slices", true) => Some(&GPU_SLICES),
             ("raycast", false) => Some(&CPU_RAYCAST),
             ("raycast", true) => {
                 let rq = hits

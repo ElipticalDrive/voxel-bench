@@ -837,6 +837,10 @@ pub const SHIPPED: &[(&str, &str)] = &[
         include_str!("../../../../pipelines/splat-gpu.toml"),
     ),
     (
+        "slices-gpu",
+        include_str!("../../../../pipelines/slices-gpu.toml"),
+    ),
+    (
         "columns-gpu",
         include_str!("../../../../pipelines/columns-gpu.toml"),
     ),
@@ -1062,7 +1066,7 @@ mod tests {
         assert_eq!(files, want);
     }
 
-    const KEYS: [&str; 10] = [
+    const KEYS: [&str; 11] = [
         "raycast-gpu 31c0d9f23d30a0a2",
         "raycast-cpu 6a27bbb361b1e383",
         "raster-gpu 0613a802bbaa05be",
@@ -1070,6 +1074,7 @@ mod tests {
         "discover-gpu 4a2e30e5e55b6985",
         "discover-cpu c694a54614af8399",
         "splat-gpu 9f38ca5f589d987a",
+        "slices-gpu c67e65bbc82a9a88",
         "columns-gpu 843d142449bc32b1",
         "columns-cpu f1107fab9298a785",
         "raster-cpu 6819619bbf7abf5c",

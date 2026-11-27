@@ -783,7 +783,8 @@ mod tests {
     /// CPU walks the graph's storage alone, baked (refused otherwise).
     #[test]
     fn every_gpu_graph_has_a_source() {
-        for b in ["raster-gpu", "discover-gpu", "discover-cpu", "raycast-gpu", "rayquery-gpu", "splat-gpu", "columns-gpu"] {
+        let gpu = mr_components::graph::SHIPPED.iter().map(|(name, _)| *name).filter(|b| mr_components::graph::shipped(b).unwrap().runs_on() == "gpu");
+        for b in gpu {
             let bk = bake(&spec(b, &[])).unwrap().unwrap();
             assert_eq!(bk.executor, Executor::Gpu, "{b}");
             let s = source(&bk).unwrap();

@@ -183,6 +183,7 @@ pub enum RegionId {
     GpuSampler,
     CpuSampler,
     GpuSplat,
+    GpuSlices,
     GpuColumns,
 }
 
@@ -338,6 +339,7 @@ pub const REGIONS: &[&Builds] = &[
     &GPU_SAMPLER,
     &CPU_SAMPLER,
     &GPU_SPLAT,
+    &GPU_SLICES,
     &GPU_COLUMNS,
     &CPU_COLUMNS,
     &CPU_RASTER,
@@ -698,6 +700,30 @@ pub const GPU_SPLAT: Builds = Builds {
     ],
     split: true,
     ..Builds::plain(RegionId::GpuSplat)
+};
+
+/// Plane sweeping (`slices-gpu`): the storage the planes look up (one for the shadow rays'
+/// walk too, or the same), the planes' raster pass writing records, the shading in the common
+/// deferred pass (its shadow rays walked).
+pub const GPU_SLICES: Builds = Builds {
+    nodes: &[
+        Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(1, 2),
+        Build::one(Role::Visibility, &["slices"], impls::GPU_RASTER),
+        Build::picking(Role::Traversal, WALKS, impls::GPU_DRAWN).count(1, 2),
+        Build::picking(Role::Shading, Pick::Every, impls::GPU_COMPUTE),
+    ],
+    same: &[],
+    only: &[
+        Only {
+            role: Role::Visibility,
+            of: &[],
+            port: "storage",
+            components: Pick::Providing(Cap::Voxels),
+            bound: true,
+        },
+        SHADOW_WALKED,
+    ],
+    ..Builds::plain(RegionId::GpuSlices)
 };
 
 /// Voxel Space on the GPU (`columns-gpu`): the heightmap, its own ray march (the shadow and

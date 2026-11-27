@@ -5,6 +5,8 @@
 //! - ray casting ([`raycast`]): one primary ray per pixel, walked over storages
 //!   (`raycast-gpu`) or cast as ray queries (`rayquery-gpu`);
 //! - splatting ([`splat`]): one point per exposed block (`splat-gpu`);
+//! - plane sweeping ([`slices`]): every integer plane of the loaded region rasterised, its
+//!   fragments kept on block faces (`slices-gpu`);
 //! - columns ([`columns`]): the Voxel Space heightmap march (`columns-gpu`).
 //!
 //! Which region runs is the graph's: faces when a drawer draws them, else by the visibility
@@ -39,6 +41,7 @@ mod exec;
 mod faces;
 mod raycast;
 mod remote;
+mod slices;
 mod splat;
 mod transfer;
 mod view;
@@ -85,7 +88,7 @@ fn info_of(p: &InitParams) -> anyhow::Result<RendererInfo> {
 
 /// The knobs of every region.
 pub fn infos() -> Vec<RendererInfo> {
-    [RegionId::CpuSampler, RegionId::GpuSampler, RegionId::GpuSplat, RegionId::GpuColumns, RegionId::GpuWalk, RegionId::GpuMeshing, RegionId::GpuRayQuery].map(info).into()
+    graph::REGIONS.iter().filter(|b| b.executor() == "gpu").map(|b| info(b.id)).collect()
 }
 
 /// The knobs of `region`.
@@ -97,6 +100,7 @@ pub fn info(region: RegionId) -> RendererInfo {
         RegionId::GpuWalk => raycast::walk::info(),
         RegionId::GpuRayQuery => raycast::rayquery::info(),
         RegionId::GpuSplat => splat::info(),
+        RegionId::GpuSlices => slices::info(),
         RegionId::GpuColumns => columns::info(),
         other => panic!("{other:?} is not a region of the GPU executor"),
     }
@@ -170,6 +174,7 @@ fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.node(vis).component.as_str() {
         "splat" => splat::create(&p, devices, waker, &g),
+        "slices" => slices::create(&p, devices, waker, &g),
         "columns" => columns::create(&p, devices, waker, &g),
         _ => raycast::create(&p, devices, waker, &g),
     }

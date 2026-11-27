@@ -126,10 +126,54 @@ needs a `Traversal` variant and its dispatch in `mr-exec-cpu/src/raycast.rs` (`t
 registry's site check (`lib.rs`, `["refloor", "incremental"]`); `traversal/cpu_tests.rs`'s
 agreement test compares CPU kernels with the reference walk.
 
-## A new shape (a drawer with its own region)
+## A new shape (a drawer with its own region; rehearsed with `slices`)
 
-Not rehearsed yet. Expect: a region module in an executor with its `REGION: &Builds`, its
-nodes, and `graph::REGIONS`; the contract's visibility probe states what a region is.
+A new shape is a visibility component no region builds yet, so it needs a region: the
+declaration of what the region builds and the executor code that builds it. Rehearsed with
+`slices` (plane sweeping on the GPU rasteriser: every integer plane of the loaded region drawn
+as a quad, nearest first, a fragment kept where its plane holds a block face looking at the
+camera, by two storage lookups; records shaded by the common deferred pass).
+
+1. The component: `crates/mr-components/src/visibility/NAME/` (`mod.rs` with its WGSL or CPU
+   code, `pub mod NAME;` in `visibility/mod.rs`) and its registry entry (`lib.rs`
+   `COMPONENTS`: impls with the API it runs as, `needs` on the inputs' caps). A GPU root
+   declares the executor's camera uniform (group 0, binding 0, `CameraUniform` in
+   `mr-exec-gpu/src/lib.rs`: two region words, the view-projection), the output (binding 1,
+   under `HDR`) and, for the common deferred pass, `record_at`, `view_ray`, `view_origin`,
+   `view_miss`, `view_lit` (and `view_surface` with the packed records). Storages are read
+   through `s_block_at(abs)` (any GPU storage) or the walk interface.
+2. Its ports: `graph::model::inputs` maps visibility components to port lists by name (a
+   new arm unless an existing list fits: `slices` reads a storage like `columns`).
+3. The region: in `graph/builds.rs` a `RegionId` variant, a `Builds` constant (its nodes with
+   counts and implementation places, `only` for what an input may be, timings, `split`,
+   `crossings`) and its place in `REGIONS`; in `graph/compose.rs` `Graph::region` the arm
+   that picks it from the graph's shape (by the hits source's component and device).
+4. The executor: a region module (`mr-exec-gpu/src/NAME.rs`, after the closest existing one:
+   `splat.rs`, `columns.rs`): `info()` (its knobs), the region state (`State`, `Region`), one
+   `Node` per pass, `create`, and a `programs_compose` test over every storage, walk and
+   shading the shipped file may take (`Graph::choices`). Then in `mr-exec-gpu/src/lib.rs`:
+   `mod`, the `info` arm and the arm in `create_with` choosing it by the visibility component.
+5. The graph file `pipelines/NAME-gpu.toml` and its line in `SHIPPED` (`graph/edit.rs`); the
+   shipped keys are pinned (`shipped_files_are_the_regions` prints the new one); a line in
+   `scripts/full-sweep.toml`; the registry test's arms (`registry_is_consistent` in `lib.rs`,
+   per region and role).
+6. Check: `cargo test -p mr-exec-gpu --lib NAME` (composes), `cargo test -p mr-components`,
+   then the pixels: `scripts/run1.py '[{graph="NAME-gpu"}]' terrain -s run.frames=60 -s
+   output.compare.every=30`, the stress worlds, each GPU storage, the stateful shadings
+   (settled score); `scripts/check.py`; `scripts/new.py accept-sweep` for the sweep sizes.
+7. Docs: the visibility row and the region list in `docs/pipelines.md`.
+
+Measured (`slices`, 2026-11-27): about 45 minutes, the region module most of it (325 lines with its test,
+after `splat.rs`; the shader 113). Files outside the component: 9 code files (registry and
+its test, `visibility/mod.rs`, `model.rs`, `compose.rs`, `builds.rs`, `edit.rs`, the
+executor's `lib.rs` in two places (its list of regions' knobs now reads `REGIONS`), a `VoxelWorld::bounds` accessor in `mr-gpu`), the sweep
+file, a doc. Pixels first try against the reference: terrain 59.1 dB unlit / 56.5 lit (above
+`raycast-gpu`'s 58.8 / 55.9), lattice 53.0 / 52.0, mandelbulb 58.6 / 57.3 on all 8 GPU
+storages, at most 0.02 % bad; `ao` settled 50.6 dB, `pathtrace` 47.4. The full sweep grew
+3433 -> 3457 passes. Speed on a busy
+machine (not recorded): 17-25 ms GPU on terrain, the planes' fill nearly all of it. It writes
+no quantity for the post's views yet (`Region::quantities` is empty, as `splat`'s: `view` is
+refused naming the ones there are, none); a planes-per-pixel view is the obvious first.
 
 ## A world generator
 
@@ -170,6 +214,8 @@ Fixed while rehearsing:
   now for every stateful shading.
 - The generator test that compared chunks with `block` listed the stress worlds by hand (a new
   generator went untested unless added); it now takes every `GENERATORS` entry.
+- The compiled-pipeline test listed the GPU graphs by hand (a new region went unbaked); it
+  now takes every shipped file the GPU executor runs.
 - The scenario plans were three hand-kept lists (sweep.py, turn-sweep.py, suite.py, which had
   drifted apart); now one, `SCENARIOS` in `scripts/mr.py`.
 - The GPU walk composition test listed storages and kernels by hand (a new kernel or GPU
@@ -185,6 +231,11 @@ Open:
 - `shading::gpu_wgsl` and `traversal::gpu_wgsl` are hand-kept matches of names to sources.
 - A CPU walk needs a `Traversal` variant and its dispatch in `raycast.rs` in four places, and
   the registry's site check lists CPU kernels by hand.
+- A new shape touches the shared code in about nine places, each a match by name: the
+  visibility's ports (`model::inputs`), the region pick (`Graph::region`), `RegionId`, the
+  executor's `info` and `create_with`, the registry test's arms per region. A region could
+  name its hits source in its `Builds` (as it names its nodes) so that the pick, the
+  executor's dispatch and the registry test read it from `REGIONS`.
 - `scripts/new.py accept-sweep` builds and runs the release test suite to read the new size;
   it takes minutes (the size could be printed by `multirenderer` from the plan instead).
 - The full sweep grows by the product of the choices it varies together; with S adding many

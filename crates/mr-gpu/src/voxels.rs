@@ -449,6 +449,12 @@ impl VoxelWorld {
         Some(())
     }
 
+    /// The loaded region (absolute blocks, the upper corner exclusive) as of the last
+    /// [`Self::prepare`]; `None` while nothing is loaded.
+    pub fn bounds(&self) -> Option<(IVec3, IVec3)> {
+        self.bounds
+    }
+
     /// LOD-0 chunk data currently held, for renderers that also need CPU access.
     pub fn chunk(&self, pos: IVec3) -> Option<&ChunkData> {
         self.chunks.get(&ChunkKey::lod0(pos))

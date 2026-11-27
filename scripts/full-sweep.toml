@@ -57,6 +57,7 @@ renderer = [
         { node = "shading", input = "bounce", from = "walk" },
     ], vary = [{ node = "store", component = "*" }, { node = "walk", component = "*" }] },
     { graph = "splat-gpu", vary = [{ node = "storage", component = "*" }, { node = "kernel", component = "*" }, { node = "shading", component = "*" }] },
+    { graph = "slices-gpu", vary = [{ node = "storage", component = "*" }, { node = "shading", component = "*" }] },
     { graph = "columns-gpu", vary = [{ node = "shading", component = "*" }] },
     { graph = "columns-cpu", vary = [{ node = "shading", component = "*" }] },
 ]
