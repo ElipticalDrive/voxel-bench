@@ -162,7 +162,7 @@ impl RayQuery {
                 stages: wgpu::ShaderStages::COMPUTE,
                 max_lod: 0,
                 voxels: false,
-                hits: mr_components::parse_placement(&k.placement)?.then_some(crate::exec::Form::Records),
+                hits: mr_components::shading_deferred(g, &k.placement)?.then_some(crate::exec::Form::Records),
                 shading: &shading,
                 shadows: k.shadows,
                 // Walks at the shading's sites (ray queries need no step limit).

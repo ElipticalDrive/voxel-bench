@@ -168,15 +168,90 @@ impl Renderer for Compiled {
 /// pipeline names one.
 fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let g = graph::of_init("gpu", &p)?;
+    let (changes, meshes) = g.graph.late_world().map_err(anyhow::Error::msg)?;
+    let inner = create_region(p, devices, waker, cpu_world, &g)?;
+    Ok(if changes || meshes { Box::new(LateWorld { inner, changes, meshes, arriving: vec![], waiting: vec![], meshes_arriving: vec![], meshes_waiting: vec![] }) } else { inner })
+}
+
+/// The world's changes (voxels', meshes') held back a frame for a graph whose nodes read them
+/// `prev` ([`graph::Graph::late_world`]): what arrives for a frame reaches the region before
+/// the next one.
+struct LateWorld {
+    inner: Box<dyn Renderer>,
+    changes: bool,
+    meshes: bool,
+    arriving: Vec<WorldUpdate>,
+    waiting: Vec<WorldUpdate>,
+    meshes_arriving: Vec<MeshUpdate>,
+    meshes_waiting: Vec<MeshUpdate>,
+}
+
+impl Renderer for LateWorld {
+    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
+        if self.changes {
+            self.arriving.extend(updates);
+            Ok(())
+        } else {
+            self.inner.update(updates)
+        }
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        if self.meshes {
+            self.meshes_arriving.push(update);
+            Ok(())
+        } else {
+            self.inner.update_meshes(update)
+        }
+    }
+
+    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        let w = std::mem::replace(&mut self.waiting, std::mem::take(&mut self.arriving));
+        if !w.is_empty() {
+            self.inner.update(w)?;
+        }
+        for m in std::mem::replace(&mut self.meshes_waiting, std::mem::take(&mut self.meshes_arriving)) {
+            self.inner.update_meshes(m)?;
+        }
+        self.inner.render(req, sink)
+    }
+
+    fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        self.inner.poll(sink)
+    }
+
+    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
+        self.inner.set_param(name, value)
+    }
+
+    fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
+        self.inner.edit(edits)
+    }
+
+    fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        self.inner.flush(sink)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
+        self.inner.resize(width, height)
+    }
+
+    fn memory(&self) -> MemoryReport {
+        self.inner.memory()
+    }
+}
+
+/// The region's renderer for `g`.
+fn create_region(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
     if g.find(Role::Draw).is_some() {
-        return faces::create(&p, devices, waker, &g, cpu_world);
+        return faces::create(&p, devices, waker, g, cpu_world);
     }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.node(vis).component.as_str() {
-        "splat" => splat::create(&p, devices, waker, &g),
-        "slices" => slices::create(&p, devices, waker, &g),
-        "columns" => columns::create(&p, devices, waker, &g),
-        _ => raycast::create(&p, devices, waker, &g),
+        "splat" => splat::create(&p, devices, waker, g),
+        "slices" => slices::create(&p, devices, waker, g),
+        "columns" => columns::create(&p, devices, waker, g),
+        _ => raycast::create(&p, devices, waker, g),
     }
 }
 

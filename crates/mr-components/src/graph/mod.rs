@@ -1084,7 +1084,8 @@ mod tests {
             assert!(sched.contains("gpu -> gpu1"), "{b}: {sched}");
             let why = split(b, "inline").accept().unwrap_err();
             assert!(why.contains("placement = deferred"), "{b}: {why}");
-            // The shading a frame behind, the GPUs overlapping; not on one GPU.
+            // The shading a frame behind, the GPUs overlapping; on one GPU the records kept
+            // a frame on the device.
             let mut late = split(b, "deferred");
             late.nodes
                 .get_mut("shading")
@@ -1096,11 +1097,7 @@ mod tests {
             let sched = late.check().unwrap().schedule().unwrap();
             assert!(sched.pipelined(), "{b}: {sched}");
             late.nodes.get_mut("shading").unwrap().device = None;
-            let why = late.accept().unwrap_err();
-            assert!(
-                why.contains("hits prev") && why.contains("another GPU"),
-                "{b}: {why}"
-            );
+            late.accept().unwrap_or_else(|e| panic!("{b} on one GPU: {e}"));
         }
         // The whole pipeline on the second GPU.
         let mut g = file("raycast-gpu");
@@ -1363,14 +1360,13 @@ mod tests {
         g.nodes.get_mut("draw").unwrap().timing.clear();
         let e = g.check().unwrap_err();
         assert!(e.contains("cycle through") && e.contains("`prev`"), "{e}");
-        // Faces a frame late instead of the loop: a valid graph discover-gpu does not build.
+        // Faces a frame late instead of the loop: kept a frame on the device.
         g.nodes
             .get_mut("draw")
             .unwrap()
             .timing
             .insert("faces".into(), When::Prev);
-        let e = g.validate().unwrap_err();
-        assert!(e.contains("`draw`.faces: the gpu executor (for this shape) runs this edge now or iterate 2, not prev"), "{e}");
+        g.validate().unwrap();
         let mut g = base.clone();
         g.nodes
             .get_mut("draw")

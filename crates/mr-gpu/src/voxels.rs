@@ -746,6 +746,20 @@ impl VoxelWorld {
         self.bind_group.as_ref().unwrap()
     }
 
+    /// The parameters' camera block (and the bounds relative to it) rewritten for the passes
+    /// submitted from now on, as [`Self::prepare`] wrote them for a camera in `cam_block`
+    /// (positions of an earlier frame, read in this frame's passes).
+    pub fn rewrite_block(&self, gpu: &Gpu, cam_block: IVec3) {
+        let (bmin, bmax) = match self.bounds {
+            Some((lo, hi)) => (lo - cam_block, hi - cam_block),
+            None => (IVec3::ONE, IVec3::ZERO),
+        };
+        let at = |field: usize| field as u64;
+        gpu.queue.write_buffer(&self.params, at(std::mem::offset_of!(Params, cam_block)), bytemuck::bytes_of(&cam_block.to_array()));
+        gpu.queue.write_buffer(&self.params, at(std::mem::offset_of!(Params, bounds_min)), bytemuck::bytes_of(&bmin.to_array()));
+        gpu.queue.write_buffer(&self.params, at(std::mem::offset_of!(Params, bounds_max)), bytemuck::bytes_of(&bmax.to_array()));
+    }
+
     pub fn table_lookup(&self, pos: IVec3) -> Option<u32> {
         self.table.get(table_key(ChunkKey::lod0(pos)))
     }

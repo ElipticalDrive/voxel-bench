@@ -252,6 +252,12 @@ impl Builds {
             .find(|(r, p, _)| *r == role && *p == port)
             .map(|f| f.2)
             .or(self.late.then_some(&[When::Now, When::Prev][..]))
+            // An edge held between two passes is kept a frame on the device when timed
+            // `prev` (`mr-exec-gpu`'s `cross::EdgeHold`).
+            .or(self.crossings.contains(&(role, port)).then_some(&[When::Now, When::Prev][..]))
+            // The world's changes a frame late: the GPU executor holds them back a frame
+            // (for every node reading them alike: [`Graph::late_world`]).
+            .or((port == "changes" && self.executor() == "gpu").then_some(&[When::Now, When::Prev][..]))
     }
 
     /// Whether it replaces node `id` of graph `g` while running.
@@ -641,7 +647,7 @@ pub const GPU_SAMPLER: Builds = Builds {
     // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
     // the last frame's sky mask.
     free: &[
-        (Role::Draw, "faces", &[When::Now, When::Iterate(2)]),
+        (Role::Draw, "faces", &[When::Now, When::Iterate(2), When::Prev]),
         (Role::Holes, "sky", &[When::Prev]),
         HITS_LATE[0],
     ],
@@ -725,6 +731,7 @@ pub const GPU_SPLAT: Builds = Builds {
         SHADOW_WALKED,
         RT,
     ],
+    free: HITS_LATE,
     split: true,
     ..Builds::plain(RegionId::GpuSplat)
 };
@@ -750,6 +757,8 @@ pub const GPU_SLICES: Builds = Builds {
         },
         SHADOW_WALKED,
     ],
+    // The planes' records, held between their pass and the shading's.
+    crossings: &[(Role::Shading, "hits")],
     ..Builds::plain(RegionId::GpuSlices)
 };
 

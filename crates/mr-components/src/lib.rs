@@ -761,6 +761,13 @@ pub fn parse_placement(s: &str) -> anyhow::Result<bool> {
     }
 }
 
+/// Whether `g`'s shading runs in a pass of its own over hit records: `placement` (the
+/// shading's knob) says so, or its hits are read late (`prev`): last frame's records are
+/// kept, so they cannot be fused into the pass that finds this frame's.
+pub fn shading_deferred(g: &graph::Checked, placement: &str) -> anyhow::Result<bool> {
+    Ok(parse_placement(placement)? || g.graph.nodes.get(g.shading()).is_some_and(|n| n.when("hits") != graph::When::Now))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

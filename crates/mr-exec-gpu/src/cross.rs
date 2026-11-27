@@ -333,3 +333,159 @@ impl EdgeGate {
         self.staging.iter().chain(&self.keep).map(|b| b.size()).sum()
     }
 }
+
+/// An edge between two passes of this executor timed `prev` with no gate on it: the reader
+/// reads the producer's value of the last frame, kept on the device. After the producer's
+/// pass its value is copied aside (`next`), and at the frame's end that copy becomes the one
+/// held. Around the reader's pass the edge's resources are swapped: what is there set aside,
+/// last frame's value put in, and put back after. Copies on the GPU only: no read-back, no
+/// wait; the order of the two passes in the frame does not matter. On a viewed edge into the
+/// shading the reader's pass runs with the camera of the frame the value was made in (the frame's
+/// commands so far are submitted first, so the passes before keep this frame's; the passes
+/// after it have this frame's again). Before a first frame (and after a
+/// resize) the reader reads zeros (no hit: sky; no face).
+pub(crate) struct EdgeHold {
+    pub reader: String,
+    pub port: String,
+    /// Whether the reader runs with the camera the value was made with: a viewed edge into
+    /// the shading (the frame's last word on those pixels); a reader that makes this frame's
+    /// values of its own (rays reading last frame's mesh surfaces) runs with this frame's.
+    rewind: bool,
+    /// The indices of the reader's pass and of the producer's in the executor's frame order
+    /// (the producer's: the last pass when it has none of its own here).
+    pub before: usize,
+    pub producer: usize,
+    parts: Vec<Part>,
+    /// Last frame's value, this frame's (after the producer), and what the reader's pass
+    /// found in the resources.
+    held: Vec<wgpu::Buffer>,
+    next: Vec<wgpu::Buffer>,
+    keep: Vec<wgpu::Buffer>,
+    /// The cameras of the frames `held` and `next` were made in, with the block the
+    /// frame's positions are relative to (`None`: zeros held).
+    camera: Option<(CameraUniform, glam::IVec3)>,
+    next_camera: Option<(CameraUniform, glam::IVec3)>,
+    /// Whether the reader's pass rewrote the camera.
+    rewrote: bool,
+}
+
+/// The edges of `graph` timed `prev` without a gate (`gates`) that the executor keeps a frame
+/// on the device ([`EdgeHold`]): those its region holds between passes (`Builds::crossings`;
+/// on one GPU, not `split`, the shading's hits), except those the region keeps itself
+/// (`Builds::late_crossings`). Each as (reader, port, source).
+pub(crate) fn held_edges(graph: &mr_components::graph::Graph, gates: &[mr_components::graph::EdgeGates], split: bool) -> Vec<(String, String, String)> {
+    let region = graph.region();
+    let crossings = region.map_or(&[][..], |b| b.crossings);
+    let own = region.map_or(&[][..], |b| b.late_crossings);
+    let mut out = Vec::new();
+    for (id, node) in &graph.nodes {
+        for (port, source) in &node.inputs {
+            if node.when(port) != When::Prev || gates.iter().any(|e| e.reader == *id && e.port == *port) || own.contains(&(node.role, port.as_str(), When::Prev)) {
+                continue;
+            }
+            let hits = node.role == mr_components::Role::Shading && port == "hits";
+            if (hits && split) || !(hits || crossings.contains(&(node.role, port.as_str()))) {
+                continue;
+            }
+            out.push((id.clone(), port.clone(), source.clone()));
+        }
+    }
+    out
+}
+
+/// The holds of `core`'s graph whose reader is one of `passes` (node ids in frame order).
+pub(crate) fn holds(core: &Core, passes: &[String], split: bool) -> Vec<EdgeHold> {
+    held_edges(&core.graph, &core.gates, split)
+        .into_iter()
+        .filter_map(|(reader, port, source)| {
+            let before = passes.iter().position(|p| *p == reader)?;
+            let data = core.graph.nodes.get(&source).map_or(Data::Hits, |s| mr_components::graph::output(s.role, &s.component));
+            let rewind = viewed(data) && core.graph.nodes.get(&reader).is_some_and(|n| n.role == mr_components::Role::Shading);
+            let producer = passes.iter().position(|p| *p == source).unwrap_or(passes.len().saturating_sub(1));
+            Some(EdgeHold { reader, port, rewind, before, producer, parts: Vec::new(), held: Vec::new(), next: Vec::new(), keep: Vec::new(), camera: None, next_camera: None, rewrote: false })
+        })
+        .collect()
+}
+
+impl EdgeHold {
+    /// Buffers for `parts` (new ones, zeros, when their sizes changed; a region may hand
+    /// over another resource of the same size each frame: double buffering).
+    fn prepare(&mut self, core: &Core, parts: Vec<Part>) {
+        let fresh = parts.len() != self.parts.len() || parts.iter().zip(&self.parts).any(|(a, b)| a.staged() != b.staged());
+        if !fresh {
+            self.parts = parts;
+        } else {
+            let buf = |label| parts.iter().map(|p| core.gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: p.staged(), usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })).collect::<Vec<_>>();
+            self.held = buf("edge held a frame");
+            self.next = buf("edge of this frame");
+            self.keep = buf("edge set aside");
+            self.parts = parts;
+            self.camera = None;
+            self.next_camera = None;
+        }
+    }
+
+    /// Before the reader's pass: what `parts` hold set aside, last frame's value put in. A
+    /// viewed edge submits `enc` so far and rewrites the camera and the world's camera block
+    /// (positions are relative to it: the records' cells, lights, the walks' lookups) as they
+    /// were last frame. (The meshes and acceleration structures stay placed for this frame's.)
+    pub fn before(&mut self, core: &Core, parts: Vec<Part>, enc: &mut wgpu::CommandEncoder, _req: &FrameRequest) {
+        self.prepare(core, parts);
+        for (p, k) in self.parts.iter().zip(&self.keep) {
+            p.copy_out(enc, k);
+        }
+        for (p, h) in self.parts.iter().zip(&self.held) {
+            p.copy_in(enc, h);
+        }
+        self.rewrote = false;
+        if let Some((cam, block)) = self.camera.filter(|_| self.rewind) {
+            let done = std::mem::replace(enc, core.gpu.device.create_command_encoder(&Default::default()));
+            core.gpu.queue.submit([done.finish()]);
+            core.rewrite_camera(cam);
+            core.world.rewrite_block(&core.gpu, block);
+            self.rewrote = true;
+        }
+    }
+
+    /// After the reader's pass: what was there put back; this frame's camera and camera
+    /// block again for the passes after it.
+    pub fn after(&mut self, core: &Core, enc: &mut wgpu::CommandEncoder, req: &FrameRequest) {
+        for (p, k) in self.parts.iter().zip(&self.keep) {
+            p.copy_in(enc, k);
+        }
+        if self.rewrote {
+            let done = std::mem::replace(enc, core.gpu.device.create_command_encoder(&Default::default()));
+            core.gpu.queue.submit([done.finish()]);
+            core.rewrite_camera(core.camera.get());
+            core.world.rewrite_block(&core.gpu, req.camera.split_position().0);
+        }
+    }
+
+    /// After the producer's pass: its value (`parts`) copied aside for the next frame.
+    pub fn capture(&mut self, core: &Core, parts: Vec<Part>, enc: &mut wgpu::CommandEncoder, req: &FrameRequest) {
+        self.prepare(core, parts);
+        for (p, n) in self.parts.iter().zip(&self.next) {
+            p.copy_out(enc, n);
+        }
+        self.next_camera = Some((core.camera.get(), req.camera.split_position().0));
+    }
+
+    /// At the frame's end: this frame's value is the one held.
+    pub fn end(&mut self) {
+        if let Some(cam) = self.next_camera.take() {
+            std::mem::swap(&mut self.held, &mut self.next);
+            self.camera = Some(cam);
+        }
+    }
+
+    /// After a resize: nothing of the old size is held.
+    pub fn resize(&mut self) {
+        self.parts.clear();
+        self.camera = None;
+        self.next_camera = None;
+    }
+
+    pub fn memory_bytes(&self) -> u64 {
+        self.held.iter().chain(&self.next).chain(&self.keep).map(|b| b.size()).sum()
+    }
+}
