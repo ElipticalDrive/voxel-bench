@@ -42,7 +42,10 @@ multirenderer (host: the server)            worker process (one per renderer: a 
   lane's worker and to the replacement a hot swap is warming up (a hung replacement ends the
   swap; the lane keeps its worker). Presenter windows go by it too: connecting is their
   build (`build_s`), closing may take `factor` times as long as connecting did (at least
-  `min_s`), then the process is killed. A process's death frees the device memory its
+  `min_s`), then the process is killed. The host never waits on a killed process past its
+  deadline: one the kernel holds (seen on RADV: a worker whose GPU was lost, stuck in the
+  driver's teardown with the kill pending) is reported "killed, but not yet ended" and
+  reaped by a thread whenever it ends. A process's death frees the device memory its
   renderer held (the driver's, measured: 1247 MiB used before, 1459 MiB during, 1247 MiB
   after each of five runs whose GPU workers segfaulted, aborted or hung and were killed).
   `tests/survival.rs` drives the binary through every moment x way in both isolations (with
