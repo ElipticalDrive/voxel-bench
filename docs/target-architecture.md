@@ -178,8 +178,8 @@ both by design (below). What still differs from the target:
 
 | Target | Today |
 |---|---|
-| Fusion is attempted, not pre-judged | Each executor declares the nodes it builds (`graph::Builds`: per role the components, device kind and count), and `Graph::accept` refuses, with the reason, any valid graph outside the declarations at creation instead of trying it. The declarations are the regions' shapes, so a graph is accepted exactly when a region builds it. The ten presets named by technique and device (`raycast-gpu`, `raster-cpu`, ...) are those regions' names: derived from the graph, offered as starting points, never chosen. |
-| Diagnostics on the node or edge at fault | A graph that does not run is a draft with its reason as text; the canvas does not mark the node at fault, draft steps are not in the undo stack, and nothing suggests a fix (the graph editing work). |
+| Fusion is attempted, not pre-judged (required: every graph meeting the validity rules executes) | Each executor declares the nodes it builds (`graph::Builds`: per role the components, device kind and count), and `Graph::accept` refuses, with the reason, any valid graph outside the declarations at creation instead of trying it. The declarations are the regions' shapes, so a graph is accepted exactly when a region builds it. The ten presets named by technique and device (`raycast-gpu`, `raster-cpu`, ...) are those regions' names: derived from the graph, offered as starting points, never chosen. |
+| Diagnostics on the node or edge at fault | A graph that does not run is a draft; the nodes its reason names, and the node a failure or refused knob is about, are marked red on the canvas and in the pipeline rows, the reason on hover (`docs/gui.md`). An edge at fault is not marked, a reason naming no node stays the lane's, draft steps are not in the undo stack, and nothing suggests a fix (the graph editing work). |
 
 Decided for the GPU rows (2026-11-23):
 
