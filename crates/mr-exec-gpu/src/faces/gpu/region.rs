@@ -99,7 +99,7 @@ impl exec::State for GpuSampler {
 
     fn resize(&mut self, core: &Core) {
         self.drawing.resize(core);
-        self.sized = make_sized(&core.gpu, core.width, core.height);
+        self.sized = make_sized(&core.gpu, core.width, core.height, self.sized.sky_in.is_some());
         self.bind_faces(core);
         self.bind_disc = None;
         self.views = None;
@@ -359,13 +359,28 @@ impl Region for GpuSampler {
         }
     }
 
-    /// The discovery's tiles (hole detection's needs) and the drawer's faces (the list it
-    /// draws with its indirect arguments).
+    /// The discovery's tiles (hole detection's needs), the drawer's faces (the list it
+    /// draws with its indirect arguments) and hole detection's sky mask (this frame's, sent
+    /// at its end).
     fn crossing(&self, _core: &Core, reader: Role, port: &str, _data: mr_components::graph::Data) -> Option<Vec<crate::cross::Part>> {
         use crate::cross::Part;
         match (reader, port) {
             (Role::Visibility, "where") => Some(vec![Part::Buffer(self.sized.need.clone())]),
-            (Role::Draw, "faces") => Some(vec![Part::Buffer(self.drawn().1.clone()), Part::Buffer(self.args.clone())]),
+            // The discovered list: painter order sorts it inside the draw's pass, the row
+            // merge's runs are made before it.
+            (Role::Draw, "faces") => Some(vec![Part::Buffer(if self.merging() { self.merged.clone() } else { self.lists[self.now.parity].clone() }), Part::Buffer(self.args.clone())]),
+            (Role::Holes, "sky") => Some(vec![Part::Buffer(self.sized.sky[self.now.parity].clone())]),
+            _ => None,
+        }
+    }
+
+    /// What hole detection reads of last frame behind a gate: the faces (and their
+    /// arguments) that crossed, the sky mask that crossed.
+    fn replay(&self, _core: &Core, reader: Role, port: &str) -> Option<Vec<crate::cross::Part>> {
+        use crate::cross::Part;
+        match (reader, port) {
+            (Role::Draw, "faces") => self.replay_faces.as_ref().map(|(l, a, _)| vec![Part::Buffer(l.clone()), Part::Buffer(a.clone())]),
+            (Role::Holes, "sky") => self.sized.sky_in.clone().map(|b| vec![Part::Buffer(b)]),
             _ => None,
         }
     }

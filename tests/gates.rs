@@ -469,7 +469,9 @@ camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
 
 /// On the GPU, in the glass world, the ray caster's layered records (eight a pixel) cross a
 /// gate on the hits whole: the shading past it composites them. A lossless gate changes no
-/// pixel of the composited frame; a lossy one renders on and reports the gate. Needs a GPU.
+/// pixel of the composited frame; a lossy one renders on and reports the gate; the shading
+/// on a second GPU (both slots the default adapter here) composites them as on one. Needs a
+/// GPU.
 #[test]
 #[ignore]
 fn transparency_layers_cross_a_gpu_gate() {
@@ -483,6 +485,14 @@ camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
         ("glass-gpu-plain", r#"[{ node = "shading", knobs = { placement = "deferred" } }, { remove = "meshes" }]"#.to_string()),
         ("glass-gpu-gated", gpu_hits("raycast-gpu", "{}")),
         ("glass-gpu-lossy", gpu_hits("raycast-gpu", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, reorder = true, seed = 5 }")),
+        (
+            "glass-gpu-two",
+            r#"[{ node = "shading", knobs = { placement = "deferred" } }, { remove = "meshes" },
+  { add = "s.storage", role = "storage", component = "bricks" }, { node = "s.storage", input = "changes", from = "world" },
+  { add = "s.kernel", role = "traversal", component = "refloor" }, { node = "s.kernel", input = "storage", from = "s.storage" },
+  { node = "shading", input = "shadow", from = "s.kernel" }, { node = "shading", device = "gpu1" }]"#
+                .to_string(),
+        ),
     ];
     for (name, edits) in &runs {
         let (ok, log) = launch_scene(&dir(), name, "raycast-gpu", edits, 0, "unlit", glass);
@@ -490,7 +500,7 @@ camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
         let r = report(name);
         assert!(r["error"].is_null(), "{name}: {}", r["error"]);
         assert!(!r["not_supported"].to_string().contains("ransparency"), "{name}: transparency left out: {}", r["not_supported"]);
-        if *name != "glass-gpu-plain" {
+        if !matches!(*name, "glass-gpu-plain" | "glass-gpu-two") {
             crossed(&r, *name == "glass-gpu-lossy");
             let h = &gates(&r)["h"].1;
             // Once the glass has arrived every frame's records cross with their layers.
@@ -498,6 +508,7 @@ camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
         }
     }
     assert!(last_image(&dir(), "glass-gpu-plain") == last_image(&dir(), "glass-gpu-gated"), "a lossless gate changed the composited layers");
+    assert!(last_image(&dir(), "glass-gpu-plain") == last_image(&dir(), "glass-gpu-two"), "the shading on a second GPU changed the composited layers");
 }
 
 /// A gate `g` (knobs `knobs`) taking `reader`.`port` from `from`.
@@ -505,26 +516,37 @@ fn gate_on(from: &str, reader: &str, port: &str, knobs: &str) -> String {
     format!(r#"{{ add = "g", role = "gate", component = "net" }}, {{ node = "g", input = "in", from = "{from}" }}, {{ node = "g", knobs = {knobs} }}, {{ node = "{reader}", input = "{port}", from = "g" }},"#)
 }
 
+/// GPU discovery with hole detection: the drawer's faces iterate twice a frame through it
+/// (hole detection draws last frame's, the drawer this frame's), and it reads last frame's
+/// sky mask (`prev`).
+const HOLES: &str = r#"{ add = "holes", role = "holes", component = "coverage" },
+  { node = "draw", input = "faces", when = { iterate = 2 } },
+  { node = "holes", input = "covered", from = "draw" },
+  { node = "holes", input = "sky", from = "draw" },
+  { node = "holes", input = "sky", when = "prev" },"#;
+
+/// [`HOLES`] with hole detection's tiles into the discovery.
+const HOLES_WHERE: &str = r#"{ add = "holes", role = "holes", component = "coverage" },
+  { node = "draw", input = "faces", when = { iterate = 2 } },
+  { node = "holes", input = "covered", from = "draw" },
+  { node = "holes", input = "sky", from = "draw" },
+  { node = "holes", input = "sky", when = "prev" },
+  { node = "visibility", input = "where", from = "holes" },"#;
+
 /// Edges whose data a GPU executor holds between two of its passes: the GPU column
 /// marcher's hit records (shading deferred), the beam prepass's ray starts into the walk,
-/// hole detection's tiles into GPU discovery and the discovered faces into the drawer. Each:
-/// the graph, the edits before the edge, the edge's source, reader and port.
+/// hole detection's tiles into GPU discovery, the discovered faces into the drawer, and
+/// the late edges of hole detection's loop: the faces iterating through it (what crossed
+/// is what hole detection draws next frame) and last frame's sky mask (sent at the frame's
+/// end). Each: the graph, the edits before the edge, the edge's source, reader and port.
 fn between_passes() -> Vec<(&'static str, &'static str, &'static str, &'static str, &'static str)> {
     vec![
         ("columns-gpu", r#"{ node = "shading", knobs = { placement = "deferred" } },"#, "visibility", "shading", "hits"),
         ("raycast-gpu", r#"{ add = "prepass", role = "prepass", component = "beam" }, { node = "prepass", input = "storage", from = "storage" },"#, "prepass", "visibility", "start"),
-        (
-            "discover-gpu",
-            r#"{ add = "holes", role = "holes", component = "coverage" },
-  { node = "draw", input = "faces", when = { iterate = 2 } },
-  { node = "holes", input = "covered", from = "draw" },
-  { node = "holes", input = "sky", from = "draw" },
-  { node = "holes", input = "sky", when = "prev" },"#,
-            "holes",
-            "visibility",
-            "where",
-        ),
+        ("discover-gpu", HOLES, "holes", "visibility", "where"),
         ("discover-gpu", "", "visibility", "draw", "faces"),
+        ("discover-gpu", HOLES_WHERE, "visibility", "draw", "faces"),
+        ("discover-gpu", HOLES_WHERE, "draw", "holes", "sky"),
     ]
 }
 
@@ -627,6 +649,31 @@ fn gpu_mesh_surfaces_through_gates() {
         let img = |n: &str| last_image(&dir(), &format!("{name}-{n}"));
         assert!(img("plain") != img("none"), "{placement}: no mesh in the frame");
         assert!(img("plain") == img("gated"), "{placement}: a lossless gate on the mesh surfaces changed the frame");
+    }
+}
+
+/// GPU ray casting's hit records cross a gate with a meshes node beside them: the records
+/// name mesh triangles, which the shading past the gate decodes from its own copy of the
+/// meshes (placed for the records' camera). Lossy, the pass lives on and reports the gate;
+/// lossless, no pixel changes unlit or lit (the shading's rays meeting the triangles), with
+/// the meshes in the frame. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_hits_beside_meshes_through_gates() {
+    let deferred = r#"{ node = "shading", knobs = { placement = "deferred" } },"#;
+    let r = mesh_room("hits-meshes-lossy", "lit+meshes", &format!("[{deferred} {}]", gate_on("visibility", "shading", "hits", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, seed = 5 }")));
+    let gs = gates(&r);
+    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["g:shading.hits"]);
+    crossed(&r, true);
+    for mode in ["unlit", "lit"] {
+        let name = format!("hits-meshes-{mode}");
+        mesh_room(&format!("{name}-none"), mode, &format!("[{deferred}]"));
+        mesh_room(&format!("{name}-plain"), &format!("{mode}+meshes"), &format!("[{deferred}]"));
+        let gated = mesh_room(&format!("{name}-gated"), &format!("{mode}+meshes"), &format!("[{deferred} {}]", gate_on("visibility", "shading", "hits", "{}")));
+        crossed(&gated, false);
+        let img = |n: &str| last_image(&dir(), &format!("{name}-{n}"));
+        assert!(img("plain") != img("none"), "{mode}: no mesh in the frame");
+        assert!(img("plain") == img("gated"), "{mode}: a lossless gate on hit records beside meshes changed the frame");
     }
 }
 

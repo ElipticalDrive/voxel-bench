@@ -193,6 +193,10 @@ pub(crate) struct GpuSampler {
     bind_disc: Option<[wgpu::BindGroup; 2]>,
     bind_args: wgpu::BindGroup,
     bind_draw: [wgpu::BindGroup; 2],
+    /// A gate on the drawer's faces in the hole-detection loop: the list and arguments
+    /// that last crossed (hole detection draws them: the loop's first iteration), and the
+    /// list's draw bind group.
+    replay_faces: Option<(wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup)>,
     stages: Vec<Stage>,
     profile: Option<wgpu::QuerySet>,
     profile_resolve: Option<wgpu::Buffer>,
@@ -288,7 +292,7 @@ impl Node<GpuSampler> for Shading {
 /// shading as nodes, each running what it reads first (the drawer's faces iterate through
 /// hole detection and discovery: last frame's list, then this frame's).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    let passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<GpuSampler>>> {
+    let mut passes = exec::passes(g, crate::home_slot(g), |role| -> Option<Box<dyn Node<GpuSampler>>> {
         Some(match role {
             Role::Storage => Box::new(Storage),
             Role::Holes => Box::new(Holes),
@@ -298,5 +302,18 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &Checke
             _ => return None,
         })
     })?;
+    // The schedule puts the loop's consumer (the drawer) first; its first iteration is hole
+    // detection's (last frame's faces), so each node's pass runs in the order its work does:
+    // hole detection, discovery, then the drawer. The commands are the same either way (each
+    // pass runs what it reads first); this way a gate between two of them crosses where the
+    // edge's value is made.
+    let role = |id: &str| g.node(id).role;
+    if let Some(d) = passes.iter().position(|(id, _)| role(id) == Role::Draw) {
+        let last = passes.iter().rposition(|(id, _)| matches!(role(id), Role::Holes | Role::Visibility)).filter(|&l| l > d);
+        if let Some(l) = last {
+            let draw = passes.remove(d);
+            passes.insert(l, draw);
+        }
+    }
     crate::exec::run_or_split(GpuSampler::new(p, devices, waker, g)?, g, passes)
 }

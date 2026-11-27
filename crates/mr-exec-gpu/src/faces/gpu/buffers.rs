@@ -109,8 +109,12 @@ pub(super) struct Sized {
     pub(super) need_off: u32,
     /// Incremental mode: per level-0 tile, 1 if an edited block or changed chunk covers it.
     pub(super) changed_tiles: wgpu::Buffer,
-    /// Per pixel, 1 where the final raster was sky; double-buffered by frame parity.
+    /// Per pixel, 1 where the final raster was sky; double-buffered by frame parity (read
+    /// back by a gate on hole detection's sky).
     pub(super) sky: [wgpu::Buffer; 2],
+    /// A gate on hole detection's sky: the mask that last crossed, read in place of last
+    /// frame's.
+    pub(super) sky_in: Option<wgpu::Buffer>,
 }
 
 /// A storage buffer; `set_by` names what sets its size (when over the device's limit).
@@ -122,7 +126,8 @@ fn tiles_max(lat_w: u32, lat_h: u32) -> u32 {
     (lat_w / 2 + 1) * (lat_h / 2 + 1)
 }
 
-pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
+/// `sky_in`: with the mask that crosses a gate on hole detection's sky.
+pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32, sky_in: bool) -> Sized {
     // Lattice big enough for any tile size and jitter offset.
     let lat_w = w + 2 * MAX_TILE + 1;
     let lat_h = h + 2 * MAX_TILE + 1;
@@ -156,6 +161,7 @@ pub(super) fn make_sized(gpu: &Gpu, w: u32, h: u32) -> Sized {
         need: storage(gpu, "tile needs", 4 * tiles_max(lat_w, lat_h) as u64 * 4, wgpu::BufferUsages::COPY_SRC, res),
         need_off: tiles_max(lat_w, lat_h),
         changed_tiles: storage(gpu, "changed tiles", tiles_max(lat_w, lat_h) as u64 * 4, none, res),
-        sky: [0, 1].map(|_| storage(gpu, "sky mask", w as u64 * h as u64 * 4, none, res)),
+        sky: [0, 1].map(|_| storage(gpu, "sky mask", w as u64 * h as u64 * 4, wgpu::BufferUsages::COPY_SRC, res)),
+        sky_in: sky_in.then(|| storage(gpu, "sky mask crossed", w as u64 * h as u64 * 4, none, res)),
     }
 }
