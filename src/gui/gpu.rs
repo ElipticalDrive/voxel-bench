@@ -13,7 +13,9 @@
 //!   fresh GUI starts on it (on a new device) and says in its message what happened, and this
 //!   one exits. Whether the GUI notices the loss first (its next frame) or egui-wgpu's panic
 //!   does, the hand-over is the same ([`super::run`] catches that panic). If the fresh GUI cannot
-//!   be started, the reason is printed and the program ends with an error.
+//!   be started, the reason is printed and the program ends with an error. A destroyed
+//!   device's loss callback comes only from a poll that finds the queue empty (wgpu-core), so
+//!   the GUI's own destroy (fault injection) is recorded at once, not waited for.
 //!
 //! Fault injection (tests): with `MR_FAULT_INJECTION=1`, `MR_GUI_FAULT` is a comma list of
 //! `<what>:<seconds>`, applied in order, each the given seconds after the one before (the first
@@ -39,9 +41,12 @@ const FAULT_ENV: &str = "MR_GUI_FAULT";
 
 /// Why the GUI's device was lost, once it was (one GUI device per process).
 static LOST: Mutex<Option<String>> = Mutex::new(None);
-/// The device, kept to deliver its loss callback after a panic (`lost` polls it: under load
-/// egui-wgpu can draw on a destroyed device before the GUI's own poll has delivered it).
-static DEVICE: Mutex<Option<wgpu::Device>> = Mutex::new(None);
+/// Set when this GUI destroyed its own device (fault injection). wgpu calls the loss callback
+/// of a destroyed device only from a poll that finds its queue empty, so while a frame is
+/// still in flight (under load) it says nothing yet, and egui-wgpu's panic on drawing can come
+/// first: the destroy is known here at once instead. A loss by the driver calls the callback
+/// at once (wgpu's `lose`).
+static DESTROYED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// What a hand-over needs, kept current every frame: the plan file and, when it has unsaved
 /// changes, the plan; and the faults the fresh GUI gets.
 static KEEP: Mutex<Keep> = Mutex::new(Keep { plan_path: None, unsaved: None, faults: String::new() });
@@ -102,7 +107,6 @@ impl GuiGpu {
                 }
             }));
         }
-        *DEVICE.lock().unwrap() = state.map(|s| s.device.clone());
         GuiGpu { device: state.map(|s| s.device.clone()), errors, faults: faults(), since: Instant::now(), unseen: false }
     }
 
@@ -128,11 +132,8 @@ impl GuiGpu {
                         eprintln!("fault injection: destroying the GUI's GPU device{}", if f == Fault::DeviceLostUnseen { " (drawing finds out)" } else { "" });
                         self.unseen = f == Fault::DeviceLostUnseen;
                         if let Some(d) = &self.device {
+                            DESTROYED.store(true, std::sync::atomic::Ordering::SeqCst);
                             d.destroy();
-                            // The callback now, so this frame already knows (not after drawing).
-                            if !self.unseen {
-                                let _ = d.poll(wgpu::PollType::Poll);
-                            }
                         }
                     }
                     Fault::Quit => {
@@ -169,13 +170,8 @@ impl GuiGpu {
 
 /// Why the GUI's device was lost, if it was.
 pub fn lost() -> Option<String> {
-    if LOST.lock().unwrap().is_none() {
-        let device = DEVICE.lock().unwrap().clone();
-        if let Some(d) = device {
-            let _ = d.poll(wgpu::PollType::Poll);
-        }
-    }
-    LOST.lock().unwrap().clone()
+    let why = LOST.lock().unwrap().clone();
+    why.or_else(|| DESTROYED.load(std::sync::atomic::Ordering::SeqCst).then(|| "destroyed".to_string()))
 }
 
 fn faults() -> VecDeque<(Fault, f64, String)> {
