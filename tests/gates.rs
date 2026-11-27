@@ -467,6 +467,39 @@ camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
     assert!(last_image(&dir(), "glass-plain") == last_image(&dir(), "glass-gated"), "a lossless gate changed the composited layers");
 }
 
+/// On the GPU, in the glass world, the ray caster's layered records (eight a pixel) cross a
+/// gate on the hits whole: the shading past it composites them. A lossless gate changes no
+/// pixel of the composited frame; a lossy one renders on and reports the gate. Needs a GPU.
+#[test]
+#[ignore]
+fn transparency_layers_cross_a_gpu_gate() {
+    let glass = r#"generator = { type = "glass" }
+camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
+    let report = |name: &str| -> serde_json::Value {
+        let p = find(&dir().join(name).join("out"), &|p| p.file_name().is_some_and(|n| n == "report.json")).expect("a report");
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap()[0].clone()
+    };
+    let runs = [
+        ("glass-gpu-plain", r#"[{ node = "shading", knobs = { placement = "deferred" } }, { remove = "meshes" }]"#.to_string()),
+        ("glass-gpu-gated", gpu_hits("raycast-gpu", "{}")),
+        ("glass-gpu-lossy", gpu_hits("raycast-gpu", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, reorder = true, seed = 5 }")),
+    ];
+    for (name, edits) in &runs {
+        let (ok, log) = launch_scene(&dir(), name, "raycast-gpu", edits, 0, glass);
+        assert!(ok, "{name}: {log}");
+        let r = report(name);
+        assert!(r["error"].is_null(), "{name}: {}", r["error"]);
+        assert!(!r["not_supported"].to_string().contains("ransparency"), "{name}: transparency left out: {}", r["not_supported"]);
+        if *name != "glass-gpu-plain" {
+            crossed(&r, *name == "glass-gpu-lossy");
+            let h = &gates(&r)["h"].1;
+            // Once the glass has arrived every frame's records cross with their layers.
+            assert!(h["bytes"].as_f64().unwrap() >= 10.0 * 48.0 * 32.0 * 8.0 * 8.0, "{name}: the layers crossed: {h}");
+        }
+    }
+    assert!(last_image(&dir(), "glass-gpu-plain") == last_image(&dir(), "glass-gpu-gated"), "a lossless gate changed the composited layers");
+}
+
 /// A gate `g` (knobs `knobs`) taking `reader`.`port` from `from`.
 fn gate_on(from: &str, reader: &str, port: &str, knobs: &str) -> String {
     format!(r#"{{ add = "g", role = "gate", component = "net" }}, {{ node = "g", input = "in", from = "{from}" }}, {{ node = "g", knobs = {knobs} }}, {{ node = "{reader}", input = "{port}", from = "g" }},"#)

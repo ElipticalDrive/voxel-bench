@@ -139,13 +139,9 @@ impl Checked {
             }
         }
         for id in ids.iter().filter(|id| nodes[**id].role == Role::Shading) {
-            let Some(from) = nodes[*id]
-                .inputs
-                .get("hits")
-                .filter(|f| nodes.contains_key(*f))
-            else {
+            if !nodes[*id].inputs.get("hits").is_some_and(|f| nodes.contains_key(f)) {
                 continue;
-            };
+            }
             if lacks(id) {
                 layers.push(format!(
                     "shading `{}` (`{id}`) lacks layers: it shades one surface per pixel",
@@ -160,18 +156,7 @@ impl Checked {
             }) {
                 layers.push(format!("traversal `{}` (`{k}`) lacks layers: its shadow rays stop at the first surface (see-through blocks shadow fully)", nodes[k].component));
             }
-            if let (Some(a), Some(b)) = (self.devices.get(*id), self.devices.get(from.as_str()))
-                && a != b
-                && !lacks(from)
-            {
-                layers.push(format!("shading `{}` (`{id}`) on {a} lacks layers from {b}: the records crossing between devices carry one surface per pixel", nodes[*id].component));
-            } else if kind(id) == Kind::Gpu
-                && !lacks(from)
-                && let Some(e) = self.gates_on(id, "hits")
-            {
-                // On the CPU the records cross a gate with their layers.
-                layers.push(format!("shading `{}` (`{id}`) lacks layers behind gate `{}`: the GPU's records crossing a gate carry one surface per pixel", nodes[*id].component, e.gates[0].0));
-            }
+            // Records crossing to another GPU or through a gate carry every layer.
         }
         if !layers.is_empty() {
             f.lack(Feature::Transparency, layers.join("; "));
@@ -452,9 +437,9 @@ mod tests {
                 );
             }
         }
-        // The shading composites the layers: path tracing does not; nor does a shading on
-        // another GPU than the rays (one record per pixel crosses); its shadow rays carry
-        // light through see-through blocks: a ray query does not.
+        // The shading composites the layers: path tracing does not; its shadow rays carry
+        // light through see-through blocks: a ray query does not. A shading on another GPU
+        // than the rays, or behind a gate, gets every layer.
         use crate::graph::edit::Change;
         let g = shipped("raycast-gpu").unwrap();
         let far = [
@@ -467,8 +452,7 @@ mod tests {
             r#"{ node = "shading", knob = "placement", value = "deferred" }"#,
             r#"{ node = "shading", device = "gpu1" }"#,
         ];
-        // A gate on the GPU's hit records: one record per pixel crosses (on the CPU the
-        // records cross with their layers).
+        // A gate on the hit records: they cross with their layers (GPU and CPU).
         let gated = [
             r#"{ remove = "meshes" }"#,
             r#"{ node = "shading", knob = "placement", value = "deferred" }"#,
@@ -476,11 +460,13 @@ mod tests {
             r#"{ node = "h", input = "in", from = "visibility" }"#,
             r#"{ node = "shading", input = "hits", from = "h" }"#,
         ];
-        let cpu: Vec<Change> = gated[1..].iter().map(|e| toml::from_str::<toml::Table>(&format!("e = {e}")).unwrap()["e"].clone().try_into().unwrap()).collect();
-        let c = shipped("raycast-cpu").unwrap().with_edits(&cpu).unwrap().check().unwrap();
-        let mut f = Features::of(&[Feature::Transparency]);
-        c.narrow_on(&mut f, &|_| None);
-        assert!(f.why_not(Feature::Transparency).is_none_or(|w| !w.contains("gate")), "{:?}", f.why_not(Feature::Transparency));
+        let parse = |edits: &[&str]| -> Vec<Change> { edits.iter().map(|e| toml::from_str::<toml::Table>(&format!("e = {e}")).unwrap()["e"].clone().try_into().unwrap()).collect() };
+        for (name, edits) in [("raycast-cpu", &gated[1..]), ("raycast-gpu", &gated[..]), ("raycast-gpu", &far[..])] {
+            let c = shipped(name).unwrap().with_edits(&parse(edits)).unwrap().check().unwrap();
+            let mut f = Features::of(&[Feature::Transparency]);
+            c.narrow_on(&mut f, &|_| None);
+            assert_eq!(f.why_not(Feature::Transparency), None, "{name} {edits:?}");
+        }
         // Shadow rays by ray queries stop at the first surface: glass shadows fully.
         let query_shadows = [
             r#"{ add = "geometry", role = "geometry", component = "greedy" }"#,
@@ -497,14 +483,6 @@ mod tests {
             (
                 &query_shadows[..],
                 "traversal `rayquery` (`s.kernel`) lacks layers: its shadow rays stop at the first surface (see-through blocks shadow fully)",
-            ),
-            (
-                &far[..],
-                "shading `direct` (`shading`) on gpu1 lacks layers from gpu: the records crossing between devices carry one surface per pixel",
-            ),
-            (
-                &gated[..],
-                "shading `direct` (`shading`) lacks layers behind gate `h`: the GPU's records crossing a gate carry one surface per pixel",
             ),
         ] {
             let changes: Vec<Change> = edits

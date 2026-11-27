@@ -142,13 +142,13 @@ Transparency is asked by the world, not the pass: a world whose generator places
 blocks (`glass`), or one an edit put such a block in, asks it of every pipeline; one without it
 draws them opaque and its report names what stands in the way (`transparency: visibility
 `faces` (`visibility`) lacks layers: ...`; a ray-query kernel, whose rays stop at the first
-surface; a shading that cannot composite, `pathtrace`; a shading on another GPU than the rays;
-a shadow kernel that is a ray query, whose shadow rays stop at the first surface).
+surface; a shading that cannot composite, `pathtrace`; a shadow kernel that is a ray query, whose shadow rays stop at the first surface).
 Today ray casting by walks has it, raycast-cpu and raycast-gpu (any walk kernel, compute or
 fragment): past a see-through block its rays continue (the kernel resumes after the block's
 run), the surfaces composited front to back in linear light as the reference does; with
 `placement = deferred` the hits edge holds 8 records per pixel (the 8th the first opaque
-surface behind). The variant with layers is compiled (GPU) or chosen (CPU) only once the
+surface behind; all 8 cross to a shading on another GPU or behind a gate, which composites
+them). The variant with layers is compiled (GPU) or chosen (CPU) only once the
 world asks transparency (its generator places see-through blocks, or an edit did; the host
 sends the ask with every frame, so no pipeline scans its chunks): other worlds run what they
 ran before. Shadow rays then carry

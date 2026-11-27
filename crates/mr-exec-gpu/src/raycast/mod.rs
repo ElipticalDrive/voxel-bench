@@ -343,7 +343,7 @@ fn shader(mut lp: CastProgram, deferred: bool, view: View, fragment: bool, layer
         if deferred {
             lp.program.define("DEFERRED_LAYERS");
         }
-        lp.root = format!("{}\n{}\n{}", lp.root, mr_components::visibility::LAYER_WALK_WGSL, include_str!("layers.wgsl"));
+        lp.root = format!("{}\n{}\n{}\n{}", lp.root, mr_components::visibility::LAYER_WALK_WGSL, include_str!("layers.wgsl"), include_str!("layer_records.wgsl"));
     }
     if fragment {
         lp.program.define("FRAGMENT");
@@ -505,9 +505,9 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
             cast.compiled();
         }
         // Layers once the world asks them (sticky), where the caster, the shading and the
-        // placement can (the shading on this GPU; a diagnostic view shows the first hit):
-        // every variant again, records `LAYERS` per pixel.
-        if !passes.layered && req.layers && cast.layers() && !passes.remote && cast.view() == View::Image && caps::provides(mr_components::Kind::Gpu, Role::Shading, &self.shading, Cap::Layers) {
+        // placement can (a diagnostic view shows the first hit): every variant again, records
+        // `LAYERS` per pixel (a shading on another executor gets them all: the transfer's).
+        if !passes.layered && req.layers && cast.layers() && cast.view() == View::Image && caps::provides(mr_components::Kind::Gpu, Role::Shading, &self.shading, Cap::Layers) {
             passes.layered = true;
             core.edges.set_layers(&core.gpu, core.width, core.height, mr_components::visibility::record::LAYERS as u32);
             passes.unbind();

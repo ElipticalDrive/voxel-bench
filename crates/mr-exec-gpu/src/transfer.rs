@@ -14,11 +14,13 @@
 //!
 //! The first GPU's edge holds the records in a buffer (rays) or a render target of 8-byte
 //! texels (the `gbuffer` drawer's): a target is copied out with its rows padded to 256 bytes
-//! (wgpu's copy alignment) and written into the second GPU's records buffer unpadded.
+//! (wgpu's copy alignment) and written into the second GPU's records buffer unpadded. A ray
+//! caster writing layers (transparency) holds `LAYERS` records per pixel: the second GPU's
+//! edge takes the same count (its pass composites them) and all of them cross.
 //!
 //! Gates on the edge (`shading.hits` read through gate nodes) put the records read back
-//! through them on the host, in their serialized form ([`Records`]): the frame's id, its size
-//! and the records' bytes. The second executor's edge holds the last records that arrived
+//! through them on the host, in their serialized form ([`Records`]): the frame's id, its size,
+//! the records per pixel and the records' bytes. The second executor's edge holds the last records that arrived
 //! (none yet: zeros, which read as sky), shaded with the camera of the frame they were cast
 //! in (the second side knows the cameras it asked for, by frame id; a frame id the network
 //! zeroed finds none, and the frame's own camera is used). The gates' time is a CPU stage
@@ -89,6 +91,8 @@ pub(crate) struct Transfer {
     upload_ms: f32,
     /// The gates the records cross, if any, and their state.
     gates: Option<Gated>,
+    /// Records per pixel the read-back buffers hold.
+    layers: u32,
 }
 
 /// The gates on the edge: the chain, the cameras of the frames sent and not yet arrived
@@ -99,31 +103,35 @@ struct Gated {
     shown: Option<Camera>,
 }
 
-/// A frame's hit records on the wire: its id, width and height, then the records' bytes
-/// (8 per pixel, rows unpadded).
+/// A frame's hit records on the wire: its id, width, height and records per pixel, then the
+/// records' bytes (8 per record, a pixel's layers together, rows unpadded).
 pub(crate) struct Records {
     frame_id: u64,
     width: u32,
     height: u32,
+    layers: u32,
     bytes: Vec<u8>,
 }
 
 impl mr_core::gate::Wire for Records {
     fn encode(&self, out: &mut Vec<u8>) {
-        out.reserve(16 + self.bytes.len());
+        out.reserve(20 + self.bytes.len());
         let mut p = mr_core::gate::Put(out);
         p.u64(self.frame_id);
         p.u32(self.width);
         p.u32(self.height);
+        p.u32(self.layers);
         p.bytes(&self.bytes);
     }
     fn decode(bytes: &[u8]) -> Result<Self, mr_core::gate::WireError> {
         let mut g = mr_core::gate::Get(bytes);
-        let (frame_id, width, height) = (g.u64()?, g.u32()?, g.u32()?);
-        let n = width as usize * height as usize * 8;
+        let (frame_id, width, height, layers) = (g.u64()?, g.u32()?, g.u32()?, g.u32()?);
+        let n = (width as usize * height as usize * 8)
+            .checked_mul(layers as usize)
+            .ok_or_else(|| mr_core::gate::WireError(format!("{width}x{height} x {layers} records overflow")))?;
         let bytes = g.take(n)?.to_vec();
         g.end()?;
-        Ok(Records { frame_id, width, height, bytes })
+        Ok(Records { frame_id, width, height, layers, bytes })
     }
 }
 
@@ -135,7 +143,7 @@ fn padded_row(near: &Core) -> Option<u32> {
 }
 
 fn staging(near: &Core, late: bool) -> Vec<wgpu::Buffer> {
-    let size = padded_row(near).map_or(Hits::size(near.width, near.height), |row| row as u64 * near.height as u64);
+    let size = padded_row(near).map_or(Hits::size(near.width, near.height) * near.edges.layers() as u64, |row| row as u64 * near.height as u64);
     let one = || {
         near.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hit records readback"),
@@ -154,7 +162,7 @@ impl Transfer {
         let late = g.graph.nodes.get(&edge.to).is_some_and(|n| n.when("hits") == When::Prev);
         let gates = g.gates_on(&edge.to, "hits").map(|e| Gated { chain: mr_core::gate::GateChain::new(&e.edge(), &e.gates), cameras: VecDeque::new(), shown: None });
         tracing::info!("`{}` -> `{}`.hits: {} -> {} ({}{})", edge.from, edge.to, near.gpu.info.name, far.gpu.info.name, if late { "prev" } else { "now" }, if gates.is_some() { ", through gates" } else { "" });
-        Ok(Self { staging: staging(near, late), sent: VecDeque::new(), late, near: Captured::default(), nodes: vec![edge.from.clone(), edge.to.clone()], wait_ms: 0.0, upload_ms: 0.0, gates })
+        Ok(Self { staging: staging(near, late), sent: VecDeque::new(), late, near: Captured::default(), nodes: vec![edge.from.clone(), edge.to.clone()], wait_ms: 0.0, upload_ms: 0.0, gates, layers: near.edges.layers() })
     }
 
     /// The first GPU's frame sink: its frames' stats, kept for the frame the second completes.
@@ -164,7 +172,13 @@ impl Transfer {
 
     /// The first half: submits the first GPU's frame `enc` with its records copied out (with
     /// the frame's stats from the first GPU) and starts reading them back.
-    pub fn send(&mut self, near: &mut Core, mut enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats) {
+    pub fn send(&mut self, near: &mut Core, mut enc: wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, stats: FrameStats) -> anyhow::Result<()> {
+        // The caster began writing layers this frame: the records on their way (one record
+        // per pixel) are dropped, the read-back buffers made for the new count.
+        if near.edges.layers() != self.layers {
+            self.drain(near)?;
+            self.layers = near.edges.layers();
+        }
         let edge = near.edges.hits().expect("checked at creation");
         // `prev`: the other buffer than the records sent last frame, which are delivered next.
         let buffer = self.sent.back().map_or(0, |s| (s.buffer + 1) % self.staging.len());
@@ -189,13 +203,22 @@ impl Transfer {
             Err(e) => failure.set(format!("hit records read-back failed: {e}")),
         });
         self.sent.push_back(Sent { frame_id: req.frame_id, camera: req.camera, buffer, index, mapped });
+        Ok(())
     }
 
     /// The second half: the records the edge's timing names (`now`: the frame just sent;
     /// `prev`: the one before) waited for and written to the second GPU. Returns the first
     /// GPU's stats of their frame and the camera they were cast with (the first frame of
     /// `prev`: nothing arrived yet, the second GPU's records are cleared, `req`'s camera).
-    pub fn arrive(&mut self, near: &mut Core, far: &Core, req: &FrameRequest) -> anyhow::Result<(FrameStats, Camera)> {
+    pub fn arrive(&mut self, near: &mut Core, far: &mut Core, req: &FrameRequest) -> anyhow::Result<(FrameStats, Camera)> {
+        // The second GPU's edge holds as many records per pixel as cross (its pass is compiled
+        // for them before it runs; a new edge reads as sky until records arrive).
+        if far.edges.layers() != self.layers {
+            far.edges.set_layers(&far.gpu, far.width, far.height, self.layers);
+            if let Some(g) = &mut self.gates {
+                g.shown = None;
+            }
+        }
         let Some(s) = (self.sent.len() > usize::from(self.late)).then(|| self.sent.pop_front()).flatten() else {
             (self.wait_ms, self.upload_ms) = (0.0, 0.0);
             return Ok((FrameStats::default(), req.camera));
@@ -217,19 +240,21 @@ impl Transfer {
         if let Some(gated) = &mut self.gates {
             let (w, h) = (near.width, near.height);
             let width = w as usize * 8;
+            let layers = self.layers;
             let bytes = match padded_row(near) {
                 Some(row) => data.chunks(row as usize).take(h as usize).flat_map(|r| &r[..width]).copied().collect(),
-                None => data[..width * h as usize].to_vec(),
+                None => data[..width * h as usize * layers as usize].to_vec(),
             };
             drop(data);
             staging.unmap();
             self.wait_ms = (arrived - start).as_secs_f32() * 1e3;
             gated.cameras.push_back((s.frame_id, s.camera));
             let gate_start = Instant::now();
-            let got = gated.chain.gates.pass(req.time, Some(Records { frame_id: s.frame_id, width: w, height: h, bytes }));
+            let got = gated.chain.gates.pass(req.time, Some(Records { frame_id: s.frame_id, width: w, height: h, layers, bytes }));
             let gate_ms = gate_start.elapsed().as_secs_f32() * 1e3;
-            // The last that fits this frame (one sent before a resize does not).
-            if let Some(r) = got.into_iter().rev().find(|r| (r.width, r.height) == (w, h)) {
+            // The last that fits this frame (one sent before a resize, or before the caster
+            // began writing layers, does not).
+            if let Some(r) = got.into_iter().rev().find(|r| (r.width, r.height, r.layers) == (w, h, layers)) {
                 far.gpu.queue.write_buffer(records, 0, &r.bytes);
                 while gated.cameras.front().is_some_and(|(id, _)| *id < r.frame_id) {
                     gated.cameras.pop_front();
@@ -272,6 +297,17 @@ impl Transfer {
     /// After the first GPU's resize: the records sent and not delivered are waited for and
     /// dropped.
     pub fn resize(&mut self, near: &Core) -> anyhow::Result<()> {
+        self.drain(near)?;
+        // The second GPU's edge is new (sky) until records of the new size arrive.
+        if let Some(g) = &mut self.gates {
+            g.shown = None;
+        }
+        Ok(())
+    }
+
+    /// The records sent and not delivered waited for and dropped; the read-back buffers made
+    /// anew for `near`'s size and records per pixel.
+    fn drain(&mut self, near: &Core) -> anyhow::Result<()> {
         for s in std::mem::take(&mut self.sent) {
             while !s.mapped.load(Ordering::Acquire) {
                 near.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(s.index.clone()), timeout: None })?;
@@ -279,10 +315,6 @@ impl Transfer {
             self.staging[s.buffer].unmap();
         }
         self.staging = staging(near, self.late);
-        // The second GPU's edge is new (sky) until records of the new size arrive.
-        if let Some(g) = &mut self.gates {
-            g.shown = None;
-        }
         Ok(())
     }
 
