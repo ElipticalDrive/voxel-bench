@@ -285,6 +285,8 @@ fn gates_refused_naming_them() {
     assert!(log.contains("`g` on `visibility.meshes`") && log.contains("Depth32Float"), "{log}");
     let (_, log) = launch(&dir(), "raster-gpu-culled", "raster-gpu", &format!("[{}]", gate_on("visibility", "draw", "faces", "{}")));
     assert!(log.contains("`g` on `draw.faces`") && log.contains("on the CPU"), "{log}");
+    let (_, log) = launch(&dir(), "rayquery-gpu-geometry", "rayquery-gpu", &format!("[{}]", gate_on("geometry", "kernel", "geometry", "{}")));
+    assert!(log.contains("`g` on `kernel.geometry`") && log.contains("uploaded"), "{log}");
     let post = r#"[
   { add = "post", role = "post", component = "clamp" },
   { add = "g", role = "gate", component = "net" },
@@ -572,4 +574,31 @@ fn gpu_lossless_geometry_gate_changes_no_pixel() {
     assert!(gated["error"].is_null(), "{}", gated["error"]);
     crossed(&gated, false);
     assert!(last_image(&dir(), "raster-gpu-geometry-plain") == last_image(&dir(), "raster-gpu-geometry-gated"), "a lossless gate changed the frame");
+}
+
+/// On splats, the geometry's points cross a lossy gate chunk by chunk between their rebuild
+/// and the upload: the pass lives through the losses and reports the gate. Needs a GPU
+/// (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_splat_points_through_a_lossy_gate() {
+    let edits = format!("[{}]", gate_on("geometry", "visibility", "points", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, reorder = true, seed = 5 }"));
+    let r = run(&dir(), "splat-gpu-points-lossy", "splat-gpu", &edits);
+    assert!(r["error"].is_null(), "{}", r["error"]);
+    let gs = gates(&r);
+    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["g:visibility.points"]);
+    crossed(&r, true);
+}
+
+/// A lossless gate with no delay on the splats' points changes no pixel: every chunk's
+/// points arrive in the frame they were rebuilt in. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_lossless_points_gate_changes_no_pixel() {
+    let plain = run(&dir(), "splat-gpu-points-plain", "splat-gpu", "[]");
+    assert!(plain["error"].is_null(), "{}", plain["error"]);
+    let gated = run(&dir(), "splat-gpu-points-gated", "splat-gpu", &format!("[{}]", gate_on("geometry", "visibility", "points", "{}")));
+    assert!(gated["error"].is_null(), "{}", gated["error"]);
+    crossed(&gated, false);
+    assert!(last_image(&dir(), "splat-gpu-points-plain") == last_image(&dir(), "splat-gpu-points-gated"), "a lossless gate changed the frame");
 }

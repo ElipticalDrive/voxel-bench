@@ -11,15 +11,25 @@
 //! splats only: its ids go to a buffer of its own and a decode pass after the splats (the
 //! ids -> records adapter, `mr_components::draw::DECODE_WGSL`) writes `pack_hit` records into
 //! the hits edge, what crosses.
+//!
+//! A gate on the points (the visibility's `points` edge) sits between the geometry's rebuild
+//! and the array the buffer mirrors: each chunk whose points changed crosses as one message
+//! ([`ChunkPoints`]: position and points; one ordered stream per chunk), applied as it
+//! arrives. A chunk on its way keeps its old points (or none); a lost one keeps them until
+//! its points next change.
+
+use std::collections::HashMap;
+use std::time::Instant;
 
 use mr_gpu::Pipelines as _;
 use glam::IVec3;
-use mr_components::geometry::points::Points;
+use mr_components::geometry::points::{self, Point, Points};
 use mr_components::graph::{self, Role};
 use mr_components::shaders::Walks;
 use mr_components::shading::state::{self as shade_state, ShadeState};
 use mr_components::storage::gpu_data::Bound;
 use mr_components::visibility::splat;
+use mr_core::gate::{GateChain, GateReport, Get, Put, Wire, WireError};
 use mr_core::*;
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{Gpu, GpuNeeds, wgpu};
@@ -88,6 +98,79 @@ impl Default for ShadingKnobs {
 
 pub(crate) const REGION: &mr_components::graph::Builds = &mr_components::graph::GPU_SPLAT;
 
+/// A chunk's points as they leave the geometry for the GPU (none: the chunk is gone or
+/// exposes no face).
+struct ChunkPoints {
+    pos: IVec3,
+    points: Vec<Point>,
+}
+
+impl Wire for ChunkPoints {
+    /// One stream per chunk: its changes stay in order.
+    fn stream(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.pos.to_array().hash(&mut h);
+        Some(h.finish() | 1)
+    }
+
+    fn pieces(&self) -> u32 {
+        !self.points.is_empty() as u32
+    }
+
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.reserve(16 + self.points.len() * 16);
+        let mut p = Put(out);
+        self.pos.to_array().into_iter().for_each(|c| p.i32(c));
+        p.u32(self.points.len() as u32);
+        p.bytes(bytemuck::cast_slice(&self.points));
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut g = Get(bytes);
+        let pos = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
+        let n = g.count(16)?;
+        let mut points = vec![[0u32; 4]; n];
+        bytemuck::cast_slice_mut::<Point, u8>(&mut points).copy_from_slice(g.take(n * 16)?);
+        g.end()?;
+        Ok(ChunkPoints { pos, points })
+    }
+}
+
+/// The gates on the points: the chunks rebuilt since the last frame, what was last sent per
+/// chunk (a hash: a neighbour rebuilt to the same points is not sent again), the host's time
+/// in the gates this frame.
+struct PointsGate {
+    chain: GateChain,
+    pending: Vec<ChunkPoints>,
+    sent: HashMap<IVec3, u64>,
+    ms: f32,
+}
+
+impl PointsGate {
+    /// Queues the rebuilt chunks whose points differ from what was last sent.
+    fn queue(&mut self, rebuilt: Vec<(IVec3, Vec<Point>)>) {
+        use std::hash::{Hash, Hasher};
+        for (pos, points) in rebuilt {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            points.hash(&mut h);
+            let h = h.finish();
+            let same = if points.is_empty() { self.sent.remove(&pos).is_none() } else { self.sent.insert(pos, h) == Some(h) };
+            if !same {
+                self.pending.push(ChunkPoints { pos, points });
+            }
+        }
+    }
+
+    /// What arrives at `now` of what was queued and is on the way.
+    fn pass(&mut self, now: f64) -> Vec<(IVec3, Vec<Point>)> {
+        let start = Instant::now();
+        let got = self.chain.gates.pass_all(now, std::mem::take(&mut self.pending));
+        self.ms = start.elapsed().as_secs_f32() * 1e3;
+        got.into_iter().map(|c| (c.pos, c.points)).collect()
+    }
+}
+
 /// The region the splat's nodes share: the points and their buffers, the program, group 0,
 /// the frame's world and storages. The ids the splat passes write and the resolve shades are
 /// the hits edge's resource (the executor's), attached in group 0; drawing only (the shading
@@ -105,6 +188,8 @@ pub(crate) struct Splat {
     bind0: wgpu::BindGroup,
     /// The geometry node's state: every chunk's points, in slots as the buffer holds them.
     points: Points,
+    /// The gates on the points between the geometry and the GPU, if any.
+    gate: Option<PointsGate>,
     /// Entries in the buffer (points and holes).
     count: u32,
     max_splat: u32,
@@ -174,7 +259,8 @@ impl Splat {
         let big_buf = big_buffer(gpu, points_buf.size());
         let ids = draw_only.then(|| pixel_buffer(gpu, p.width, p.height));
         let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &big_buf, ids.as_ref());
-        let splat = Self { pipes, layout0, zbuf, points_buf, big_buf, ids, bind0, points: Points::default(), count: 0, max_splat: v.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
+        let gate = g.gates_on(visibility, "points").map(|e| PointsGate { chain: GateChain::new(&e.edge(), &e.gates), pending: vec![], sent: HashMap::new(), ms: 0.0 });
+        let splat = Self { pipes, layout0, zbuf, points_buf, big_buf, ids, bind0, points: Points::default(), gate, count: 0, max_splat: v.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
         Ok((core, splat, far))
     }
 
@@ -248,7 +334,10 @@ fn view_origin() -> vec3<f32> {{ return cam.origin; }}
 impl State for Splat {
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
         let world = &core.world;
-        self.points.update(changed.to_vec(), |c| world.chunk(c));
+        match &mut self.gate {
+            Some(g) => g.queue(points::rebuild(changed.iter().copied(), |c| world.chunk(c))),
+            None => self.points.update(changed.iter().copied(), |c| world.chunk(c)),
+        }
         Ok(())
     }
 
@@ -273,8 +362,13 @@ impl State for Splat {
 }
 
 impl Region for Splat {
-    /// The points' transfer when the world changed them.
-    fn compile(&mut self, core: &mut Core, _req: &FrameRequest) -> anyhow::Result<()> {
+    /// The points' transfer when the world changed them (through the gates on the points, if
+    /// any, at the frame's time).
+    fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
+        if let Some(g) = &mut self.gate {
+            let arrived = g.pass(req.time);
+            self.points.apply(arrived);
+        }
         self.upload(core);
         Ok(())
     }
@@ -290,7 +384,12 @@ impl Region for Splat {
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
         let (accel, stages) = core.accel_stats();
         let counters = [("points".into(), self.points.live() as f64), ("point_slots".into(), self.count as f64), ("points_uploaded".into(), self.points.uploaded as f64)].into_iter().chain(accel).chain(core.accum.counter(req.mode)).collect();
-        (counters, None, stages)
+        let gate = self.gate.as_ref().map(|g| StageTime::cpu("gate", &g.chain.nodes.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), g.ms));
+        (counters, None, gate.into_iter().chain(stages).collect())
+    }
+
+    fn gates(&self) -> Vec<GateReport> {
+        self.gate.as_ref().map_or(vec![], |g| g.chain.reports())
     }
 
     fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}

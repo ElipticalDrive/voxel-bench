@@ -45,6 +45,32 @@ pub fn build(center: &ChunkData, neighbors: [Option<&ChunkData>; 6], pos: IVec3)
     out
 }
 
+/// The geometry's half of [`Points::update`]: the points of the `changed` chunks and of
+/// their 6 neighbours (exposure depends on them), in a fixed order; `chunk` gives a chunk's
+/// data (absent = air).
+pub fn rebuild<'a>(
+    changed: impl IntoIterator<Item = IVec3>,
+    chunk: impl Fn(IVec3) -> Option<&'a ChunkData>,
+) -> Vec<(IVec3, Vec<Point>)> {
+    let mut todo = HashSet::new();
+    for c in changed {
+        todo.insert(c);
+        for f in Face::ALL {
+            todo.insert(c + f.normal());
+        }
+    }
+    let mut todo: Vec<IVec3> = todo.into_iter().collect();
+    todo.sort_unstable_by_key(|c| (c.x, c.y, c.z));
+    todo.into_iter()
+        .map(|c| {
+            let pts = chunk(c).map_or(vec![], |center| {
+                build(center, Face::ALL.map(|f| chunk(c + f.normal())), c)
+            });
+            (c, pts)
+        })
+        .collect()
+}
+
 /// A slot's place in the points' array: `cap` entries from `off`, the first `len` the chunk's
 /// points, the rest [`DEAD`].
 #[derive(Clone, Copy, Debug)]
@@ -93,19 +119,13 @@ impl Points {
         changed: impl IntoIterator<Item = IVec3>,
         chunk: impl Fn(IVec3) -> Option<&'a ChunkData>,
     ) {
-        let mut todo = HashSet::new();
-        for c in changed {
-            todo.insert(c);
-            for f in Face::ALL {
-                todo.insert(c + f.normal());
-            }
-        }
-        let mut todo: Vec<IVec3> = todo.into_iter().collect();
-        todo.sort_unstable_by_key(|c| (c.x, c.y, c.z));
-        for c in todo {
-            let pts = chunk(c).map_or(vec![], |center| {
-                build(center, Face::ALL.map(|f| chunk(c + f.normal())), c)
-            });
+        self.apply(rebuild(changed, chunk));
+    }
+
+    /// The array's half of [`Points::update`]: each chunk's points become the given ones
+    /// (none: the chunk is gone).
+    pub fn apply(&mut self, chunks: impl IntoIterator<Item = (IVec3, Vec<Point>)>) {
+        for (c, pts) in chunks {
             self.set(c, pts);
         }
         // Holes past a quarter of the array (the room to grow is at most a ninth): packed again,
