@@ -93,6 +93,11 @@ impl Edges {
         Ok(())
     }
 
+    /// Records per pixel in the records edge (1 without one).
+    pub fn layers(&self) -> u32 {
+        self.records().map_or(1, |h| h.layers)
+    }
+
     /// The hits edge, if it crosses between passes.
     pub fn hits(&self) -> Option<&Hits> {
         self.hits.as_ref()
@@ -564,9 +569,9 @@ impl<R: Region, F: Region> Renderer for Split<R, F> {
         let (near, far, transfer) = (&mut self.near, &mut self.far, &mut self.transfer);
         // The first GPU's frames are the first half of one: their stats go with the records.
         let (enc, ticket, stats) = near.encode(req, transfer.sink())?;
-        transfer.send(&mut near.core, enc, ticket, req, stats);
+        transfer.send(&mut near.core, enc, ticket, req, stats)?;
         near.region.submitted(&near.core);
-        let (mut stats, camera) = transfer.arrive(&mut near.core, &far.core, req)?;
+        let (mut stats, camera) = transfer.arrive(&mut near.core, &mut far.core, req)?;
         let req = FrameRequest { camera, ..req.clone() };
         let (enc, ticket, shaded) = far.encode(&req, sink)?;
         let (stage, wait_ms, cpu_ms) = transfer.times();
