@@ -39,6 +39,9 @@ const FAULT_ENV: &str = "MR_GUI_FAULT";
 
 /// Why the GUI's device was lost, once it was (one GUI device per process).
 static LOST: Mutex<Option<String>> = Mutex::new(None);
+/// The device, kept to deliver its loss callback after a panic (`lost` polls it: under load
+/// egui-wgpu can draw on a destroyed device before the GUI's own poll has delivered it).
+static DEVICE: Mutex<Option<wgpu::Device>> = Mutex::new(None);
 /// What a hand-over needs, kept current every frame: the plan file and, when it has unsaved
 /// changes, the plan; and the faults the fresh GUI gets.
 static KEEP: Mutex<Keep> = Mutex::new(Keep { plan_path: None, unsaved: None, faults: String::new() });
@@ -99,6 +102,7 @@ impl GuiGpu {
                 }
             }));
         }
+        *DEVICE.lock().unwrap() = state.map(|s| s.device.clone());
         GuiGpu { device: state.map(|s| s.device.clone()), errors, faults: faults(), since: Instant::now(), unseen: false }
     }
 
@@ -125,6 +129,10 @@ impl GuiGpu {
                         self.unseen = f == Fault::DeviceLostUnseen;
                         if let Some(d) = &self.device {
                             d.destroy();
+                            // The callback now, so this frame already knows (not after drawing).
+                            if !self.unseen {
+                                let _ = d.poll(wgpu::PollType::Poll);
+                            }
                         }
                     }
                     Fault::Quit => {
@@ -161,6 +169,12 @@ impl GuiGpu {
 
 /// Why the GUI's device was lost, if it was.
 pub fn lost() -> Option<String> {
+    if LOST.lock().unwrap().is_none() {
+        let device = DEVICE.lock().unwrap().clone();
+        if let Some(d) = device {
+            let _ = d.poll(wgpu::PollType::Poll);
+        }
+    }
     LOST.lock().unwrap().clone()
 }
 
