@@ -118,3 +118,14 @@ simulation (a feature, not a bug). Lost bytes do whatever they do to the data: n
 safeguards, the costs (a read-back for a GPU edge) accepted; the user is trusted. Now in the plan
 as G42. Still open: gates on previous-frame edges and cycles, and whether device transfers and
 the process boundary become gates without loss.
+
+## Worlds larger than memory
+
+(user, 2026-11-26) Renderers that need the disk or the network to run, because their data
+exceeds RAM (or device memory), belong in the catalogue like any other. One way to serve them:
+map the world's backing store from disk into the address space (memory-mapped files), so the
+data stays in one virtual address space and the OS pages it in and out, instead of each
+renderer streaming through its own loader. Questions: which storages can live in a mapped file
+as they are, what the page-in stalls cost a frame (a metric), how a GPU storage pages (sparse
+resources, or the host streaming from the mapping), and how this meets streaming and the
+worker processes' world copies (today host and worker each hold about the world).
