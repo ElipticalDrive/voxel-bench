@@ -152,6 +152,34 @@ from earlier, separate runs (dated where known).
 - Running deferred shading on a second GPU, a frame behind, is possible (`plans/two-gpus.toml`)
   for ray casting, the face drawers and the splats: the hit records cross between the GPUs.
 
+## Portability
+
+Correctness on other GPUs and CPUs (2026-11-26; terrain, the full sweep's GPU graphs
+covered pairwise, 351 passes, 320x180, 30 frames, against the reference; NVIDIA the base).
+
+- **NVIDIA (RTX 5060 Laptop):** all 351 passes ran.
+- **RADV (Radeon iGPU, Raphael):** everything that ran matches NVIDIA within a few dB, all
+  far above the floor (154 passes compared before the run was stopped; median -0.06 dB, ray
+  casting and slices 1.5-4.8 dB lower: 0.003 % more differing pixels, still 59-61 dB). RADV
+  only: ray queries over `naive` geometry with `pathtrace` or `ao` run one dispatch past the
+  amdgpu job timeout, the ring is reset and the device lost (the lane fails, named). The second
+  such reset hit a kernel oops in amdgpu's devcoredump, which left the worker unkillable in the
+  driver (D state; only a reboot ends it). The host then waited on it forever: fixed, it now
+  never waits on a killed worker past its deadline (`src/worker.rs`, `wait_within`). The rest
+  of RADV's lit passes are unrun.
+- **lavapipe (llvmpipe, CPU):** 153 passes compared (every unlit one, a quarter of the lit
+  ones before the run was stopped): the same images as NVIDIA (median 0.00 dB, none more than
+  2.1 dB lower: the mesh cubes beside rasterised faces). Ray queries run but take 22 s a frame
+  (one `pathtrace` pass 17 minutes), so the sweep left `rayquery-gpu` out after its first
+  pass (62.5 dB, NVIDIA 62.3). lavapipe only (19 passes): `distance`'s side data at view radius 16 and splats'
+  points pass the 128 MiB storage-binding limit and are refused naming it (the voxel pool and
+  bricks split over several bindings; `distance`'s aux and the splats' points do not yet).
+- **CPU instruction sets:** the ray caster's hot loop gives the same pixels on scalar, AVX2 and
+  AVX-512 for every storage, walk and packet size (`tests/isa.rs`, terrain and lattice, lit
+  and unlit). Pipelines compiled for an AVX2 CPU without AVX-512 (`MR_TARGET_CPU=x86-64-v3`)
+  and for baseline x86-64 match the generic build pixel for pixel (`raycast-cpu`, packets of
+  1 and 8, `raster-cpu`, `columns-cpu`, `discover-cpu`).
+
 ## Metrics
 
 PSNR treats any resampling as a ~30 dB loss on this content; MS-SSIM is the better tuning
