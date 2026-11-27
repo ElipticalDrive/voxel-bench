@@ -687,7 +687,8 @@ mod tests {
         })
         .accept()
         .unwrap();
-        let e = with(file("raster-cpu"), &|g| {
+        // raster-cpu keeps a lookup as a pass (its quads never span block types).
+        with(file("raster-cpu"), &|g| {
             g.nodes
                 .get_mut("visibility")
                 .unwrap()
@@ -695,8 +696,7 @@ mod tests {
                 .insert("storage".into(), "storage".into());
         })
         .accept()
-        .unwrap_err();
-        assert!(e.contains("`visibility`.storage → `storage`: the cpu executor (for this shape) reads nothing there"), "{e}");
+        .unwrap();
         // discover-cpu: exposure is the discovery storage; GPU shadow rays their own.
         let cd = file("discover-cpu");
         let e = with(cd.clone(), &|g| {

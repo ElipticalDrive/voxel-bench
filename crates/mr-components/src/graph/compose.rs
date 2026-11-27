@@ -32,6 +32,8 @@ impl Graph {
                 (Role::Visibility, "faces") => {
                     Some(if gpu(hits) { &GPU_MESHING } else { &CPU_RASTER })
                 }
+                // A CPU drawer reading the geometry's faces unculled.
+                (Role::Geometry, _) if !gpu(hits) => Some(&CPU_RASTER),
                 _ => None,
             };
         }

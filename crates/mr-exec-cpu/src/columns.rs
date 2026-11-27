@@ -78,24 +78,30 @@ impl Field {
     fn march<'a>(&'a self, req: &FrameRequest, w: u32, h: u32) -> March<'a> {
         March::new(&self.hm, &req.camera, w as usize, h as usize, self.hm.march_cells() as usize)
     }
+}
 
-    /// The shading component for this frame, its shadow rays walking the heightmap.
-    fn shader<'a, S: Spec, P: Pixel>(&'a self, world: &'a World, req: &FrameRequest) -> impl Fn(&Surface) -> P + Sync + 'a {
-        let (hm, cam) = (&self.hm, req.camera.split_position().0);
-        let shadows = S::SHADOWS.unwrap_or(world.shadows);
-        let ctx = Ctx {
-            blocks: &world.blocks,
-            env: &world.env,
-            cam,
-            sun_shadows: shadows != Shadows::None,
-            light_shadows: shadows == Shadows::All,
-            lights_near: move |at: IVec3| world.lights_near(at),
-            transmit: move |p: Vec3, d: Vec3, dist: f32| if hm.trace(cam, p, d, dist).is_some() { 0.0 } else { 1.0 },
-            tone: S::TONE.unwrap_or(world.tone),
-        };
-        let mode = req.mode;
-        move |s: &Surface| shade(&ctx, s, mode)
-    }
+/// The shading component for this frame, its shadow rays walking the heightmap `shadow`
+/// (the storage its shadow site's march walks; none bound: no shadow rays).
+fn shader<'a, S: Spec, P: Pixel>(shadow: Option<&'a Field>, world: &'a World, req: &FrameRequest) -> impl Fn(&Surface) -> P + Sync + 'a {
+    let (hm, cam) = (shadow.map(|f| &f.hm), req.camera.split_position().0);
+    let shadows = if hm.is_some() { S::SHADOWS.unwrap_or(world.shadows) } else { Shadows::None };
+    let ctx = Ctx {
+        blocks: &world.blocks,
+        env: &world.env,
+        cam,
+        sun_shadows: shadows != Shadows::None,
+        light_shadows: shadows == Shadows::All,
+        lights_near: move |at: IVec3| world.lights_near(at),
+        transmit: move |p: Vec3, d: Vec3, dist: f32| if hm.is_some_and(|hm| hm.trace(cam, p, d, dist).is_some()) { 0.0 } else { 1.0 },
+        tone: S::TONE.unwrap_or(world.tone),
+    };
+    let mode = req.mode;
+    move |s: &Surface| shade(&ctx, s, mode)
+}
+
+/// A heightmap storage node of its own (another region's: a face source's lookup).
+pub(crate) fn storage(p: &InitParams) -> Box<dyn Node> {
+    Box::new(Storage { init: Some(Field { hm: Heightmap::new(p.view_radius_chunks), chunks: Chunks::default() }) })
 }
 
 /// The heightmap storage.
@@ -130,6 +136,9 @@ impl Node for Storage {
 /// `cols`, transposed), else the column-major hit records.
 struct Visibility<S, P> {
     fused: bool,
+    /// Fused: the input the shadow rays walk (its own storage `0`, another `1`; none: no
+    /// shadow rays).
+    shadow_in: Option<usize>,
     cols: Vec<P>,
     nodes: Vec<String>,
     spec: std::marker::PhantomData<S>,
@@ -155,7 +164,7 @@ impl<S: Spec, P: Pixel> Node for Visibility<S, P> {
             return;
         }
         let (lit, sky) = (cx.req.mode == RenderMode::Lit, cx.world.sky::<P>());
-        let shade_s = f.shader::<S, P>(cx.world, cx.req);
+        let shade_s = shader::<S, P>(self.shadow_in.map(|i| field(ins[i])), cx.world, cx.req);
         self.cols.resize(w * h, P::zeroed());
         self.cols.par_chunks_mut(h).enumerate().for_each(|(gx, col)| m.column(gx, &mut Inline::new(col, &m, &shade_s, lit, sky)));
         let t_march = start.elapsed().as_secs_f64() * 1e3;
@@ -181,9 +190,12 @@ impl<S: Spec, P: Pixel> Node for Visibility<S, P> {
     }
 }
 
-/// The common deferred pass over the hit records; its shadow rays walk the heightmap (the
-/// `heightfield` kernel bound to its `shadow` port, over the storage: `ins[1]`).
+/// The common deferred pass over the hit records (decoded against the march's heightmap,
+/// `ins[field_in]`); its shadow rays walk the heightmap the `heightfield` kernel bound to its
+/// `shadow` port reads (`ins[shadow_in]`; none bound: no shadow rays).
 struct Shading<S, P> {
+    field_in: usize,
+    shadow_in: Option<usize>,
     nodes: Vec<String>,
     spec: std::marker::PhantomData<(S, P)>,
 }
@@ -194,9 +206,9 @@ impl<S: Spec, P: Pixel> Node for Shading<S, P> {
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = Instant::now();
-        let (recs, f) = (ins[0].downcast_ref::<Vec<Record>>().expect("hit records"), field(ins[1]));
+        let (recs, f) = (ins[0].downcast_ref::<Vec<Record>>().expect("hit records"), field(ins[self.field_in]));
         let m = f.march(cx.req, cx.width, cx.height);
-        let shade_s = f.shader::<S, P>(cx.world, cx.req);
+        let shade_s = shader::<S, P>(self.shadow_in.map(|i| field(ins[i])), cx.world, cx.req);
         let deferred = Deferred { recs, m: &m, shade: &shade_s, lit: cx.req.mode == RenderMode::Lit, sky: cx.world.sky() };
         mr_components::shading::deferred::shade(&deferred, cx.width, out.downcast_mut::<Vec<P>>().expect("an image"));
         let t = start.elapsed().as_secs_f32() * 1e3;
@@ -217,25 +229,45 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     let deferred = exec::deferred(g, &shading.placement)?;
     fixed("tone", S::TONE, g.tone())?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-    let mut init = Some(Field { hm: Heightmap::new(p.view_radius_chunks), chunks: Chunks::default() });
+    // The march's heightmap and the one the shading's shadow rays walk (none bound: no
+    // shadow rays); one pass per storage node, the same one when both are.
+    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("columns: no visibility node"))?;
+    let marched = g.node(vis).inputs.get("storage").cloned().ok_or_else(|| anyhow::anyhow!("columns: `{vis}` marches no storage"))?;
+    let shadowed = g.site(Role::Shading, "shadow").map(|s| s.storage.to_string());
+    // Storages first: an inline march shades with the shadow rays' heightmap.
+    let storage_first = |p: &&mr_components::graph::Pass| g.node(&p.node).role == Role::Storage;
     let (mut passes, mut index): (Vec<Pass>, HashMap<String, usize>) = (vec![], HashMap::new());
-    for pass in schedule.passes() {
+    for pass in schedule.passes().filter(storage_first).chain(schedule.passes().filter(|p| !storage_first(p))) {
         let id = pass.node.as_str();
+        let mut ins = vec![];
+        exec::reads(g, id, &index, &mut ins);
+        // Where among `ins` storage node `s` is (added if not read yet).
+        let at = |ins: &mut Vec<usize>, s: &str| {
+            let i = index[s];
+            ins.iter().position(|&j| j == i).unwrap_or_else(|| {
+                ins.push(i);
+                ins.len() - 1
+            })
+        };
         let node: Box<dyn Node> = match g.node(id).role {
-            Role::Storage => Box::new(Storage { init: init.take() }),
+            Role::Storage => Box::new(Storage { init: Some(Field { hm: Heightmap::new(p.view_radius_chunks), chunks: Chunks::default() }) }),
             Role::Visibility => {
                 let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Visibility, Role::Shading]) };
-                Box::new(Visibility::<S, P> { fused: !deferred, cols: vec![], nodes, spec: std::marker::PhantomData })
+                // Inline, the fused shading's shadow rays' heightmap too.
+                let shadow_in = shadowed.as_deref().filter(|_| !deferred).map(|s| at(&mut ins, s));
+                Box::new(Visibility::<S, P> { fused: !deferred, shadow_in, cols: vec![], nodes, spec: std::marker::PhantomData })
             }
             // Fused into the visibility pass.
             Role::Shading if !deferred => continue,
-            // Reads the records and, through its shadow rays' kernel (the heightmap's own
-            // march), the heightmap.
-            Role::Shading => Box::new(Shading::<S, P> { nodes: vec![id.to_string()], spec: std::marker::PhantomData }),
+            // Reads the records, the march's heightmap they are decoded against and, through
+            // its shadow rays' kernel (a heightmap's own march), that heightmap.
+            Role::Shading => {
+                let field_in = at(&mut ins, &marched);
+                let shadow_in = shadowed.as_deref().map(|s| at(&mut ins, s));
+                Box::new(Shading::<S, P> { field_in, shadow_in, nodes: vec![id.to_string()], spec: std::marker::PhantomData })
+            }
             _ => continue,
         };
-        let mut ins = vec![];
-        exec::reads(g, id, &index, &mut ins);
         index.insert(id.to_string(), passes.len());
         passes.push(Pass::new(node, ins));
     }

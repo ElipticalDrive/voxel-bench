@@ -832,7 +832,7 @@ mod tests {
                         }
                         (CpuSampler, Role::Visibility) => ["quadtree", "cluster"].contains(&c),
                         (CpuSampler, Role::Traversal) => c == "refloor",
-                        (CpuRaster, Role::Geometry) => geometry::gpu(c).is_some_and(|g| g.per_face),
+                        (CpuRaster, Role::Geometry) => geometry::gpu(c).is_some(),
                         (CpuRaster, Role::Draw) => c == "raster",
                         (CpuRaster | CpuRaycast | CpuColumns, Role::Shading) => c == "direct",
                         (GpuRayQuery, Role::Geometry) => geometry::rt(c).is_some(),
