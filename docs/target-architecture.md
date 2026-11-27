@@ -220,7 +220,7 @@ an edge timed `prev`) and keeps those `accept` refuses, grouped by the reason it
 names (`multirenderer audit --refused` prints the table; the test
 `valid_graphs_refused_only_go_down` pins each count, which may only fall).
 
-| gap | reason | graphs (2026-11-26) | what is missing |
+| gap | reason | graphs (2026-11-27) | what is missing |
 |---|---|---|---|
 | no region of that shape | no region has the shape | 33 | a drawer fed straight by the geometry (no culling node), a drawer on the CPU behind discovery, raycast over a face set |
 | no region of that shape | the shape is the other executor's | 6 | the visibility on one device kind, the drawer on the other |
@@ -229,8 +229,20 @@ names (`multirenderer audit --refused` prints the table; the test
 | node outside the declarations | component not built | 19 | e.g. the heightfield march over a voxel ray caster, quadtree visibility into the meshing drawer |
 | node outside the declarations | number of nodes of a role | 37 | a second storage (the face source's lookup, the exposure tests), no kernel where a region wants one |
 | node outside the declarations | what a port reads | 10 | a lookup storage the region ignores, an unbound shadow site |
-| edge without a resource form | edge timing | 32 (41 before the CPU's `prev` edges) | `prev` on any GPU edge but the split's hits and the discoverer's faces |
-| edge without a resource form | device boundary | 5 | a second GPU anywhere but at the split's hit records |
+| edge without a resource form | edge timing | 15 (41 before the CPU's `prev` edges, 32 before the GPU's held edges and late world changes) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, the meshing region's faces and draw list, a drawer's meshes); world changes late for some of a GPU executor's nodes and not others (one copy of the world); hits late behind a forward drawer (no records) |
+| edge without a resource form | device boundary | 6 (one graph moved here from timing) | a second GPU anywhere but at the split's hit records |
+
+**Edges timed `prev` on the GPU** (2026-11-27). An edge one GPU executor holds between two
+passes (its region's `Builds::crossings`, and on one GPU the shading's hits) may be timed
+`prev` without a gate: `cross::EdgeHold` copies the producer's value aside after its pass
+and swaps it into the edge's resources around the reader's pass (copies on the device, no
+read-back, no wait; the passes reordered so the producer runs first where no cycle forbids).
+Hits into the shading are shaded with the camera and camera block they were cast with;
+rays write records whatever the placement once their hits are late. Gap: a ray query's
+acceleration structure (and the meshes) stay placed for this frame's camera block, so lit
+shadow rays from last frame's records are off by the block the camera crossed. The world's
+changes timed `prev` are held back a frame for the whole executor (`Graph::late_world`; every
+node reading them alike, the voxels' and the meshes' apart).
 
 **Design: unfused passes with edge resources.** The executor runs the graph's schedule
 (`Checked::schedule`) pass by pass; every non-fused edge is a resource the executor owns

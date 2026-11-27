@@ -114,7 +114,7 @@ impl Columns {
         let opts: Options = p.options()?;
         let shading = &g.node(g.shading()).component;
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
-        let deferred = mr_components::parse_placement(&k.placement)?;
+        let deferred = mr_components::shading_deferred(g, &k.placement)?;
         // The voxel world holds the chunks, the texture atlas and the lighting parameters only.
         let core = Core::new(
             p,

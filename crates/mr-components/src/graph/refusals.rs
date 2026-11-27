@@ -94,7 +94,7 @@ impl Why {
             Why::NoRegion
         } else if m.contains("builds no pipeline of this shape") {
             Why::OtherExecutor
-        } else if m.contains("runs this edge") || m.contains("hits prev:") {
+        } else if m.contains("runs this edge") || m.contains("hits prev:") || m.contains("read the world's changes a frame late") {
             Why::Timing
         } else if m.contains("shades the hit records") || m.contains("GPU") && (m.contains("split") || m.contains("second GPU") || m.contains("one GPU")) {
             Why::Devices
@@ -228,8 +228,10 @@ mod tests {
             (Why::Component, 19),
             (Why::Count, 37),
             (Why::Port, 10),
-            (Why::Timing, 32),
-            (Why::Devices, 5),
+            (Why::Timing, 15),
+            // One graph refused by its timing before (2026-11-27) now meets it and is
+            // refused by its devices.
+            (Why::Devices, 6),
             (Why::Api, 0),
             (Why::Other, 0),
         ];

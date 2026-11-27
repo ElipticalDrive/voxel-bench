@@ -332,7 +332,7 @@ impl Walk {
                 stages,
                 max_lod: if comp.lod { p.max_lod.min(6) } else { 0 },
                 voxels: false,
-                hits: mr_components::parse_placement(&k.placement)?.then_some(crate::exec::Form::Records),
+                hits: mr_components::shading_deferred(g, &k.placement)?.then_some(crate::exec::Form::Records),
                 shading: &shading,
                 shadows: k.shadows,
                 max_steps: opts.max_steps,

@@ -76,12 +76,46 @@ impl Graph {
         }
         ck.built()?;
         if let Some(why) = device_blocker(&ck)
+            .or_else(|| (region.executor() == "gpu").then(|| ck.graph.late_world().err()).flatten())
             .or_else(|| api_blocker(&ck))
             .or_else(|| lookup_blocker(&ck))
         {
             return Err(why);
         }
         Ok(())
+    }
+
+    /// Which of the world's changes the GPU executor holds back a frame: the voxels' (to
+    /// the storages, geometries and the CPU sampler's world) when every node reading them
+    /// reads them `prev`, the meshes' when every meshes node does. One copy of the world
+    /// serves all of its nodes, so some reading the voxels' changes late and others not
+    /// is refused, naming them.
+    pub fn late_world(&self) -> Result<(bool, bool), String> {
+        let readers = |meshes: bool| -> Vec<(&str, When)> {
+            self.nodes
+                .iter()
+                .filter(|(_, n)| (n.role == Role::Meshes) == meshes && !is_host_role(n.role))
+                .filter_map(|(id, n)| {
+                    let src = n.inputs.get("changes")?;
+                    self.nodes.get(src).filter(|s| matches!(s.role, Role::World | Role::Client))?;
+                    Some((id.as_str(), n.when("changes")))
+                })
+                .collect()
+        };
+        let late = |meshes: bool| -> Result<bool, String> {
+            let r = readers(meshes);
+            let (l, now): (Vec<_>, Vec<_>) = r.iter().partition(|(_, w)| *w == When::Prev);
+            if !l.is_empty() && !now.is_empty() {
+                let names = |v: &[&(&str, When)]| v.iter().map(|(id, _)| format!("`{id}`")).collect::<Vec<_>>().join(", ");
+                return Err(format!(
+                    "{} read the world's changes a frame late and {} this frame: one copy of the world on the GPU serves them all (time every `changes` edge alike)",
+                    names(&l),
+                    names(&now)
+                ));
+            }
+            Ok(!l.is_empty())
+        };
+        Ok((late(false)?, late(true)?))
     }
 
     /// Checks the graph and that its executor runs it.
@@ -115,12 +149,20 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         if ck.region.is_some_and(|b| b.late) {
             return None;
         }
-        // Hit records a frame late are history worth keeping only between GPUs (they overlap).
+        // Hit records a frame late on one GPU: kept on the device between the pass that
+        // writes them and the shading's (rays write them whatever the placement); a forward
+        // drawer shades in its fragment shader and writes none.
         let late = g
             .nodes
             .iter()
             .find(|(_, n)| n.role == Role::Shading && n.when("hits") == When::Prev);
-        return late.map(|(id, _)| format!("`{id}`.hits prev: the last frame's hit records are shaded on a second GPU while the first casts this frame's (on one GPU a frame late is only latency: put `{id}` on another GPU, or hits now)"));
+        return late.and_then(|(id, n)| {
+            let hid = n.inputs.get("hits")?;
+            let hn = g.nodes.get(hid)?;
+            (hn.role == Role::Draw && !crate::caps::declares(Role::Draw, &hn.component, crate::Cap::Records)).then(|| {
+                format!("`{id}`.hits prev: `{hid}` shades in its own pass and keeps no hit records to read a frame late: draw = {}", records_drawers())
+            })
+        });
     }
     let on = |d: Device| {
         let mut v: Vec<&str> = g

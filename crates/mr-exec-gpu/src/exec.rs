@@ -13,7 +13,7 @@ use mr_core::*;
 use mr_gpu::{Gpu, Ticket, wgpu};
 
 use crate::Core;
-use crate::cross::{EdgeGate, Part};
+use crate::cross::{EdgeGate, EdgeHold, Part};
 use crate::transfer::Transfer;
 
 /// The resources of the graph's edges that cross between passes on one GPU: allocated by the
@@ -317,6 +317,18 @@ pub(crate) trait Region: State {
     }
 }
 
+/// The resources holding the edge into `reader`.`port` between two passes (the executor's
+/// hits edge, or the region's), for a hold ([`crate::cross::EdgeHold`]).
+fn held_parts<R: Region>(core: &Core, region: &R, reader: &str, port: &str) -> anyhow::Result<Vec<Part>> {
+    let node = core.graph.nodes.get(reader).expect("the reader is a node of the graph");
+    let data = core.graph.nodes.get(node.inputs[port].as_str()).map_or(graph::Data::Hits, |s| graph::output(s.role, &s.component));
+    let parts = match core.edges.hits().filter(|_| port == "hits") {
+        Some(h) => Some(vec![h.part()]),
+        None => region.crossing(core, node.role, port, data),
+    };
+    parts.ok_or_else(|| anyhow::anyhow!("`{reader}`.{port} is read a frame late, and nothing holds it between the passes this frame"))
+}
+
 /// A pass of the frame: its node's id and implementation.
 pub(crate) type Pass<R> = (String, Box<dyn Node<R>>);
 
@@ -327,12 +339,59 @@ pub(crate) type Pass<R> = (String, Box<dyn Node<R>>);
 pub(crate) fn passes<R>(g: &graph::Checked, slot: usize, node: impl Fn(Role) -> Option<Box<dyn Node<R>>>) -> anyhow::Result<Vec<Pass<R>>> {
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let split = crate::remote::far_slot(g).is_some();
-    Ok(schedule
+    let passes: Vec<Pass<R>> = schedule
         .passes()
         .filter(|p| matches!(p.device, graph::Device::Gpu(i) if i as usize == slot))
         .filter(|p| !(split && g.node(&p.node).role == Role::Shading))
         .filter_map(|p| Some((p.node.clone(), node(g.node(&p.node).role)?)))
-        .collect())
+        .collect();
+    Ok(producers_first(g, passes, split))
+}
+
+/// `passes` reordered so the producer of an edge kept a frame on the device runs before its
+/// reader too (the frame's order puts a node read only `prev` after its reader): regions'
+/// passes read what the passes before them set up. This frame's edges keep their order; the
+/// frame's order as it was where that cannot be (a cycle).
+fn producers_first<R>(g: &graph::Checked, passes: Vec<Pass<R>>, split: bool) -> Vec<Pass<R>> {
+    let held = crate::cross::held_edges(&g.graph, &g.gates, split);
+    if held.is_empty() {
+        return passes;
+    }
+    let ids: Vec<&str> = passes.iter().map(|(id, _)| id.as_str()).collect();
+    // The passes `id` reads this frame (through nodes without a pass of their own here).
+    let reads = |id: &str| -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack: Vec<&str> = g.graph.nodes.get(id).map(|n| n.inputs.iter().filter(|(p, _)| n.when(p) == graph::When::Now).map(|(_, s)| s.as_str()).collect()).unwrap_or_default();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            match ids.iter().position(|p| *p == x) {
+                Some(i) => out.push(i),
+                None => stack.extend(g.graph.nodes.get(x).into_iter().flat_map(|n| n.inputs.iter().filter(|(p, _)| n.when(p) == graph::When::Now).map(|(_, s)| s.as_str()))),
+            }
+        }
+        out
+    };
+    let mut deps: Vec<Vec<usize>> = ids.iter().map(|id| reads(id)).collect();
+    for (reader, _, source) in &held {
+        if let (Some(r), Some(s)) = (ids.iter().position(|p| p == reader), ids.iter().position(|p| p == source)) {
+            deps[r].push(s);
+        }
+    }
+    // Kahn's, the earliest ready pass of the frame's order first.
+    let mut order = Vec::with_capacity(ids.len());
+    let mut done = vec![false; ids.len()];
+    while order.len() < ids.len() {
+        let Some(next) = (0..ids.len()).find(|&i| !done[i] && deps[i].iter().all(|&d| done[d] || d == i)) else {
+            return passes;
+        };
+        done[next] = true;
+        order.push(next);
+    }
+    let mut slots: Vec<Option<Pass<R>>> = passes.into_iter().map(Some).collect();
+    order.into_iter().map(|i| slots[i].take().expect("each pass once")).collect()
 }
 
 /// The passes of the executor the shading is split off to, on GPU slot `slot`: its node's
@@ -351,6 +410,8 @@ pub(crate) struct Executor<R> {
     passes: Vec<Pass<R>>,
     /// The gates on edges between its passes.
     gates: Vec<EdgeGate>,
+    /// The edges between its passes timed `prev` without a gate, kept on the device.
+    holds: Vec<EdgeHold>,
     /// The mesh instances last given: accumulated shading starts over when they move.
     instances: Vec<mr_core::MeshInstance>,
 }
@@ -375,7 +436,8 @@ impl<R: Region> Executor<R> {
     pub fn new(core: Core, region: R, passes: Vec<Pass<R>>, split: bool) -> Self {
         let ids: Vec<String> = passes.iter().map(|(id, _)| id.clone()).collect();
         let gates = crate::cross::gates(&core, &ids, split);
-        Self { core, region, passes, gates, instances: vec![] }
+        let holds = crate::cross::holds(&core, &ids, split);
+        Self { core, region, passes, gates, holds, instances: vec![] }
     }
 
     /// The frame's commands on this GPU, before their submission: its ticket on the ring
@@ -407,11 +469,23 @@ impl<R: Region> Executor<R> {
                 let parts = parts.ok_or_else(|| anyhow::anyhow!("`{}`.{}: nothing crosses between the passes this frame to put through its gates", gate.reader, gate.port))?;
                 gate_ms += gate.cross(core, parts, &mut enc, req)?;
             }
+            for hold in self.holds.iter_mut().filter(|h| h.before == i) {
+                let parts = held_parts(core, region, &hold.reader, &hold.port)?;
+                hold.before(core, parts, &mut enc, req);
+            }
             pass.run(&mut Cx { core, region, enc: &mut enc, ticket, req });
             for gate in self.gates.iter().filter(|g| g.before == i && !g.at_end()) {
                 gate.restore(&mut enc);
             }
+            for hold in self.holds.iter_mut().filter(|h| h.before == i) {
+                hold.after(core, &mut enc, req);
+            }
+            for hold in self.holds.iter_mut().filter(|h| h.producer == i) {
+                let parts = held_parts(core, region, &hold.reader, &hold.port)?;
+                hold.capture(core, parts, &mut enc, req);
+            }
         }
+        self.holds.iter_mut().for_each(EdgeHold::end);
         // The post's view over the passes' image (its legend for the region's).
         if core.view.is_some() {
             region.view(core, &mut enc, ticket);
@@ -552,12 +626,13 @@ impl<R: Region> Renderer for Executor<R> {
         self.core.resize(width, height);
         self.region.resize(&self.core);
         self.gates.iter_mut().for_each(EdgeGate::resize);
+        self.holds.iter_mut().for_each(EdgeHold::resize);
         Ok(())
     }
 
     fn memory(&self) -> MemoryReport {
         let (cpu, gpu) = self.region.memory(&self.core);
-        let gates: u64 = self.gates.iter().map(EdgeGate::memory_bytes).sum();
+        let gates: u64 = self.gates.iter().map(EdgeGate::memory_bytes).sum::<u64>() + self.holds.iter().map(EdgeHold::memory_bytes).sum::<u64>();
         MemoryReport { cpu_bytes: cpu, gpu_bytes: self.core.memory_bytes() + gpu + gates, gpu_device_bytes: self.core.gpu.peak_allocated_bytes() }
     }
 }

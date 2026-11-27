@@ -91,6 +91,103 @@ fn screen_triangles_a_frame_late_show_the_frame_before() {
     one_frame_behind("raster-cpu", r#"{ node = "draw", input = "faces", when = "prev" }, { node = "shading", knobs = { placement = "deferred" } }"#);
 }
 
+/// Each late frame of `graph` with `edit` is the frame before of `graph` with `plain` (the
+/// same graph as the late one's, timed now).
+fn behind(graph: &str, plain: &str, edit: &str) {
+    behind_in(graph, plain, edit, &["unlit", "lit"]);
+}
+
+fn behind_in(graph: &str, plain: &str, edit: &str, modes: &[&str]) {
+    let (p_name, l_name) = (format!("{graph}-plain-{}", plain.len()), format!("{graph}-late-{}", edit.len()));
+    let (ok, log) = launch(&p_name, graph, &format!("[{plain}]"));
+    assert!(ok, "{graph} with {plain}: {log}");
+    let sep = if plain.is_empty() { "" } else { ", " };
+    let (ok, log) = launch(&l_name, graph, &format!("[{plain}{sep}{edit}]"));
+    assert!(ok, "{graph} with {edit}: {log}");
+    for &mode in modes {
+        let (p, l) = (images(&p_name, mode), images(&l_name, mode));
+        assert!(p.len() > 4 && p.len() == l.len(), "{graph} {mode}: {} and {} frames saved", p.len(), l.len());
+        assert!(p[p.len() - 1] != p[p.len() - 2], "{graph} {mode}: the camera does not move visibly");
+        for k in 2..p.len() {
+            assert!(l[k] == p[k - 1], "{graph} {mode} with {edit}: frame {k} is not the plain frame {}", k - 1);
+        }
+    }
+}
+
+/// On one GPU the hit records a frame late are kept on the device between the pass writing
+/// them and the shading's, shaded with the camera they were made with: each frame is the
+/// frame before (rays write records whatever the placement once their hits are late).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_hits_a_frame_late_show_the_frame_before() {
+    let hits = r#"{ node = "shading", input = "hits", when = "prev" }"#;
+    let deferred = r#"{ node = "shading", knobs = { placement = "deferred" } }"#;
+    for graph in ["raycast-gpu", "columns-gpu"] {
+        behind(graph, deferred, hits);
+    }
+    // The ray queries' acceleration structure stays placed for this frame's camera block,
+    // so lit frames' shadow rays from last frame's records are off by the block the camera
+    // crossed (a known gap): unlit frames only.
+    behind_in("rayquery-gpu", deferred, hits, &["unlit"]);
+    // Drawers writing records (a forward drawer shades in its own pass: refused, named).
+    for graph in ["raster-gpu", "discover-gpu"] {
+        behind(graph, r#"{ node = "draw", component = "gbuffer" }"#, hits);
+    }
+    for graph in ["splat-gpu", "slices-gpu"] {
+        behind(graph, "", hits);
+    }
+}
+
+/// Other edges a GPU executor holds between passes, timed `prev`: the rays reading last
+/// frame's mesh surfaces (with this frame's camera), the drawer drawing last frame's face set.
+/// They run and draw the world.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_held_edges_a_frame_late_run() {
+    for (graph, edit) in [
+        ("raycast-gpu", r#"{ node = "visibility", input = "meshes", when = "prev" }"#),
+        ("discover-gpu", r#"{ node = "draw", input = "faces", when = "prev" }"#),
+    ] {
+        let name = format!("{graph}-held-{}", edit.len());
+        let (ok, log) = launch(&name, graph, &format!("[{edit}]"));
+        assert!(ok, "{graph} with {edit}: {log}");
+        for mode in ["unlit", "lit"] {
+            let l = images(&name, mode);
+            assert!(l.len() > 4, "{graph} {mode} with {edit}: {} frames saved", l.len());
+            assert!(l[l.len() - 1] != l[0], "{graph} {mode} with {edit}: nothing drawn changes");
+        }
+    }
+}
+
+/// The world's changes a frame late on a GPU (every node reading them alike: one copy of the
+/// world serves them): once the world has stopped changing, the frames are the plain run's.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_world_changes_a_frame_late_catch_up() {
+    let late = |n: &str| format!(r#"{{ node = "{n}", input = "changes", when = "prev" }}"#);
+    for (graph, nodes) in [
+        ("raycast-gpu", &["storage"][..]),
+        ("raycast-gpu", &["meshes"][..]),
+        ("columns-gpu", &["storage"][..]),
+        ("slices-gpu", &["storage"][..]),
+        ("rayquery-gpu", &["geometry"][..]),
+        ("splat-gpu", &["geometry", "storage"][..]),
+        ("raster-gpu", &["geometry", "storage"][..]),
+        ("discover-gpu", &["storage"][..]),
+    ] {
+        let edit = nodes.iter().map(|n| late(n)).collect::<Vec<_>>().join(", ");
+        let (plain, l) = (format!("{graph}-plain-world"), format!("{graph}-world-{}", edit.len()));
+        let (ok, log) = launch(&plain, graph, "[]");
+        assert!(ok, "{log}");
+        let (ok, log) = launch(&l, graph, &format!("[{edit}]"));
+        assert!(ok, "{graph} with {edit}: {log}");
+        for mode in ["unlit", "lit"] {
+            let (p, q) = (images(&plain, mode), images(&l, mode));
+            assert!(!p.is_empty() && p.last() == q.last(), "{graph} {mode} with {edit}: the last frame differs");
+        }
+    }
+}
+
 /// The world's meshes a frame late are culled and drawn from this frame's camera (they are
 /// the same from every camera), and the storage's changes a frame late reach it: once the
 /// world has stopped changing, the frames are the plain run's.
