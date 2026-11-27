@@ -96,7 +96,12 @@ enum Cmd {
     List,
     /// What each component can be used for: per device kind, its implemented APIs and the
     /// shipped graphs that accept it there (Markdown), then the gaps.
-    Audit,
+    Audit {
+        /// Instead: the valid graphs one edit from the shipped files that `accept` refuses,
+        /// per reason (each a graph meant to run).
+        #[arg(long)]
+        refused: bool,
+    },
     /// A pipeline as a graph: its nodes (TOML, for a plan's
     /// `[renderer.graph]`), label, canonical form, cache key and schedule. The renderer as for
     /// `view -r`: a graph file and edits (`raycast-gpu,storage=prefix,kernel=incremental`).
@@ -195,8 +200,8 @@ fn main() -> anyhow::Result<()> {
             print!("{}", schedule.to_string().lines().map(|l| format!("#{l}\n")).collect::<String>());
             Ok(())
         }
-        Cmd::Audit => {
-            print!("{}", mr_components::graph::audit_markdown());
+        Cmd::Audit { refused } => {
+            print!("{}", if refused { mr_components::graph::refused_markdown() } else { mr_components::graph::audit_markdown() });
             Ok(())
         }
         Cmd::List => {

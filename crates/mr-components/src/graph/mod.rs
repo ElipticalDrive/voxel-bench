@@ -31,6 +31,7 @@ mod edit;
 mod features;
 mod gates;
 mod model;
+mod refusals;
 mod schedule;
 mod sites;
 
@@ -41,6 +42,7 @@ pub use check::*;
 pub use edit::*;
 pub use gates::*;
 pub use model::*;
+pub use refusals::*;
 pub use schedule::*;
 
 #[cfg(test)]

@@ -111,6 +111,10 @@ fn device_blocker(ck: &Checked) -> Option<String> {
     slots.sort();
     slots.dedup();
     if slots.len() < 2 {
+        // The CPU executor keeps any edge's value a frame (`Builds::late`).
+        if ck.region.is_some_and(|b| b.late) {
+            return None;
+        }
         // Hit records a frame late are history worth keeping only between GPUs (they overlap).
         let late = g
             .nodes

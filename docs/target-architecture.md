@@ -210,6 +210,64 @@ stream/gate/client nodes, the canonical graph key, on-demand compiled builds wit
 verification, the A/B tooling, one executor per device, executors reading their nodes' knobs
 and plans and labels read off the graph.
 
+## Every valid graph executes
+
+A graph meeting the validity rules (`Graph::check`) must run; today `Graph::accept` refuses
+those outside every region's declarations. The refusals are measured, not guessed:
+`graph::refused()` takes every valid graph one edit from the shipped files (an input rebound
+or unbound, a new node, a component swapped: `graph::edits`; a node moved to another device,
+an edge timed `prev`) and keeps those `accept` refuses, grouped by the reason its message
+names (`multirenderer audit --refused` prints the table; the test
+`valid_graphs_refused_only_go_down` pins each count, which may only fall).
+
+| gap | reason | graphs (2026-11-26) | what is missing |
+|---|---|---|---|
+| no region of that shape | no region has the shape | 33 | a drawer fed straight by the geometry (no culling node), a drawer on the CPU behind discovery, raycast over a face set |
+| no region of that shape | the shape is the other executor's | 6 | the visibility on one device kind, the drawer on the other |
+| node outside the declarations | role not built | 5 | e.g. mesh records in the meshing region |
+| node outside the declarations | role on the other device kind | 10 | a kernel, a culling or a shading on the other device than its region's |
+| node outside the declarations | component not built | 19 | e.g. the heightfield march over a voxel ray caster, quadtree visibility into the meshing drawer |
+| node outside the declarations | number of nodes of a role | 37 | a second storage (the face source's lookup, the exposure tests), no kernel where a region wants one |
+| node outside the declarations | what a port reads | 10 | a lookup storage the region ignores, an unbound shadow site |
+| edge without a resource form | edge timing | 32 (41 before the CPU's `prev` edges) | `prev` on any GPU edge but the split's hits and the discoverer's faces |
+| edge without a resource form | device boundary | 5 | a second GPU anywhere but at the split's hit records |
+
+**Design: unfused passes with edge resources.** The executor runs the graph's schedule
+(`Checked::schedule`) pass by pass; every non-fused edge is a resource the executor owns
+(the CPU's `exec::Res`, the GPU's `exec::Edges`), so a node needs only a *standalone*
+implementation (its pass reading its inputs' resources, writing its output) to run in any
+graph. A region is then what it is in the target: an optimisation the executor attempts over
+a run of passes it knows how to fuse (one program, internal buffers, an edge kept in
+registers), with a failed attempt reported and the unfused passes run instead. Concretely,
+per gap:
+
+- *Shape and node gaps*: the executor builds the passes it has standalone implementations
+  for, whatever region they would belong to; a region claims the passes its shape covers and
+  the rest stay single passes. Each role's standalone pass is the region's node code minus
+  the region's private bindings: culling (faces) reads faces and writes faces, a drawer reads
+  faces and writes hits, a storage pass keeps its storage and hands it to every reader
+  (fused data is compiled into each reader, so two storages are two passes, not one region
+  slot), a shading reads hits and its sites.
+- *Edge gaps*: each edge resource gets the three things an edge needs: a copy a frame late
+  (`prev`), a transfer between devices and a serialized form (gates). The serialized form
+  exists for every edge a gate runs on; a copy is its `sent` half without the bytes.
+- *Speed*: an unfused graph is not a slow fallback. CPU passes are monomorphised per graph as
+  the fused regions are; GPU passes are composed into as few programs as the edges allow, edge
+  resources stay on the device; every pass and edge boundary an unfused graph adds is measured
+  against the hand-fused equivalent of the same pieces.
+
+**Done: `prev` on any CPU edge.** The CPU executor's regions declare `Builds::late`: any edge
+that is not fused data may be timed `prev`. A hold pass on the edge keeps a copy of last
+frame's value (the edge's serialized form's `sent`, through no gates; the stage `hold`; a
+blank value before the first frame and after a resize): just before a reader scheduled before
+its producer (it copies the producer's output as it stands, last frame's), just after the
+producer otherwise (it outputs a frame later what it took). The copy costs one pass over the
+value a frame; reading the producer's output in place where it fits is left to do. A value seen from a camera (hits, screen triangles) is read with the camera it
+was made with, so a frame of hits a frame late is exactly the previous frame (the world's
+meshes are read with this frame's camera); a shading reading its hits late runs in a pass of
+its own whatever its `placement`; the world's changes into a node timed `prev` reach it a frame
+late (`tests/late.rs`).
+
 ## Migration
 
 Done, one lane at a time, the old path kept until its replacement matched (pixels identical,
