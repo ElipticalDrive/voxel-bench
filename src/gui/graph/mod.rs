@@ -672,26 +672,33 @@ pub fn apply_to_plan(r: &mut RendererSpec, edits: Vec<Edit>) -> (bool, Option<Op
 /// sent: the graph's edits are ones its executor takes while running
 /// (`Graph::live_edits`: the session sends those), and every knob to set is live.
 pub fn live_edits(old: &RendererSpec, new: &RendererSpec, params: &[(ParamSpec, ParamValue)]) -> Option<Vec<(String, ParamValue)>> {
+    let specs: Vec<ParamSpec> = params.iter().map(|(p, _)| p.clone()).collect();
+    live_knobs(old, new, &specs)
+}
+
+/// [`live_edits`] over the knobs' specs alone.
+pub fn live_knobs(old: &RendererSpec, new: &RendererSpec, specs: &[ParamSpec]) -> Option<Vec<(String, ParamValue)>> {
     let (Ok(Some(g0)), Ok(Some(g1))) = (old.worker_graph(), new.worker_graph()) else { return None };
     g0.live_edits(&g1).ok()?;
-    let specs: Vec<ParamSpec> = params.iter().map(|(p, _)| p.clone()).collect();
-    let knobs = node_knob_changes(&g0, &g1, &specs);
-    knobs.iter().all(|(k, _)| params.iter().any(|(p, _)| p.name == *k && p.live)).then_some(knobs)
+    let knobs = node_knob_changes(&g0, &g1, specs);
+    knobs.iter().all(|(k, _)| specs.iter().any(|p| p.name == *k && p.live)).then_some(knobs)
 }
 
 /// The knob changes that take a renderer running graph `old` to `new`, node by node (by
 /// id): of a node whose component changed or that is new, every knob its component owns (the
-/// node's value, else the default: nothing of the old component's state carries over); of a
-/// node that kept its component, the knobs that changed (one removed back to its default).
+/// node's value, else the default: nothing of the old component's state carries over), but
+/// one the old component owned too with the same value (a shading's `placement`: the
+/// running renderer has it already); of a node that kept its component, the knobs that
+/// changed (one removed back to its default).
 pub fn node_knob_changes(old: &Graph, new: &Graph, params: &[ParamSpec]) -> Vec<(String, ParamValue)> {
     let value = |p: &ParamSpec, n: &mr_components::graph::Node| knobs::option_value(p, &n.knobs);
-    let owns = |p: &ParamSpec, n: &mr_components::graph::Node| p.owner.as_ref().is_some_and(|(role, comps)| n.role.name() == role && comps.contains(&n.component));
+    let owns = |p: &ParamSpec, n: &mr_components::graph::Node| p.owned_by(n.role.name(), &n.component);
     let mut v = vec![];
     for (id, b) in new.nodes.iter().filter(|(_, n)| n.role.registered()) {
-        match old.nodes.get(id).filter(|a| a.role == b.role && a.component == b.component) {
-            Some(a) => v.extend(params.iter().filter(|p| owns(p, b) && value(p, a) != value(p, b)).map(|p| (p.name.clone(), value(p, b)))),
-            None => v.extend(params.iter().filter(|p| owns(p, b)).map(|p| (p.name.clone(), value(p, b)))),
-        }
+        // What the running renderer has already: the old node's knob, owned and equal.
+        let a = old.nodes.get(id).filter(|a| a.role == b.role);
+        let kept = |p: &ParamSpec| a.is_some_and(|a| owns(p, a) && value(p, a) == value(p, b));
+        v.extend(params.iter().filter(|p| owns(p, b) && !kept(p)).map(|p| (p.name.clone(), value(p, b))));
     }
     v
 }
@@ -722,17 +729,47 @@ mod tests {
         // The worker is sent the graph's edits: the node, what reads it, the drawer's second draw.
         let (g0, g1) = (old.worker_graph().unwrap().unwrap(), new.worker_graph().unwrap().unwrap());
         let (sent, switches) = g0.live_edits(&g1).unwrap();
-        let shape = |mut g: Graph| {
-            g.nodes.values_mut().for_each(|n| n.knobs.clear());
-            g
-        };
-        assert_eq!(shape(g0.with_edits(&sent).unwrap()), shape(g1.clone()));
+        // The new node's knobs go along: the worker runs `g1` exactly.
+        assert_eq!(g0.with_edits(&sent).unwrap(), g1);
         assert_eq!(switches.iter().map(|s| (s.role, s.component.as_deref())).collect::<Vec<_>>(), [(Role::Holes, Some("coverage"))]);
         let back = live_edits(&new, &old, &knobs).unwrap();
         assert_eq!(back, vec![]);
         assert_eq!(g1.live_edits(&g0).unwrap().1.iter().map(|s| (s.role, s.component.as_deref())).collect::<Vec<_>>(), [(Role::Holes, None)]);
         // Storage is not live on discover-gpu.
         assert!(live_edits(&old, &spec(",storage=tree64"), &knobs).is_none());
+    }
+
+    /// A shading switched through its component knob keeps its `placement` (and the
+    /// shadows), live, and the worker's graph after the edits is the host's; switched as a
+    /// graph edit (a node's knobs start anew), the placement goes back to its default, which
+    /// cannot change while running: no live edit (a hot swap).
+    #[test]
+    fn a_component_switch_keeps_the_nodes_knobs() {
+        let mut old = RendererSpec::from_cli(r#"raycast-gpu,{node="shading",knobs={placement="deferred",shadows="sun"}}"#).unwrap();
+        old.resolve().unwrap();
+        let (_, params) = crate::pipelines::executor_of(&old.pipeline().unwrap()).unwrap();
+        let mut new = old.clone();
+        new.set_component("shading", "pathtrace").unwrap();
+        let n = &new.graph.as_ref().unwrap().nodes["shading"];
+        assert_eq!((n.component.as_str(), n.knobs.get("placement").and_then(|v| v.as_str())), ("pathtrace", Some("deferred")), "{n:?}");
+        let knobs = live_knobs(&old, &new, &params).expect("live");
+        assert!(knobs.iter().all(|(k, _)| k != "placement" && k != "shadows"), "{knobs:?}");
+        let (g0, g1) = (old.worker_graph().unwrap().unwrap(), new.worker_graph().unwrap().unwrap());
+        let (sent, _) = g0.live_edits(&g1).unwrap();
+        let ran = mr_components::graph::live(&g0, &mr_components::graph::edits_text(&sent)).unwrap().0.graph;
+        assert_eq!(ran, g1);
+        assert_eq!(ran.nodes["shading"].knobs.get("placement").and_then(|v| v.as_str()), Some("deferred"));
+        // As a graph edit: the placement is gone, which a running renderer cannot take.
+        let mut reset = old.clone();
+        reset.graph = Some(old.graph.as_ref().unwrap().edit(&Change::component("shading", "pathtrace")).unwrap());
+        reset.resolve().unwrap();
+        assert!(live_knobs(&old, &reset, &params).is_none());
+        // Behind a gate (where the graph edit alone, inline, is refused) the knob still
+        // offers the other shadings.
+        let mut gated = RendererSpec::from_cli(r#"raycast-gpu,{node="shading",knobs={placement="deferred"}},{remove="meshes"},{add="h",role="gate",component="net"},{node="h",input="in",from="visibility"},{node="shading",input="hits",from="h"}"#).unwrap();
+        gated.resolve().unwrap();
+        let k = gated.component_knobs().into_iter().find(|k| k.name == "shading.component").expect("a shading.component knob");
+        assert!(matches!(&k.kind, mr_core::ParamKind::Choice(o) if o.iter().any(|c| c == "pathtrace")), "{:?}", k.kind);
     }
 
     /// A choice list longer than its popup holds gets a filter field, a short one none; the

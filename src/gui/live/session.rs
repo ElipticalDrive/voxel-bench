@@ -335,7 +335,17 @@ impl Session {
                     self.publish_params(i);
                     return;
                 }
-                return self.edit(i, new, vec![]);
+                // Live with the switched node's knobs it does not have yet, else (one that
+                // cannot change while running differs) a hot swap.
+                let specs = self.specs(i);
+                let old = self.lanes[i].latest().clone();
+                return match crate::gui::graph::live_knobs(&old, &new, &specs) {
+                    Some(knobs) => self.edit(i, new, knobs),
+                    None => {
+                        self.hot_swap(i, new);
+                        self.publish_params(i);
+                    }
+                };
             }
             _ => {
                 let mut new = lane.latest().clone();

@@ -116,7 +116,7 @@ impl RendererSpec {
 
     /// The components its nodes may be instead, as knobs of the host's (`<node>.component`;
     /// the executors list none: a node's component is the graph's): for each node of its
-    /// stages with more than one answer, what the graph says it may be (`Graph::choices`),
+    /// stages with more than one answer, the components `set_component` takes,
     /// starting from what it is. None is live as a knob; setting one is a graph edit
     /// (`set_component`), which the session sends live where the executor takes it.
     pub fn component_knobs(&self) -> Vec<mr_core::ParamSpec> {
@@ -124,7 +124,9 @@ impl RendererSpec {
         let Some(g) = &self.graph else { return vec![] };
         let mut v = vec![];
         for (id, n) in g.nodes.iter().filter(|(_, n)| !matches!(n.role, Role::World | Role::Generator | Role::Client | Role::Post)) {
-            let choices = g.choices(id);
+            // What setting the knob makes of it (`set_component`: the node's shared knobs
+            // kept, so a deferred shading behind a gate may be any shading that defers).
+            let choices: Vec<&str> = mr_components::graph::role_components(n.role).into_iter().filter(|c| *c == n.component || self.clone().set_component(id, c).is_ok()).collect();
             if choices.len() > 1 {
                 v.push(mr_core::ParamSpec::choice(&format!("{id}{COMPONENT_KNOB}"), &format!("The component of node `{id}` ({}): an edit of the graph (restart where its executor cannot replace the node while running)", n.role.name()), &choices, &n.component, false));
             }
@@ -132,12 +134,24 @@ impl RendererSpec {
         v
     }
 
-    /// Node `node` runs `component` (the graph edit; on failure nothing changes).
+    /// Node `node` runs `component` (the graph edit; on failure nothing changes). As a knob
+    /// of the node (`<node>.component`), it leaves the node's other knobs as they are where
+    /// the new component has them too (a shading's `placement`, `shadows`): the graph edit
+    /// starts a node's knobs anew, these are set back.
     pub fn set_component(&mut self, node: &str, component: &str) -> anyhow::Result<()> {
         let old = self.clone();
         let g = self.graph.as_ref().with_context(|| format!("`{}` is not a pipeline", self.label()))?;
-        let r = g.edit(&mr_components::graph::Change::component(node, component)).map_err(anyhow::Error::msg).and_then(|g| {
-            self.graph = Some(g);
+        let was = g.nodes.get(node).cloned();
+        let r = g.edit(&mr_components::graph::Change::component(node, component)).map_err(anyhow::Error::msg).and_then(|mut new| {
+            if let (Some(was), Some((_, params))) = (was, crate::pipelines::executor_of(&new)) {
+                let n = new.nodes.get_mut(node).expect("the node edited");
+                for (k, v) in &was.knobs {
+                    if params.iter().any(|p| p.name == *k && p.owned_by(was.role.name(), &was.component) && p.owned_by(n.role.name(), &n.component)) {
+                        n.knobs.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            self.graph = Some(new);
             self.resolve()
         });
         if r.is_err() {

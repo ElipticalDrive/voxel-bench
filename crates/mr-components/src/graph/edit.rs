@@ -693,8 +693,11 @@ impl Graph {
     /// replace: every edit changes a node the region replaces while running
     /// ([`super::Builds::live`]: its component, the node added or removed, its inputs), an
     /// input that read such a node or reads a new one, or a timing that changes with one.
-    /// Knob values are left out (knobs are set as knobs). Fails with the first edit that
-    /// needs a new renderer, or when `to` is not a pipeline of the same region.
+    /// Knob values are left out (knobs are set as knobs), except on a node whose component
+    /// changes or that is new: a component starts the node's knobs anew, so their values in
+    /// `to` go along and the running graph stays `to` (a knob that cannot change while
+    /// running is the host's to check, which knows the knobs). Fails with the first edit
+    /// that needs a new renderer, or when `to` is not a pipeline of the same region.
     pub fn live_edits(&self, to: &Graph) -> Result<(Vec<Change>, Vec<Switch>), String> {
         let region = self.region().ok_or("no region builds the running graph")?;
         to.accept()?;
@@ -704,11 +707,20 @@ impl Graph {
                 region.who()
             ));
         }
-        let edits: Vec<Change> = self
-            .diff(to)
-            .ok_or("another executor")?
+        let all = self.diff(to).ok_or("another executor")?;
+        let started: Vec<String> = all
+            .iter()
+            .filter_map(|c| match c {
+                Change::Component(id, _) | Change::Add(id, ..) => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let edits: Vec<Change> = all
             .into_iter()
-            .filter(|c| !matches!(c, Change::Knob(..) | Change::Knobs(..)))
+            .filter(|c| match c {
+                Change::Knob(id, ..) | Change::Knobs(id, _) => started.contains(id),
+                _ => true,
+            })
             .collect();
         let mut switches: Vec<Switch> = vec![];
         for c in &edits {
