@@ -40,6 +40,8 @@ pub struct Program {
     /// How the voxel pool is bound ([`Program::pool`]); unset, one page, and [`compile`]
     /// refuses a shader that reads the pool.
     pool: Option<crate::voxels::PoolPages>,
+    /// How each storage group's side data is bound ([`Program::side`]): by the group, pages.
+    side: Vec<(u32, crate::voxels::SidePages)>,
 }
 
 /// The shared modules: `mr::common` (colour, camera, face helpers), `mr::voxels` (the
@@ -82,9 +84,21 @@ impl Program {
         self
     }
 
+    /// Binds the side data of the storage at bind group `group` as `pages` (its
+    /// `StorageData`'s): every storage module at that group, added before or after, reads it
+    /// so. One page leaves the modules as written.
+    pub fn side(&mut self, group: u32, pages: crate::voxels::SidePages) -> &mut Self {
+        self.side.retain(|(g, _)| *g != group);
+        self.side.push((group, pages));
+        for m in &mut self.modules {
+            m.source = side_source(&self.side, std::mem::take(&mut m.source));
+        }
+        self
+    }
+
     /// Adds (or replaces) the module at `path`.
     pub fn add(&mut self, path: &str, source: impl Into<String>, deps: &[&str]) -> &mut Self {
-        let m = Module { path: path.into(), source: source.into(), deps: deps.iter().map(|d| d.to_string()).collect() };
+        let m = Module { path: path.into(), source: side_source(&self.side, source.into()), deps: deps.iter().map(|d| d.to_string()).collect() };
         match self.modules.iter_mut().find(|x| x.path == path) {
             Some(x) => *x = m,
             None => self.modules.push(m),
@@ -202,6 +216,17 @@ impl Program {
         let src = with_imports(&root, &self.imports(&root, &deps)?);
         c.make_naga_module(NagaModuleDescriptor { source: &src, file_path: "root", shader_type: ShaderType::Wgsl, shader_defs: self.shader_defs(), ..Default::default() }).map_err(|e| e.emit_to_string(&c))
     }
+}
+
+/// `source` with the side data read of its storage group's pages (a storage module begins
+/// with its `S_GROUP`; one page, or another module, is left as it is).
+fn side_source(side: &[(u32, crate::voxels::SidePages)], source: String) -> String {
+    for (g, pages) in side {
+        if pages.pages > 1 && source.starts_with(&format!("const S_GROUP: u32 = {g}u;\n")) && source.contains(crate::voxels::SIDE_ONE_PAGE) {
+            return source.replace(crate::voxels::SIDE_ONE_PAGE, &pages.wgsl());
+        }
+    }
+    source
 }
 
 /// Composes and creates a shader module. With `MR_DUMP_WGSL=dir`, the program's text

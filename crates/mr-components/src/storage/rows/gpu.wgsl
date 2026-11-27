@@ -5,7 +5,7 @@ const S_LEVELS: u32 = 0x5u;
 
 // `x0` is always 0: the top cell is one 32-wide row.
 fn s_row(slot: u32, x0: i32, y: i32, z: i32) -> u32 {
-    return aux[slot * AUX_WORDS + u32(y * 32 + z)];
+    return aux_slot(slot, u32(y * 32 + z));
 }
 
 fn s_occupied(slot: u32, level: u32, c: vec3<i32>) -> bool {

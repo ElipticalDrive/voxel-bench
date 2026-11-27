@@ -8,7 +8,7 @@ const S_LEVELS: u32 = 0x1fu;
 
 fn d_at(slot: u32, l: vec3<i32>) -> u32 {
     let idx = u32(l.x | (l.z << 5u) | (l.y << 10u));
-    return (aux[slot * AUX_WORDS + (idx >> 2u)] >> ((idx & 3u) * 8u)) & 0xffu;
+    return (aux_slot(slot, idx >> 2u) >> ((idx & 3u) * 8u)) & 0xffu;
 }
 
 fn s_dist(slot: u32, l: vec3<i32>) -> u32 {

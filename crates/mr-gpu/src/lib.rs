@@ -420,9 +420,17 @@ impl GpuPool {
 /// `$MR_GPU_LIMITS` set, clamped to WebGPU's baseline (`wgpu::Limits::defaults()`, what
 /// lavapipe and most small GPUs offer) so a big GPU shows what a small one would refuse:
 /// `webgpu` clamps every limit (the ray-query ones stay the adapter's); `sizes` only the
-/// buffer, binding and texture sizes, the axis a world or a resolution grows along.
+/// buffer, binding and texture sizes, the axis a world or a resolution grows along;
+/// `binding:N` as `sizes` with storage bindings of N MiB at most (data split over several
+/// bindings, shown on a small world).
 pub fn clamped_limits(clamp: Option<&str>, adapter: &wgpu::Limits) -> anyhow::Result<wgpu::Limits> {
     let base = wgpu::Limits::defaults();
+    if let Some(mb) = clamp.and_then(|c| c.strip_prefix("binding:")) {
+        let mb: u64 = mb.parse().map_err(|_| anyhow::anyhow!("MR_GPU_LIMITS = {clamp:?}: expected `binding:<MiB>`"))?;
+        let mut l = clamped_limits(Some("sizes"), adapter)?;
+        l.max_storage_buffer_binding_size = l.max_storage_buffer_binding_size.min(mb.max(1) << 20);
+        return Ok(l);
+    }
     Ok(match clamp {
         None => adapter.clone(),
         Some("webgpu") => base.or_worse_values_from(adapter).using_acceleration_structure_values(adapter.clone()),
@@ -436,7 +444,7 @@ pub fn clamped_limits(clamp: Option<&str>, adapter: &wgpu::Limits) -> anyhow::Re
             max_compute_workgroup_storage_size: adapter.max_compute_workgroup_storage_size.min(base.max_compute_workgroup_storage_size),
             ..adapter.clone()
         },
-        Some(other) => bail!("MR_GPU_LIMITS = {other:?}: expected `webgpu` or `sizes`"),
+        Some(other) => bail!("MR_GPU_LIMITS = {other:?}: expected `webgpu`, `sizes` or `binding:<MiB>`"),
     })
 }
 
@@ -1232,6 +1240,9 @@ mod tests {
         let web = clamped_limits(Some("webgpu"), &big).unwrap();
         assert_eq!((web.max_storage_buffer_binding_size, web.max_storage_buffers_per_shader_stage, web.max_tlas_instance_count), (128 << 20, 8, 1000));
         assert!(clamped_limits(Some("tiny"), &big).unwrap_err().to_string().contains("tiny"));
+        let b = clamped_limits(Some("binding:16"), &big).unwrap();
+        assert_eq!((b.max_storage_buffer_binding_size, b.max_texture_dimension_2d), (16 << 20, 8192));
+        assert!(clamped_limits(Some("binding:x"), &big).is_err());
     }
 
     /// A storage buffer over the device's binding limit fails the device naming the label,

@@ -172,8 +172,11 @@ covered pairwise, 351 passes, 320x180, 30 frames, against the reference; NVIDIA 
   2.1 dB lower: the mesh cubes beside rasterised faces). Ray queries run but take 22 s a frame
   (one `pathtrace` pass 17 minutes), so the sweep left `rayquery-gpu` out after its first
   pass (62.5 dB, NVIDIA 62.3). lavapipe only (19 passes): `distance`'s side data at view radius 16 and splats'
-  points pass the 128 MiB storage-binding limit and are refused naming it (the voxel pool and
-  bricks split over several bindings; `distance`'s aux and the splats' points do not yet).
+  points passed the 128 MiB storage-binding limit and were refused naming it. Since
+  2026-11-27 both split over several bindings as the voxel pool does: on lavapipe, terrain at
+  radius 16 renders `distance` (side data over 4 bindings) and splat-gpu (points over 2) at
+  62.5 dB unlit / 60.0 dB lit against the reference (the same plan on NVIDIA, its storage
+  one binding: 60.0-60.2 / 59.5; 10 frames at 320x180).
 - **CPU instruction sets:** the ray caster's hot loop gives the same pixels on scalar, AVX2 and
   AVX-512 for every storage, walk and packet size (`tests/isa.rs`, terrain and lattice, lit
   and unlit). Pipelines compiled for an AVX2 CPU without AVX-512 (`MR_TARGET_CPU=x86-64-v3`)

@@ -48,10 +48,21 @@ impl PoolPages {
     /// chunks at most and `buffers` storage buffers per stage ([`OTHER_BUFFERS`] of them not the pool's). A last page under a sixteenth of a
     /// binding is not worth the page select: the pool stops at the whole pages (NVIDIA binds
     /// 2 GiB less a byte, so the default `pool_mb = 2048` stays one page, a chunk short).
-    fn plan(want_slots: u32, slots_per_binding: u32, buffers: u32) -> Self {
+    /// `side`: per slot-indexed side data the pipeline binds beside the pool (pool storages'
+    /// `aux`, [`SidePages`]), the slots one binding of it holds; its pages past the first share
+    /// the stage's budget with the pool's, so the pool takes fewer pages when they would not fit.
+    fn plan(want_slots: u32, slots_per_binding: u32, buffers: u32, side: &[u32]) -> Self {
         let per = slots_per_binding.max(1);
         let rest = want_slots % per;
-        let pages = (want_slots / per + (rest >= per / 16) as u32).clamp(1, MAX_PAGES.min(buffers.saturating_sub(OTHER_BUFFERS).max(1)));
+        let budget = MAX_PAGES.min(buffers.saturating_sub(OTHER_BUFFERS).max(1));
+        let mut pages = (want_slots / per + (rest >= per / 16) as u32).clamp(1, budget);
+        let extra = |pages: u32| -> u32 {
+            let slots = if pages == 1 { want_slots.min(per).max(1) } else { pages * per };
+            side.iter().map(|&s| slots.div_ceil(s.max(1)) - 1).sum()
+        };
+        while pages > 1 && pages + extra(pages) > budget {
+            pages -= 1;
+        }
         if pages == 1 { Self { pages: 1, page_slots: want_slots.min(per).max(1) } } else { Self { pages, page_slots: per } }
     }
 
@@ -82,6 +93,65 @@ impl PoolPages {
         VOXELS_WGSL.replace(DECL, &format!("{decls}{word}")).replace(READ, "pool_word(slot, idx >> 1u)")
     }
 }
+/// How slot-indexed side data (a pool storage's `aux`: `AUX_WORDS` words per pool slot) is
+/// bound: `pages` bindings of `page_slots` slots each. One page is `aux` (binding 0 of the
+/// storage's group) read through [`SIDE_ONE_PAGE`]; more (a device binding less than the
+/// side data of every slot: lavapipe's 128 MiB under `distance`'s 32 KiB a slot) add `aux1..`
+/// at bindings [`SIDE_BINDING`].. and [`SidePages::wgsl`] reads the slot's page.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SidePages {
+    pub pages: u32,
+    pub page_slots: u32,
+}
+
+/// The binding of a side data's second page (the first is the storage's `aux`, binding 0;
+/// the clipmap's textures take 4-7).
+pub const SIDE_BINDING: u32 = 8;
+
+/// The side data's read with one page, as a pool storage's module declares it;
+/// [`SidePages::wgsl`] replaces it.
+pub const SIDE_ONE_PAGE: &str = "fn aux_slot(slot: u32, i: u32) -> u32 { return aux[slot * AUX_WORDS + i]; }\n";
+
+impl SidePages {
+    pub const ONE: Self = Self { pages: 1, page_slots: u32::MAX };
+
+    /// Slots of `unit` bytes one binding of `binding_bytes` holds.
+    pub fn per_binding(binding_bytes: u64, unit: u64) -> u32 {
+        (binding_bytes / unit.max(1)).clamp(1, u32::MAX as u64) as u32
+    }
+
+    /// The pages of side data of `unit` bytes a slot for up to `slots` slots.
+    pub fn plan(binding_bytes: u64, unit: u64, slots: u32) -> Self {
+        let per = Self::per_binding(binding_bytes, unit);
+        let pages = slots.max(1).div_ceil(per);
+        if pages <= 1 { Self { pages: 1, page_slots: slots.max(1) } } else { Self { pages, page_slots: per } }
+    }
+
+    /// The binding of page `p`.
+    pub fn binding(&self, p: u32) -> u32 {
+        if p == 0 { 0 } else { SIDE_BINDING + p - 1 }
+    }
+
+    /// The page of `slot` and the slot within it.
+    pub fn locate(&self, slot: u32) -> (u32, u32) {
+        if self.pages == 1 { (0, slot) } else { (slot / self.page_slots, slot % self.page_slots) }
+    }
+
+    /// The read replacing [`SIDE_ONE_PAGE`] (itself for one page): the pages' declarations at
+    /// the storage's group and `aux_slot` reading the slot's page.
+    pub fn wgsl(&self) -> String {
+        if self.pages == 1 {
+            return SIDE_ONE_PAGE.to_string();
+        }
+        let decls: String = (1..self.pages).map(|p| format!("@group(S_GROUP) @binding({}) var<storage, read> aux{p}: array<u32>;\n", self.binding(p))).collect();
+        let cases: String = (1..self.pages).map(|p| format!("        case {p}u: {{ return aux{p}[at]; }}\n")).collect();
+        format!(
+            "{decls}// Side data word `i` of slot `slot`: {} pages of {} slots.\nfn aux_slot(slot: u32, i: u32) -> u32 {{\n    let page = slot / {}u;\n    let at = (slot - page * {}u) * AUX_WORDS + i;\n    switch page {{\n{cases}        default: {{ return aux[at]; }}\n    }}\n}}\n",
+            self.pages, self.page_slots, self.page_slots, self.page_slots
+        )
+    }
+}
+
 pub const LIGHTING_WGSL: &str = include_str!("lighting.wgsl");
 
 
@@ -315,6 +385,9 @@ pub struct VoxelWorldConfig {
     pub view_radius: u32,
     pub shadows: Shadows,
     pub visibility: wgpu::ShaderStages,
+    /// Bytes a pool slot of each side data the pipeline binds beside the pool (pool storages'
+    /// `aux`); their extra pages share the stage's bindings with the pool's ([`PoolPages`]).
+    pub side_bytes: Vec<u64>,
 }
 
 pub struct VoxelWorld {
@@ -357,7 +430,8 @@ impl VoxelWorld {
         let limits = gpu.device.limits();
         let max_bytes = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
         let want = if cfg.upload_voxels { (cfg.pool_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) as u32 } else { 1 };
-        let pages = PoolPages::plan(want, (max_bytes / CHUNK_BYTES).min(u32::MAX as u64) as u32, limits.max_storage_buffers_per_shader_stage);
+        let side: Vec<u32> = cfg.side_bytes.iter().filter(|&&b| b > 0).map(|&b| SidePages::per_binding(max_bytes, b)).collect();
+        let pages = PoolPages::plan(want, (max_bytes / CHUNK_BYTES).min(u32::MAX as u64) as u32, limits.max_storage_buffers_per_shader_stage, &side);
         let max_slots = want.min(pages.slots());
         let pool_slots = max_slots.min(64).min(pages.page_slots);
         if cfg.upload_voxels {
@@ -430,6 +504,11 @@ impl VoxelWorld {
     /// How the pool is bound, for the shaders reading it (`Program::pool`).
     pub fn pages(&self) -> PoolPages {
         self.pages
+    }
+
+    /// The most chunks the pool holds (side data indexed by slot covers this many).
+    pub fn max_slots(&self) -> u32 {
+        self.max_slots
     }
 
     /// Grows the pool to hold `slots` chunks (pages created or grown as reached); `None` if
@@ -775,15 +854,32 @@ mod tests {
     /// 2 GiB less a byte); else whole bindings, at most as many as the stage may bind.
     #[test]
     fn pages_planned() {
-        assert_eq!(PoolPages::plan(32768, 32767, 1 << 20), PoolPages { pages: 1, page_slots: 32767 });
-        assert_eq!(PoolPages::plan(1000, 32767, 1 << 20), PoolPages { pages: 1, page_slots: 1000 });
-        assert_eq!(PoolPages::plan(32768, 2048, 1 << 20), PoolPages { pages: 16, page_slots: 2048 });
-        assert_eq!(PoolPages::plan(3000, 2048, 1 << 20), PoolPages { pages: 2, page_slots: 2048 });
-        assert_eq!(PoolPages::plan(2100, 2048, 1 << 20), PoolPages { pages: 1, page_slots: 2048 });
-        assert_eq!(PoolPages::plan(1 << 20, 2048, 1 << 20).pages, MAX_PAGES);
-        assert_eq!(PoolPages::plan(32768, 2048, OTHER_BUFFERS + 4).pages, 4, "headroom for the other groups' storage buffers");
-        assert_eq!(PoolPages::plan(32768, 2048, 48).pages, 11, "lavapipe: 48 a stage");
-        assert_eq!(PoolPages::plan(32768, 2048, 8).pages, 1);
+        assert_eq!(PoolPages::plan(32768, 32767, 1 << 20, &[]), PoolPages { pages: 1, page_slots: 32767 });
+        assert_eq!(PoolPages::plan(1000, 32767, 1 << 20, &[]), PoolPages { pages: 1, page_slots: 1000 });
+        assert_eq!(PoolPages::plan(32768, 2048, 1 << 20, &[]), PoolPages { pages: 16, page_slots: 2048 });
+        assert_eq!(PoolPages::plan(3000, 2048, 1 << 20, &[]), PoolPages { pages: 2, page_slots: 2048 });
+        assert_eq!(PoolPages::plan(2100, 2048, 1 << 20, &[]), PoolPages { pages: 1, page_slots: 2048 });
+        assert_eq!(PoolPages::plan(1 << 20, 2048, 1 << 20, &[]).pages, MAX_PAGES);
+        assert_eq!(PoolPages::plan(32768, 2048, OTHER_BUFFERS + 4, &[]).pages, 4, "headroom for the other groups' storage buffers");
+        assert_eq!(PoolPages::plan(32768, 2048, 48, &[]).pages, 11, "lavapipe: 48 a stage");
+        assert_eq!(PoolPages::plan(32768, 2048, 8, &[]).pages, 1);
+        // `distance`'s side data (4096 slots a binding on lavapipe) beside the pool: their
+        // pages together within the 11.
+        let p = PoolPages::plan(32768, 2048, 48, &[4096]);
+        assert_eq!(p.pages, 8, "8 pages of 2048 slots, their side data in 4 bindings: 8 + 3 extra");
+        assert!(p.pages + (p.pages * 2048).div_ceil(4096) - 1 <= 11);
+        assert_eq!(PoolPages::plan(32768, 32767, 1 << 20, &[65534]).pages, 1, "one page stays one");
+    }
+
+    /// One page of side data reads as written; more read each page at its own binding.
+    #[test]
+    fn side_pages_planned() {
+        assert_eq!(SidePages::plan(128 << 20, 32768, 4000), SidePages { pages: 1, page_slots: 4000 });
+        assert_eq!(SidePages::plan(128 << 20, 32768, 9000), SidePages { pages: 3, page_slots: 4096 });
+        assert_eq!(SidePages { pages: 3, page_slots: 4096 }.locate(8200), (2, 8));
+        assert_eq!(SidePages::ONE.wgsl(), SIDE_ONE_PAGE);
+        let w = SidePages { pages: 3, page_slots: 4096 }.wgsl();
+        assert!(w.contains("@binding(8) var<storage, read> aux1") && w.contains("@binding(9) var<storage, read> aux2"), "{w}");
     }
 
     /// One page leaves the world's module as written; more read the pages and compile.
@@ -814,7 +910,7 @@ mod tests {
         let tex = mr_core::Texture { name: "t".into(), texels: vec![[255; 4]; 256], alpha: vec![] };
         let block = |name: &str| mr_core::BlockType { name: name.into(), faces: [0; 6], class: Default::default() };
         let blocks = BlockRegistry { textures: vec![tex], blocks: vec![block("air"), block("stone")] };
-        let cfg = VoxelWorldConfig { max_lod: 0, upload_voxels: true, pool_mb: 4, view_radius: 4, shadows: Shadows::None, visibility: wgpu::ShaderStages::COMPUTE };
+        let cfg = VoxelWorldConfig { max_lod: 0, upload_voxels: true, pool_mb: 4, view_radius: 4, shadows: Shadows::None, visibility: wgpu::ShaderStages::COMPUTE, side_bytes: vec![] };
         let mut world = VoxelWorld::new(&gpu, &blocks, Environment::default(), cfg).unwrap();
         assert_eq!(world.pages(), PoolPages { pages: 4, page_slots: 16 });
         const N: u32 = 60;

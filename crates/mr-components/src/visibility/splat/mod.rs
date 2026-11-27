@@ -22,6 +22,22 @@ pub fn gpu_wgsl() -> String {
     )
 }
 
+/// The points' read in [`GPU_WGSL`] with one binding.
+const POINT_READ: &str = "fn point_at(i: u32) -> Point { return points[i]; }\n";
+
+/// `own` (the splat shader) reading its points over several bindings: `points` (the first,
+/// `per` points) and one more at each of `bindings` (none: `own` as it is).
+pub fn paged(own: &str, bindings: &[u32], per: u64) -> String {
+    if bindings.is_empty() {
+        return own.to_string();
+    }
+    assert!(own.contains(POINT_READ), "splat's gpu.wgsl: `point_at` changed");
+    let decls: String = bindings.iter().enumerate().map(|(i, b)| format!("@group(0) @binding({b}) var<storage, read> points{}: array<Point>;\n", i + 1)).collect();
+    let cases: String = (1..=bindings.len()).map(|p| format!("        case {p}u: {{ return points{p}[at]; }}\n")).collect();
+    let read = format!("let page = i / {per}u;\n    let at = i - page * {per}u;\n    switch page {{\n{cases}        default: {{ return points[at]; }}\n    }}");
+    own.replace(POINT_READ, &format!("{decls}{}", POINT_READ.replace("return points[i];", &format!("\n    {read}\n"))))
+}
+
 /// The entry points in dispatch order: clear (per pixel), the depth splats (per point, then
 /// per large point), the id splats (the same), the resolve (per pixel).
 pub const ENTRIES: [&str; 6] = [

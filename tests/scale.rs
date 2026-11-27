@@ -71,20 +71,87 @@ edits = [{ node = "storage", component = "clipmap" }]"#;
     assert!(e.contains("max_texture_dimension_3d") && e.contains("radius of 31 at most"), "{e}");
 }
 
-/// A storage's side data (distance's fields, tree64's nodes) past what the device binds
-/// (128 MiB at the baseline) failed naming `pool_mb` (the knob, though its 2048 MiB asks
-/// more), or with "the storage's side data does not fit" and no limit at all. Now the
-/// device's binding size is named.
+/// A run of `generator` at `radius` with `renderer` (one lit frame, saved), on the device as
+/// it is or clamped (`MR_GPU_LIMITS`): the lane's error, the frame's PNG bytes and the log.
+fn frame(dir: &Path, generator: &str, renderer: &str, radius: u32, limits: Option<&str>) -> (Option<String>, Vec<u8>, String) {
+    let d = dir.join(format!("r{radius}-{}", limits.unwrap_or("device")));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let plan = format!(
+        r#"[scene]
+generator = {generator}
+camera = {{ type = "line", from = [0, 60, 0], to = [40, 60, 0] }}
+[run]
+frames = 1
+warmup = 0
+resolution = [96, 54]
+modes = ["lit"]
+view_radius = {radius}
+[[renderer]]
+{renderer}
+[output]
+dir = {:?}
+save = {{ every = 0 }}
+"#,
+        d.join("out").to_str().unwrap(),
+    );
+    std::fs::write(d.join("plan.toml"), plan).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_multirenderer"));
+    c.arg("run").arg(d.join("plan.toml")).env("RUST_LOG", "info");
+    if let Some(l) = limits {
+        c.env("MR_GPU_LIMITS", l);
+    }
+    let o = c.output().unwrap();
+    let log = String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "the run failed:\n{log}");
+    let report = walk(&d.join("out")).unwrap_or_else(|| panic!("no report:\n{log}"));
+    let r: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    let png = find_png(report.parent().unwrap()).map(|p| std::fs::read(p).unwrap()).unwrap_or_default();
+    // The worker's own log (where the executor says how it bound the data).
+    let workers: String = std::fs::read_dir(report.parent().unwrap().join("logs")).into_iter().flatten().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
+    (r[0]["error"].as_str().map(str::to_string), png, log + &workers)
+}
+
+fn find_png(dir: &Path) -> Option<std::path::PathBuf> {
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if let Some(f) = find_png(&p) {
+                return Some(f);
+            }
+        } else if p.extension().is_some_and(|e| e == "png") && !p.to_string_lossy().contains("diff") {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Data a device binds less of than a world needs is split over several bindings: a pool
+/// storage's side data (`distance`'s fields, 32 KiB a chunk: past 4096 chunks at the
+/// baseline's 128 MiB) and the splats' points (16 bytes a point: past 8 M). Each failed
+/// naming `max_storage_buffer_binding_size` (lavapipe refused them so); now the clamped
+/// device renders the same pixels as the device as it is, and its log shows the pages.
+/// `distance` at the baseline (`sizes`, a flat world past 4096 chunks); the splats on
+/// bindings of 16 MiB (`binding:16`: 1 M points a page; 8 M points take a large world).
 #[test]
 #[ignore]
-fn side_data_past_the_binding_size_names_it() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scale-aux");
+fn side_data_and_points_past_the_binding_size_render_over_several_bindings() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scale-pages");
+    let flat = r#"{ type = "flat" }"#;
     let distance = r#"graph = "raycast-gpu"
 edits = [{ node = "storage", component = "distance" }]"#;
-    assert_eq!(lane_error(&dir, distance, 16), None);
-    let e = lane_error(&dir, distance, 32).expect("radius 32 rendered");
-    assert!(e.contains("storage: aux") && e.contains("max_storage_buffer_binding_size") && e.contains("below what `pool_mb` asks"), "{e}");
+    let splat = r#"graph = "splat-gpu""#;
+    for (name, generator, renderer, radius, limits, shows) in [("distance", flat, distance, 40, "sizes", "side data"), ("splat", r#"{ type = "lattice" }"#, splat, 10, "binding:16", "points")] {
+        let d = dir.join(name);
+        let (e, clamped, log) = frame(&d, generator, renderer, radius, Some(limits));
+        assert_eq!(e, None, "{name} at radius {radius}, clamped:\n{log}");
+        assert!(log.contains(&format!("{shows} over")), "{name}: no pages in the log:\n{log}");
+        let (e, plain, log) = frame(&d, generator, renderer, radius, None);
+        assert_eq!(e, None, "{name} at radius {radius}:\n{log}");
+        assert!(!plain.is_empty() && clamped == plain, "{name}: the clamped device rendered other pixels");
+    }
 }
+
 
 /// Frames are 2D textures: a side past `max_texture_dimension_2d` (8192 at the baseline)
 /// failed with a bare "wgpu error: Validation Error". Now refused naming the limit.

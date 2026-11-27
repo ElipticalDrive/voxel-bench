@@ -22,6 +22,9 @@ struct Point { pos: vec3<i32>, info: u32 } // info: block | face_mask << 16
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
 #endif
 @group(0) @binding(8) var<storage, read> points: array<Point>;
+// Point `i` (over several bindings where the device binds less than the points: the region's
+// `PointPages` replaces this).
+fn point_at(i: u32) -> Point { return points[i]; }
 @group(0) @binding(9) var<storage, read_write> zbuf: array<atomic<u32>>;
 @group(0) @binding(10) var<storage, read_write> idbuf: array<atomic<u32>>;
 
@@ -46,7 +49,7 @@ struct Splat { ok: bool, big: bool, x0: i32, y0: i32, x1: i32, y1: i32, bmin: ve
 fn project(id: u32) -> Splat {
     var s: Splat;
     s.ok = false;
-    let pt = points[id];
+    let pt = point_at(id);
     s.pos = pt.pos;
     s.bmin = vec3<f32>(pt.pos - vp.cam_block);
     let c = s.bmin + vec3<f32>(0.5) - cam.origin;
@@ -136,7 +139,7 @@ fn id_px(s: Splat, id: u32, x: i32, y: i32) {
     // Expecting the pixel empty: one atomic where no other point ties (most pixels).
     var cur = 0u;
     loop {
-        if (cur != 0u && !after(s.pos, points[cur - 1u].pos)) { return; }
+        if (cur != 0u && !after(s.pos, point_at(cur - 1u).pos)) { return; }
         let r = atomicCompareExchangeWeak(&idbuf[i], cur, id + 1u);
         if (r.exchanged) { return; }
         cur = r.old_value;
@@ -209,7 +212,7 @@ fn view_lit() -> bool { return cam.mode == 1u; }
 // The surface of point `id` on primary ray `d`: the face the ray enters the block through
 // (a point wins a pixel only where its ray meets the block).
 fn record_decode(id: u32, d: vec3<f32>) -> Surface {
-    let pt = points[id - 1u];
+    let pt = point_at(id - 1u);
     let o = cam.origin;
     let bmin = vec3<f32>(pt.pos - vp.cam_block);
     let inv = 1.0 / d;

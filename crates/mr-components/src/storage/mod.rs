@@ -94,7 +94,9 @@ impl GpuStorage {
     pub fn source(&self) -> String {
         const NO_LOD: &str = "const S_HAS_LOD: bool = false;\nfn s_top_lod(key: vec3<i32>, lod: u32) -> u32 { return s_top(key); }\n";
         let (top, aux_words) = match self.kind {
-            Kind::Pool { aux_words, .. } => (include_str!("pool_top.wgsl").to_string(), aux_words),
+            // The side data's read (`aux_slot`), replaced where it spans several bindings
+            // (`mr_gpu::voxels::SidePages`, `Program::side`).
+            Kind::Pool { aux_words, .. } => (format!("{}{}", mr_gpu::voxels::SIDE_ONE_PAGE, include_str!("pool_top.wgsl")), aux_words),
             Kind::Region { .. } | Kind::Dag => {
                 (format!("{}{NO_LOD}", include_str!("region_top.wgsl")), 0)
             }

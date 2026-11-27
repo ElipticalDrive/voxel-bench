@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use glam::IVec3;
 use mr_core::chunk::local_of_block;
 use mr_core::{BlockId, CHUNK_VOLUME, ChunkData};
-use mr_gpu::voxels::{VoxelWorld, hash3};
+use mr_gpu::voxels::{SidePages, VoxelWorld, hash3};
 use mr_gpu::{Gpu, GrowableBuffer, RangeAlloc, wgpu};
 use rayon::prelude::*;
 
@@ -33,8 +33,9 @@ const UNIFORM_BIT: u32 = 0x8000_0000;
 /// `aux_v4`, the same buffer as `aux` seen as 16-byte words (binding 2; region blobs are
 /// 16-byte aligned, so 4-word records load in one access) and `region_head` (binding 3,
 /// uniform: the table's mask and longest probe).
-/// Texture storages add their own bindings (`clipmap`: 4-7).
-pub fn layout(gpu: &Gpu, st: &GpuStorage, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayout {
+/// Texture storages add their own bindings (`clipmap`: 4-7); side data over several bindings
+/// its later pages (`SidePages`, 8..).
+pub fn layout(gpu: &Gpu, st: &GpuStorage, side: SidePages, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayout {
     let entry = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
@@ -56,6 +57,7 @@ pub fn layout(gpu: &Gpu, st: &GpuStorage, visibility: wgpu::ShaderStages) -> wgp
         count: None,
     };
     let mut entries = vec![entry(0), entry(1), entry(2), head];
+    entries.extend((1..side.pages).map(|p| entry(side.binding(p))));
     if let Kind::Clipmap = st.kind {
         entries.extend(super::clipmap::layout_entries(visibility));
     }
@@ -75,6 +77,9 @@ pub struct Limits {
     pub view_radius: u32,
     /// More than 256 block types.
     pub wide_ids: bool,
+    /// The most chunks the voxel pool holds (`VoxelWorld::max_slots`): pool storages' side
+    /// data covers this many slots.
+    pub pool_slots: u32,
 }
 
 struct Region {
@@ -87,6 +92,10 @@ struct Region {
 pub struct StorageData {
     st: GpuStorage,
     aux: GrowableBuffer,
+    /// Pool storages: how the side data is bound (one page: `aux` alone) and its later pages
+    /// (all created at once, grown as the slots reach them).
+    side: SidePages,
+    side_pages: Vec<GrowableBuffer>,
     regions_buf: wgpu::Buffer,
     head_buf: wgpu::Buffer,
     bind: Option<wgpu::BindGroup>,
@@ -103,9 +112,13 @@ pub struct StorageData {
 impl StorageData {
     pub fn new(gpu: &Gpu, st: GpuStorage, limits: Limits) -> Self {
         let limit_mb = limits.mb;
+        let (side, side_slots) = Self::side_plan(gpu, st, limits);
+        if side.pages > 1 {
+            tracing::info!("storage: side data over {} bindings of {} chunks (the device binds less than {side_slots} chunks' worth)", side.pages, side.page_slots);
+        }
         let max = match st.kind {
             Kind::Pool { aux_words, .. } => {
-                (limit_mb as u64 * 1024 * 1024 / CHUNK_BYTES).max(1) * aux_words as u64 * 4
+                side_slots.min(side.page_slots) as u64 * aux_words as u64 * 4
             }
             Kind::Region { .. } | Kind::Dag => limit_mb as u64 * 1024 * 1024,
             Kind::Clipmap => 256,
@@ -117,6 +130,16 @@ impl StorageData {
             max.max(256),
             wgpu::BufferUsages::STORAGE,
         );
+        let unit = match st.kind {
+            Kind::Pool { aux_words, .. } => aux_words as u64 * 4,
+            _ => 0,
+        };
+        let side_pages = (1..side.pages)
+            .map(|p| {
+                let slots = (side_slots - p * side.page_slots).min(side.page_slots);
+                GrowableBuffer::new(gpu, "storage: aux", 256, (slots as u64 * unit).max(256), wgpu::BufferUsages::STORAGE)
+            })
+            .collect();
         let regions_buf = Self::table_buffer(gpu, 16 * 16);
         let head_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("storage region head"),
@@ -136,6 +159,8 @@ impl StorageData {
             alloc: RangeAlloc::new((aux.size() / 16) as u32),
             st,
             aux,
+            side,
+            side_pages,
             regions_buf,
             head_buf,
             bind: None,
@@ -147,6 +172,31 @@ impl StorageData {
             clip: matches!(st.kind, Kind::Clipmap)
                 .then(|| Clipmap::new(gpu, limits.view_radius, limits.wide_ids)),
         }
+    }
+
+    /// How a pool storage's side data is bound: the slots it covers (the pool's, at most what
+    /// `mb` asks) over as many bindings as the device needs. One page for anything else.
+    pub fn side_plan(gpu: &Gpu, st: GpuStorage, limits: Limits) -> (SidePages, u32) {
+        match st.kind {
+            Kind::Pool { aux_words, .. } if aux_words > 0 => {
+                let want = (limits.mb as u64 * 1024 * 1024 / CHUNK_BYTES).clamp(1, u32::MAX as u64) as u32;
+                let slots = want.min(limits.pool_slots.max(1));
+                let l = gpu.device.limits();
+                let bind = l.max_storage_buffer_binding_size.min(l.max_buffer_size) & !15;
+                (SidePages::plan(bind, aux_words as u64 * 4, slots), slots)
+            }
+            _ => (SidePages::ONE, 0),
+        }
+    }
+
+    /// How the side data is bound (`Program::side` for the shaders reading it).
+    pub fn side(&self) -> SidePages {
+        self.side
+    }
+
+    /// The buffer of side data page `p`.
+    fn side_buffer(&self, p: u32) -> &wgpu::Buffer {
+        if p == 0 { self.aux.buffer() } else { self.side_pages[p as usize - 1].buffer() }
     }
 
     fn table_buffer(gpu: &Gpu, size: u64) -> wgpu::Buffer {
@@ -175,18 +225,25 @@ impl StorageData {
                 let unit = aux_words as u64 * 4;
                 // Keep the side data indexed like the pool: every changed dense chunk (at any
                 // LOD) rewrites its slot (slots of unloaded chunks are simply no longer read).
-                if self
-                    .aux
-                    .reserve(gpu, world.pool_slots() as u64 * unit, "`pool_mb`")
-                    .ok_or_else(|| anyhow::anyhow!(gpu.failure().get().unwrap_or_else(|| "storage: aux: the side data does not fit".into())))?
-                {
-                    self.bind = None;
+                // Each page holds `page_slots` slots; the pages are grown as the slots reach them.
+                let slots = world.pool_slots();
+                let ps = if self.side.pages == 1 { u32::MAX } else { self.side.page_slots };
+                for p in 0..slots.div_ceil(ps).min(self.side.pages) {
+                    let n = (slots - p * ps).min(ps) as u64 * unit;
+                    let buf = if p == 0 { &mut self.aux } else { &mut self.side_pages[p as usize - 1] };
+                    if buf
+                        .reserve(gpu, n, "`pool_mb`")
+                        .ok_or_else(|| anyhow::anyhow!(gpu.failure().get().unwrap_or_else(|| "storage: aux: the side data does not fit".into())))?
+                    {
+                        self.bind = None;
+                    }
                 }
                 for &key in world.changed_keys() {
                     if let (Some(slot), Some(ChunkData::Dense(d))) = world.slot_and_chunk(key) {
+                        let (page, at) = self.side.locate(slot);
                         gpu.queue.write_buffer(
-                            self.aux.buffer(),
-                            slot as u64 * unit,
+                            self.side_buffer(page),
+                            at as u64 * unit,
                             bytemuck::cast_slice(&build(d)),
                         );
                     }
@@ -243,6 +300,10 @@ impl StorageData {
                     resource: self.head_buf.as_entire_binding(),
                 },
             ];
+            entries.extend((1..self.side.pages).map(|p| wgpu::BindGroupEntry {
+                binding: self.side.binding(p),
+                resource: self.side_buffer(p).as_entire_binding(),
+            }));
             if let Some(clip) = &self.clip {
                 entries.extend(clip.bind_entries());
             }
@@ -408,7 +469,7 @@ impl StorageData {
     pub fn memory_bytes(&self) -> u64 {
         match self.st.kind {
             Kind::Pool { aux_words: 0, .. } => 0,
-            Kind::Pool { .. } => self.aux.size(),
+            Kind::Pool { .. } => self.aux.size() + self.side_pages.iter().map(|b| b.size()).sum::<u64>(),
             Kind::Region { .. } => {
                 self.regions
                     .values()
@@ -508,15 +569,31 @@ impl StorageSet {
                 } else {
                     format!("{}_", s.node.split('.').next().unwrap_or(&s.node))
                 };
+                let data = StorageData::new(gpu, st, limits);
                 Instance {
-                    layout: layout(gpu, &st, visibility),
-                    data: StorageData::new(gpu, st, limits),
+                    layout: layout(gpu, &st, data.side(), visibility),
+                    data,
                     group: s.group,
                     prefix,
                 }
             })
             .collect();
         Self { items }
+    }
+
+    /// How each storage's side data is bound, by its bind group (`Program::side`).
+    pub fn side_pages(&self) -> Vec<(u32, SidePages)> {
+        self.items.iter().map(|it| (it.group, it.data.side())).collect()
+    }
+
+    /// Bytes a pool slot of each storage's side data (`VoxelWorldConfig::side_bytes`).
+    pub fn side_bytes(walks: &crate::shaders::Walks) -> Vec<u64> {
+        (0..walks.storages.len())
+            .filter_map(|i| match walks.gpu_storage(i).kind {
+                Kind::Pool { aux_words, .. } if aux_words > 0 => Some(aux_words as u64 * 4),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Whether any storage reads the shared voxel pool.
