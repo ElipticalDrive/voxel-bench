@@ -77,9 +77,15 @@ pub(crate) trait Node: Send {
         &[]
     }
     /// A pass carrying its output through the gates `chain` (its serialized form's), if its
-    /// output has one.
-    fn gate(&self, _chain: GateChain, _width: u32, _height: u32) -> Option<Box<dyn Node>> {
+    /// output has one; `late`: its reader reads it a frame late (an edge timed `prev`; the
+    /// chain may be empty, then the pass holds a copy of last frame's value).
+    fn gate(&self, _chain: GateChain, _late: bool, _width: u32, _height: u32) -> Option<Box<dyn Node>> {
         None
+    }
+    /// Whether its output is seen from its frame's camera (hits, screen triangles), so a
+    /// reader of it a frame late runs with last frame's camera; not so the meshes of the world.
+    fn viewed(&self) -> bool {
+        true
     }
     /// The camera of the frame whose value it now outputs, when that is not this frame's (a
     /// gate's: what arrived was cast earlier). The passes reading it, directly or through
@@ -174,12 +180,15 @@ pub(crate) struct GatePass<T> {
     cameras: std::collections::VecDeque<(u64, Camera)>,
     /// The camera of the value it outputs (`None`: none arrived since the start or a resize).
     shown: Option<Camera>,
-    _t: std::marker::PhantomData<T>,
+    /// Its reader reads it a frame late (`prev`): what arrived this frame waits here, with
+    /// its camera, and is output the next.
+    late: bool,
+    pending: Option<(T, Option<Camera>)>,
 }
 
 impl<T: Crossing> GatePass<T> {
-    pub fn boxed(chain: GateChain, width: u32, height: u32) -> Box<dyn Node> {
-        Box::new(Self { chain, width, height, cameras: Default::default(), shown: None, _t: std::marker::PhantomData })
+    pub fn boxed(chain: GateChain, late: bool, width: u32, height: u32) -> Box<dyn Node> {
+        Box::new(Self { chain, width, height, cameras: Default::default(), shown: None, late, pending: None })
     }
 }
 
@@ -190,30 +199,41 @@ impl<T: Crossing> Node for GatePass<T> {
     }
     fn run(&mut self, cx: &Cx, ins: &[&Res], out: &mut Res, report: &mut Report) {
         let start = std::time::Instant::now();
+        if let Some((v, camera)) = self.pending.take() {
+            *out.downcast_mut::<T>().expect("the gated edge's value") = v;
+            self.shown = camera;
+        }
         let value = ins[0].downcast_ref::<T>().expect("the gated edge's value").sent();
         self.cameras.push_back((cx.req.frame_id, cx.req.camera));
         let got = self.chain.gates.pass(cx.req.time, Some(OnWire { frame_id: cx.req.frame_id, value }));
         if let Some(v) = got.into_iter().rev().find(|v| v.value.fits(self.width, self.height)) {
-            *out.downcast_mut::<T>().expect("the gated edge's value") = v.value;
             // The frames before it are passed: their values can only arrive late now.
             let camera = match self.cameras.iter().position(|(id, _)| *id == v.frame_id) {
                 Some(i) => self.cameras.drain(..=i).next_back().expect("found").1,
                 None => cx.req.camera,
             };
-            self.shown = T::VIEWED.then_some(camera);
+            let camera = T::VIEWED.then_some(camera);
+            if self.late {
+                self.pending = Some((v.value, camera));
+            } else {
+                *out.downcast_mut::<T>().expect("the gated edge's value") = v.value;
+                self.shown = camera;
+            }
         }
         // No more cameras kept than messages could still arrive (each is at least a packet).
         let in_flight: usize = self.chain.gates.0.iter().map(|g| g.in_flight()).sum();
         let drop = self.cameras.len().saturating_sub(in_flight);
         self.cameras.drain(..drop);
         let nodes: Vec<String> = self.chain.nodes.iter().map(|(id, _)| id.clone()).collect();
-        report.stages.push(StageTime::cpu("gate", &nodes, start.elapsed().as_secs_f32() * 1e3));
+        let stage = if nodes.is_empty() { "hold" } else { "gate" };
+        report.stages.push(StageTime::cpu(stage, &nodes, start.elapsed().as_secs_f32() * 1e3));
         report.gates.extend(self.chain.reports());
     }
     fn resize(&mut self, out: &mut Res, width: u32, height: u32) {
         (self.width, self.height) = (width, height);
         *out = Box::new(T::blank(width, height));
         self.shown = None;
+        self.pending = None;
     }
     fn shown_camera(&self) -> Option<Camera> {
         self.shown
@@ -228,12 +248,12 @@ pub(crate) fn gate_edges(g: &Checked, width: u32, height: u32, passes: &mut Vec<
         let (Some(&p), Some(&r)) = (index.get(&e.source), index.get(&e.reader)) else {
             anyhow::bail!("{at}: `{}` and `{}` run as one pass here, nothing crosses between them", e.source, e.reader);
         };
-        let node = passes[p].node.gate(GateChain::new(&e.edge(), &e.gates), width, height).ok_or_else(|| anyhow::anyhow!("{at}: `{}` gives its output no serialized form yet", e.source))?;
+        let node = passes[p].node.gate(GateChain::new(&e.edge(), &e.gates), false, width, height).ok_or_else(|| anyhow::anyhow!("{at}: `{}` gives its output no serialized form yet", e.source))?;
         for pass in passes.iter_mut() {
             pass.ins.iter_mut().filter(|j| **j > p).for_each(|j| *j += 1);
         }
         index.values_mut().filter(|j| **j > p).for_each(|j| *j += 1);
-        passes.insert(p + 1, Pass { node, ins: vec![p] });
+        passes.insert(p + 1, Pass { node, ins: vec![p], late: false });
         let reader = &mut passes[r + 1];
         anyhow::ensure!(reader.ins.contains(&p), "{at}: `{}` does not read `{}` as a pass", e.reader, e.source);
         reader.ins.iter_mut().filter(|j| **j == p).for_each(|j| *j = p + 1);
@@ -241,10 +261,76 @@ pub(crate) fn gate_edges(g: &Checked, width: u32, height: u32, passes: &mut Vec<
     Ok(())
 }
 
-/// One pass: its node and the passes whose outputs it reads.
+/// A placeholder among a pass's inputs for an edge timed `prev` ([`reads`]): this plus the
+/// producer's position among the graph's nodes; [`late_edges`] resolves it.
+const LATE: usize = 1 << 40;
+
+/// Resolves the inputs timed `prev` (run before [`gate_edges`]): a hold pass on each such
+/// edge keeps a copy of the producer's value of the last frame (its serialized form's
+/// `sent`, through no gates; a blank one before the first frame and after a resize, when
+/// the producer's output does not fit the frame), and the reader reads the hold. Behind a
+/// reader that runs before its producer, the hold runs just before the reader and copies
+/// the producer's output as it stands, last frame's (read with that frame's camera:
+/// [`Executor`]); behind one that runs after it, the hold runs just after the producer and
+/// outputs what it took a frame later. An input from a node that is no pass (the world's
+/// changes, through the client) marks the reader `late`: the changes reach it a frame late.
+pub(crate) fn late_edges(g: &Checked, width: u32, height: u32, passes: &mut Vec<Pass>, index: &mut HashMap<String, usize>) -> anyhow::Result<()> {
+    // Inserts `pass` at `at`, every index at or after it moved on.
+    fn insert(passes: &mut Vec<Pass>, index: &mut HashMap<String, usize>, at: usize, pass: Pass) {
+        for p in passes.iter_mut() {
+            p.ins.iter_mut().filter(|k| **k >= at && **k < LATE).for_each(|k| *k += 1);
+        }
+        index.values_mut().filter(|k| **k >= at).for_each(|k| *k += 1);
+        passes.insert(at, pass);
+    }
+    let ids: Vec<String> = g.graph.nodes.keys().cloned().collect();
+    let mut i = 0;
+    while i < passes.len() {
+        let mut j = 0;
+        while j < passes[i].ins.len() {
+            let x = passes[i].ins[j];
+            if x < LATE {
+                j += 1;
+                continue;
+            }
+            let from = &ids[x - LATE];
+            let Some(p) = index.get(from).copied() else {
+                passes[i].ins.remove(j);
+                passes[i].late = true;
+                continue;
+            };
+            let before = p > i;
+            let node = passes[p].node.gate(GateChain::new(&format!("{from} (prev)"), &[]), !before, width, height).ok_or_else(|| anyhow::anyhow!("`{from}` is read a frame late, and its output has no copy to keep yet"))?;
+            if before {
+                // The producer moves on by one, the reader too.
+                insert(passes, index, i, Pass { node, ins: vec![p + 1], late: false });
+                i += 1;
+                passes[i].ins[j] = i - 1;
+            } else {
+                insert(passes, index, p + 1, Pass { node, ins: vec![p], late: false });
+                i += 1;
+                passes[i].ins[j] = p + 1;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// One pass: its node and the passes whose outputs it reads (an earlier pass: this frame's
+/// output; a later one: last frame's, an edge timed `prev`); `late`: the world's changes
+/// reach it a frame late.
 pub(crate) struct Pass {
     pub node: Box<dyn Node>,
     pub ins: Vec<usize>,
+    pub late: bool,
+}
+
+impl Pass {
+    pub fn new(node: Box<dyn Node>, ins: Vec<usize>) -> Self {
+        Self { node, ins, late: false }
+    }
 }
 
 /// The view's knobs among the options (where the post node's knobs come over them).
@@ -261,7 +347,8 @@ impl Default for ViewOptions {
     }
 }
 
-/// The executor: the passes in frame order; the last one's output is the image (`Vec<P>`).
+/// The executor: the passes in frame order; one's output is the image (`Vec<P>`), the last
+/// one's unless a pass reads it a frame late.
 pub(crate) struct Executor<P> {
     pool: Pool,
     world: World,
@@ -269,6 +356,8 @@ pub(crate) struct Executor<P> {
     height: u32,
     passes: Vec<Pass>,
     outs: Vec<Res>,
+    /// The pass whose output is the image.
+    image: usize,
     /// The pipeline graph it runs (the host's, then with the edits taken while running).
     graph: mr_components::graph::Graph,
     /// The knob values a compiled pipeline baked in ([`crate::Spec::KNOBS`]).
@@ -280,17 +369,25 @@ pub(crate) struct Executor<P> {
     view: String,
     view_max: u32,
     values: Vec<AtomicU32>,
+    /// Each pass's camera in the last frame (what a reader of its output a frame late runs
+    /// with); empty before the first frame.
+    last_cameras: Vec<Camera>,
+    /// The world's changes for the passes reading them a frame late: those that arrived
+    /// for this frame, and those that arrived for the last (applied at this frame's start).
+    arriving: Vec<WorldUpdate>,
+    held: Vec<WorldUpdate>,
     _px: std::marker::PhantomData<P>,
 }
 
 impl<P: Pixel> Executor<P> {
     pub fn new(p: &InitParams, threads: usize, world: World, mut passes: Vec<Pass>) -> anyhow::Result<Self> {
-        anyhow::ensure!(passes.iter().enumerate().all(|(i, s)| s.ins.iter().all(|&j| j < i)), "a pass reads a later pass's output");
-        let outs = passes.iter_mut().map(|s| s.node.output(p.width, p.height)).collect();
+        anyhow::ensure!(passes.iter().enumerate().all(|(i, s)| s.ins.iter().all(|&j| j != i && j < passes.len())), "a pass reads itself or no pass");
+        let outs: Vec<Res> = passes.iter_mut().map(|s| s.node.output(p.width, p.height)).collect();
+        let image = outs.iter().rposition(|o| o.is::<Vec<P>>()).unwrap_or(outs.len().saturating_sub(1));
         let g = mr_components::graph::of_init("cpu", p)?;
         let o: ViewOptions = p.options()?;
         let (view, view_max) = mr_components::post::view_chosen(&g, &o.view, o.view_max);
-        let mut e = Self { graph: g.graph, pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, baked: &[], native: false, view: String::new(), view_max, values: vec![], _px: std::marker::PhantomData };
+        let mut e = Self { graph: g.graph, pool: Pool::new(p.devices.cpu_threads(threads))?, world, width: p.width, height: p.height, passes, outs, image, baked: &[], native: false, view: String::new(), view_max, values: vec![], last_cameras: vec![], arriving: vec![], held: vec![], _px: std::marker::PhantomData };
         e.set_view(&view)?;
         Ok(e)
     }
@@ -312,7 +409,7 @@ impl<P: Pixel> Executor<P> {
     fn show(&mut self) -> Option<Legend> {
         let q = mr_components::post::view_quantity(&self.view, &self.quantities()).ok()??;
         let legend = q.legend(self.view_max as f64);
-        let image = self.outs.last_mut()?.downcast_mut::<Vec<P>>()?;
+        let image = self.outs.get_mut(self.image)?.downcast_mut::<Vec<P>>()?;
         let pool = &self.pool;
         let values = &self.values;
         pool.install(|| {
@@ -332,44 +429,61 @@ impl<P: Pixel> Executor<P> {
     }
 
     fn image(&self) -> &[P] {
-        self.outs.last().and_then(|o| o.downcast_ref::<Vec<P>>()).map_or(&[], |v| v.as_slice())
+        self.outs.get(self.image).and_then(|o| o.downcast_ref::<Vec<P>>()).map_or(&[], |v| v.as_slice())
     }
 }
 
 impl<P: Pixel> Renderer for Executor<P> {
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
         let rest = self.world.apply(updates);
-        for (s, out) in self.passes.iter_mut().zip(&mut self.outs) {
+        for (s, out) in self.passes.iter_mut().zip(&mut self.outs).filter(|(s, _)| !s.late) {
             s.node.update(out, &rest)?;
+        }
+        if self.passes.iter().any(|s| s.late) {
+            self.arriving.extend(rest);
         }
         Ok(())
     }
 
     fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
+        // The changes that arrived for the last frame reach the passes reading them late.
+        if !self.held.is_empty() || !self.arriving.is_empty() {
+            let held = std::mem::replace(&mut self.held, std::mem::take(&mut self.arriving));
+            for (s, out) in self.passes.iter_mut().zip(&mut self.outs).filter(|(s, _)| s.late) {
+                s.node.update(out, &held)?;
+            }
+        }
         self.world.prepare();
         let start = std::time::Instant::now();
         let mut report = Report::default();
-        let (passes, outs) = (&mut self.passes, &mut self.outs);
+        let (passes, outs, last) = (&mut self.passes, &mut self.outs, &self.last_cameras);
+        let views: Vec<bool> = passes.iter().map(|p| p.node.viewed()).collect();
         let view = (!self.values.is_empty()).then_some((self.view.as_str(), self.values.as_slice()));
         let cx = Cx { pool: &self.pool, world: &self.world, req, width: self.width, height: self.height, view };
-        self.pool.install(|| {
-            // Per pass, the camera its output was made with when not this frame's (behind a gate).
+        let cameras = self.pool.install(|| {
+            // Per pass, the camera its output was made with when not this frame's (behind a
+            // gate, or read a frame late).
             let mut cameras: Vec<Option<Camera>> = Vec::with_capacity(passes.len());
             for (i, pass) in passes.iter_mut().enumerate() {
-                // Inputs come before `i` (checked at creation): split there.
+                // Earlier passes' outputs are this frame's, later ones' last frame's.
                 let (done, rest) = outs.split_at_mut(i);
-                let ins: Vec<&Res> = pass.ins.iter().map(|&j| &done[j]).collect();
-                let camera = pass.ins.iter().find_map(|&j| cameras[j]);
+                let (out, after) = rest.split_first_mut().expect("a pass's output");
+                let ins: Vec<&Res> = pass.ins.iter().map(|&j| if j < i { &done[j] } else { &after[j - i - 1] }).collect();
+                let camera = pass.ins.iter().find_map(|&j| if j < i { cameras[j] } else { last.get(j).copied().filter(|_| views[j]) });
                 match camera {
                     Some(camera) => {
                         let req = FrameRequest { camera, ..req.clone() };
-                        pass.node.run(&Cx { req: &req, ..cx }, &ins, &mut rest[0], &mut report);
+                        pass.node.run(&Cx { req: &req, ..cx }, &ins, out, &mut report);
                     }
-                    None => pass.node.run(&cx, &ins, &mut rest[0], &mut report),
+                    None => pass.node.run(&cx, &ins, out, &mut report),
                 }
                 cameras.push(pass.node.shown_camera().or(camera));
             }
+            cameras
         });
+        if passes_read_late(&self.passes) {
+            self.last_cameras = cameras.into_iter().map(|c| c.unwrap_or(req.camera)).collect();
+        }
         if let Some(legend) = self.show() {
             report.legend = Some(legend);
         }
@@ -436,6 +550,8 @@ impl<P: Pixel> Renderer for Executor<P> {
         for (s, out) in self.passes.iter_mut().zip(&mut self.outs) {
             s.node.resize(out, width, height);
         }
+        // Outputs made before the resize are gone: nothing is read a frame late from them.
+        self.last_cameras.clear();
         Ok(())
     }
 
@@ -443,6 +559,18 @@ impl<P: Pixel> Renderer for Executor<P> {
         let cpu_bytes = self.passes.iter().zip(&self.outs).map(|(s, o)| s.node.memory(o)).sum::<u64>() + std::mem::size_of_val(self.image()) as u64 + self.values.len() as u64 * 4;
         MemoryReport { cpu_bytes, gpu_bytes: 0, gpu_device_bytes: 0 }
     }
+}
+
+/// Whether the shading runs in a pass of its own (`placement = deferred`): as its knob says,
+/// and always when it reads its hits a frame late (fused into the pass making them, it
+/// could only read this frame's).
+pub(crate) fn deferred(g: &Checked, placement: &str) -> anyhow::Result<bool> {
+    Ok(mr_components::parse_placement(placement)? || g.node(g.shading()).when("hits") == mr_components::graph::When::Prev)
+}
+
+/// Whether a pass reads a later pass's output (last frame's).
+fn passes_read_late(passes: &[Pass]) -> bool {
+    passes.iter().enumerate().any(|(i, p)| p.ins.iter().any(|&j| j > i))
 }
 
 /// The image resource of a `width` x `height` frame.
@@ -453,7 +581,16 @@ pub(crate) fn image<P: Pixel>(width: u32, height: u32) -> Res {
 /// The passes node `id`'s inputs reach, in port order: a pass directly, through fused
 /// nodes (kernels) the passes they read.
 pub(crate) fn reads(g: &Checked, id: &str, index: &HashMap<String, usize>, out: &mut Vec<usize>) {
-    for from in g.node(id).inputs.values() {
+    let n = g.node(id);
+    for (port, from) in &n.inputs {
+        if n.when(port) == mr_components::graph::When::Prev {
+            // Resolved once every pass exists (`late_edges`).
+            let k = LATE + g.graph.nodes.keys().position(|x| x == from).expect("a node");
+            if !out.contains(&k) {
+                out.push(k);
+            }
+            continue;
+        }
         match index.get(from) {
             Some(&i) if !out.contains(&i) => out.push(i),
             Some(_) => {}

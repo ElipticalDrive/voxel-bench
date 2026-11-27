@@ -199,6 +199,10 @@ pub struct Builds {
     /// Edge timings it lets a graph choose (the edge's role and port, the timings it runs);
     /// every other edge runs now.
     pub free: &'static [(Role, &'static str, &'static [When])],
+    /// Whether it runs every edge that is not fused data `prev` too (the reader reads the
+    /// producer's value of the last frame, with that frame's camera): the generic CPU
+    /// executor's edge resources, which it keeps across frames. `free` lists the rest.
+    pub late: bool,
     /// Knobs that spell an edge timing (the graph says it; the knob is how plans, the CLI and
     /// the GUI write it): the knob, the edge's role and port, the timing when the knob is
     /// true, when false.
@@ -226,6 +230,7 @@ impl Builds {
             same: &[],
             only: &[],
             free: &[],
+            late: false,
             timing_knobs: &[],
             split: false,
             crossings: &[],
@@ -240,6 +245,7 @@ impl Builds {
             .iter()
             .find(|(r, p, _)| *r == role && *p == port)
             .map(|f| f.2)
+            .or(self.late.then_some(&[When::Now, When::Prev][..]))
     }
 
     /// Whether it replaces node `id` of graph `g` while running.
@@ -415,6 +421,7 @@ pub const CPU_RAYCAST: Builds = Builds {
         ],
         default: None,
     }),
+    late: true,
     ..Builds::plain(RegionId::CpuRaycast)
 };
 
@@ -448,6 +455,7 @@ pub const CPU_RASTER: Builds = Builds {
         },
     ],
     live: &[Live::of(Role::Geometry)],
+    late: true,
     ..Builds::plain(RegionId::CpuRaster)
 };
 
@@ -461,6 +469,7 @@ pub const CPU_COLUMNS: Builds = Builds {
     ],
     same: &[],
     only: &[],
+    late: true,
     ..Builds::plain(RegionId::CpuColumns)
 };
 

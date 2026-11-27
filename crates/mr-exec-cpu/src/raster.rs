@@ -174,6 +174,9 @@ impl Geometry {
 }
 
 impl Node for Geometry {
+    fn viewed(&self) -> bool {
+        false
+    }
     fn output(&mut self, _: u32, _: u32) -> Res {
         Box::new(Meshes { chunks: Chunks::default(), meshes: HashMap::new() })
     }
@@ -218,8 +221,8 @@ impl Node for Geometry {
         let quads: usize = m.meshes.values().map(|m| m.quads.len()).sum();
         m.chunks.dense_bytes() + quads as u64 * 8
     }
-    fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
-        Some(exec::GatePass::<Meshes>::boxed(chain, w, h))
+    fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        Some(exec::GatePass::<Meshes>::boxed(chain, late, w, h))
     }
 }
 
@@ -407,8 +410,8 @@ impl Node for Faces {
         report.stages.push(StageTime::cpu("transform", &self.nodes, t as f32));
         report.counters.extend([("chunks_drawn".into(), visible.len() as f64), ("triangles".into(), tris.len() as f64), ("geometry_ms".into(), t)]);
     }
-    fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
-        Some(exec::GatePass::<Tris>::boxed(chain, w, h))
+    fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        Some(exec::GatePass::<Tris>::boxed(chain, late, w, h))
     }
 }
 
@@ -567,8 +570,8 @@ impl<P: Pixel> Node for Draw<P> {
     fn memory(&self, out: &Res) -> u64 {
         (std::mem::size_of_val(&self.depth[..]) + out.downcast_ref::<Ids>().map_or(0, |r| std::mem::size_of_val(&r.ids[..]))) as u64
     }
-    fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
-        (!self.fused).then(|| exec::GatePass::<Ids>::boxed(chain, w, h))
+    fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        (!self.fused).then(|| exec::GatePass::<Ids>::boxed(chain, late, w, h))
     }
 }
 
@@ -603,7 +606,7 @@ impl<P: Pixel> Node for Shading<P> {
 pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow::Result<Box<dyn Renderer>> {
     let opts: Options = p.options()?;
     let shading: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
-    let deferred = mr_components::parse_placement(&shading.placement)?;
+    let deferred = exec::deferred(g, &shading.placement)?;
     let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
     let site = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("raster-cpu: the shading's shadow rays walk no storage"))?;
     let mut walked = Some(crate::raycast::walked::<S>(p, g, site)?);
@@ -638,8 +641,9 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
             _ => continue,
         };
         index.insert(id.to_string(), passes.len());
-        passes.push(Pass { node, ins });
+        passes.push(Pass::new(node, ins));
     }
+    exec::late_edges(g, p.width, p.height, &mut passes, &mut index)?;
     exec::gate_edges(g, p.width, p.height, &mut passes, &mut index)?;
     let world = crate::world::<P>(p, g, shading.shadows)?;
     Ok(Box::new(exec::Executor::<P>::new(p, opts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))

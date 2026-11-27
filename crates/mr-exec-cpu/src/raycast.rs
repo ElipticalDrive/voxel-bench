@@ -26,7 +26,7 @@ use mr_components::traversal::incremental::cpu::trace_incremental;
 use mr_components::traversal::refloor::cpu::{NOWHERE, trace_packet};
 use mr_components::shading::direct::cpu::Surface;
 use mr_components::visibility::record::{LAYERS, Record};
-use mr_components::parse_placement;
+
 use mr_core::chunk::local_of_block;
 use mr_core::*;
 use rayon::prelude::*;
@@ -792,7 +792,7 @@ impl<R: Repr, S: Spec, P: Pixel> Parts<R, S, P> {
                 shadow,
                 blocks: p.blocks.clone(),
             },
-            deferred: parse_placement(&shading.placement)?,
+            deferred: crate::exec::deferred(g, &shading.placement)?,
             threads: o.threads,
             shadows: shading.shadows,
         };
@@ -1457,8 +1457,8 @@ mod nodes {
         fn memory(&self, out: &Res) -> u64 {
             out.downcast_ref::<Hits>().map_or(0, |h| std::mem::size_of_val(&h.records[..]) as u64)
         }
-        fn gate(&self, chain: mr_core::gate::GateChain, w: u32, h: u32) -> Option<Box<dyn Node>> {
-            (!self.fused).then(|| exec::GatePass::<Hits>::boxed(chain, w, h))
+        fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
+            (!self.fused).then(|| exec::GatePass::<Hits>::boxed(chain, late, w, h))
         }
     }
 
@@ -1515,8 +1515,9 @@ mod nodes {
             let mut ins = vec![];
             exec::reads(g, id, &index, &mut ins);
             index.insert(id.to_string(), passes.len());
-            passes.push(Pass { node, ins });
+            passes.push(Pass::new(node, ins));
         }
+        exec::late_edges(g, p.width, p.height, &mut passes, &mut index)?;
         exec::gate_edges(g, p.width, p.height, &mut passes, &mut index)?;
         let world = crate::world::<P>(p, g, parts.shadows)?;
         Ok(Box::new(exec::Executor::<P>::new(p, parts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
