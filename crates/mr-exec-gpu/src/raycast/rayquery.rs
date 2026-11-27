@@ -154,7 +154,7 @@ impl RayQuery {
             Some(Some(s)) => walks.site(g, s, STORAGE_GROUPS, false),
             _ => shadow,
         };
-        let accel = AccelSpec { geometry, cull: gk.cull, fast_build: opts.fast_build, build_budget: opts.build_budget };
+        let accel = AccelSpec { geometry, cull: gk.cull, fast_build: opts.fast_build, build_budget: opts.build_budget, gates: crate::accel::gates_of(g, geometry_id) };
         let spec = CoreSpec {
                 gpu: GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
                 walks: &walks,

@@ -14,6 +14,7 @@ use std::time::Instant;
 use glam::IVec3;
 use mr_components::geometry::{Knobs, Merge, RtKind};
 use mr_core::chunk::cell_of_index;
+use mr_core::gate::{GateChain, GateNode, GateReport, Get, Put, Wire, WireError};
 use mr_core::*;
 use mr_gpu::voxels::VoxelWorld;
 use mr_gpu::{DEVICE_BOUND, Gpu, GrowableBuffer, RangeAlloc, wgpu};
@@ -34,6 +35,8 @@ pub(crate) struct AccelSpec {
     pub fast_build: bool,
     /// Chunk BLAS rebuilds per frame, nearest first (0 = all).
     pub build_budget: usize,
+    /// The gates on the geometry's edges into the ray queries (the edge, its gates).
+    pub gates: Option<(String, Vec<GateNode>)>,
 }
 
 const MAX_SLOTS: u32 = 1 << 16;
@@ -47,10 +50,140 @@ struct ChunkAs {
     _inputs: Vec<wgpu::Buffer>,
 }
 
-/// CPU-side geometry for one chunk's BLAS.
+/// CPU-side geometry for one chunk's BLAS, derived from its primitives (the quads, or the
+/// occupied bricks: what crosses a gate).
 enum Built {
     Triangles { vertices: Vec<[f32; 3]>, indices: Vec<u32>, quads: Vec<[u32; 2]> },
     Aabbs { boxes: Vec<[f32; 6]>, bricks: Vec<u32> },
+}
+
+impl Built {
+    /// Two triangles per quad.
+    fn triangles(quads: Vec<[u32; 2]>) -> Self {
+        let mut vertices = Vec::with_capacity(quads.len() * 4);
+        let mut indices = Vec::with_capacity(quads.len() * 6);
+        for q in &quads {
+            let base = vertices.len() as u32;
+            vertices.extend(mr_mesh::Quad::decode(*q).corners().map(|c| c.to_array()));
+            indices.extend([base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+        }
+        Built::Triangles { vertices, indices, quads }
+    }
+
+    /// One box per occupied 4^3 brick (index `x | z << 3 | y << 6`), the whole chunk for
+    /// [`NO_BRICK`] (a uniform solid chunk).
+    fn aabbs(bricks: Vec<u32>) -> Self {
+        let boxes = bricks
+            .iter()
+            .map(|&bi| {
+                if bi == NO_BRICK {
+                    return [0.0, 0.0, 0.0, 32.0, 32.0, 32.0];
+                }
+                let b = bi as i32;
+                let lo = IVec3::new(b & 7, (b >> 6) & 7, (b >> 3) & 7).as_vec3() * 4.0;
+                [lo.x, lo.y, lo.z, lo.x + 4.0, lo.y + 4.0, lo.z + 4.0]
+            })
+            .collect();
+        Built::Aabbs { boxes, bricks }
+    }
+
+    /// The primitives it is derived from, as words (a quad two, a brick one).
+    fn words(&self) -> &[u32] {
+        match self {
+            Built::Triangles { quads, .. } => bytemuck::cast_slice(quads),
+            Built::Aabbs { bricks, .. } => bricks,
+        }
+    }
+}
+
+/// A chunk's primitives on their way from the geometry to its BLAS (none: the chunk is gone
+/// or has no surface).
+struct ChunkGeometry {
+    pos: IVec3,
+    built: Option<Built>,
+}
+
+impl Wire for ChunkGeometry {
+    /// One stream per chunk: its changes stay in order.
+    fn stream(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.pos.to_array().hash(&mut h);
+        Some(h.finish() | 1)
+    }
+
+    fn pieces(&self) -> u32 {
+        self.built.is_some() as u32
+    }
+
+    fn encode(&self, out: &mut Vec<u8>) {
+        let words = self.built.as_ref().map_or(&[][..], |b| b.words());
+        out.reserve(17 + words.len() * 4);
+        let mut p = Put(out);
+        self.pos.to_array().into_iter().for_each(|c| p.i32(c));
+        p.u8(match self.built {
+            None => 0,
+            Some(Built::Triangles { .. }) => 1,
+            Some(Built::Aabbs { .. }) => 2,
+        });
+        p.u32(words.len() as u32);
+        p.bytes(bytemuck::cast_slice(words));
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut g = Get(bytes);
+        let pos = IVec3::new(g.i32()?, g.i32()?, g.i32()?);
+        let kind = g.u8()?;
+        let n = g.count(4)?;
+        let mut words = vec![0u32; n];
+        bytemuck::cast_slice_mut::<u32, u8>(&mut words).copy_from_slice(g.take(n * 4)?);
+        g.end()?;
+        let built = match kind {
+            0 if n == 0 => None,
+            1 if n % 2 == 0 && n > 0 => Some(Built::triangles(bytemuck::cast_slice(&words).to_vec())),
+            2 if n > 0 && words.iter().all(|&b| b == NO_BRICK || b < 512) => Some(Built::aabbs(words)),
+            _ => return Err(WireError(format!("chunk geometry of kind {kind} with {n} words"))),
+        };
+        Ok(ChunkGeometry { pos, built })
+    }
+}
+
+/// The gates on the geometry: the chunks it built since the last frame, what was last sent
+/// per chunk (a hash: a neighbour rebuilt to the same primitives is not sent again), what
+/// arrived and waits for its BLAS build (the latest per chunk), the host's time in the gates
+/// this frame.
+struct GeometryGate {
+    chain: GateChain,
+    sent: HashMap<IVec3, u64>,
+    arrived: HashMap<IVec3, Option<Built>>,
+    ms: f64,
+}
+
+impl GeometryGate {
+    /// Puts the chunks built this frame whose primitives differ from what was last sent
+    /// through the gates at `now`, and keeps what arrives.
+    fn pass(&mut self, now: f64, built: Vec<(IVec3, Option<Built>)>) {
+        use std::hash::{Hash, Hasher};
+        let start = Instant::now();
+        let mut out = vec![];
+        for (pos, built) in built {
+            let same = match &built {
+                None => self.sent.remove(&pos).is_none(),
+                Some(b) => {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    b.words().hash(&mut h);
+                    self.sent.insert(pos, h.finish()) == Some(h.finish())
+                }
+            };
+            if !same {
+                out.push(ChunkGeometry { pos, built });
+            }
+        }
+        for c in self.chain.gates.pass_all(now, out) {
+            self.arrived.insert(c.pos, c.built);
+        }
+        self.ms = start.elapsed().as_secs_f64() * 1e3;
+    }
 }
 
 fn tlas(gpu: &Gpu, cap: u32) -> wgpu::Tlas {
@@ -76,7 +209,20 @@ impl AccelSpec {
             cull: knobs.get("cull").and_then(|v| v.as_bool()).unwrap_or(true),
             fast_build: knobs.get("fast_build").and_then(|v| v.as_bool()).unwrap_or(false),
             build_budget: knobs.get("build_budget").and_then(|v| v.as_integer()).unwrap_or(0).max(0) as usize,
+            gates: gates_of(g, &geo.node),
         }))
+    }
+}
+
+/// The gates on `geometry`'s edges (`accept` has them all alike), as the edge and its gates.
+pub(crate) fn gates_of(g: &mr_components::graph::Checked, geometry: &str) -> Option<(String, Vec<GateNode>)> {
+    g.gates.iter().find(|e| e.source == geometry).map(|e| (e.edge(), e.gates.clone()))
+}
+
+impl AccelSpec {
+    /// Its gates' nodes (empty without).
+    pub fn gate_nodes(&self) -> Vec<String> {
+        self.gates.iter().flat_map(|(_, n)| n.iter().map(|(id, _)| id.clone())).collect()
     }
 }
 
@@ -96,6 +242,8 @@ pub(crate) struct Accel {
     chunks: HashMap<IVec3, ChunkAs>,
     free_slots: Vec<u32>,
     dirty: HashSet<IVec3>,
+    /// The gates between the geometry and the BLAS builds, if any.
+    gate: Option<GeometryGate>,
     /// The bindings changed (the TLAS or the geometry buffer grew).
     rebind: bool,
     /// This frame's TLAS instances, BLAS rebuilds and their CPU time.
@@ -125,6 +273,7 @@ impl Accel {
             chunks: HashMap::new(),
             free_slots: (0..MAX_SLOTS).rev().collect(),
             dirty: HashSet::new(),
+            gate: s.gates.as_ref().map(|(edge, nodes)| GeometryGate { chain: GateChain::new(edge, nodes), sent: HashMap::new(), arrived: HashMap::new(), ms: 0.0 }),
             rebind: false,
             instances: 0,
             rebuilt: 0,
@@ -175,11 +324,12 @@ impl Accel {
         }
     }
 
-    /// Builds this frame's structures into `enc`: dirty chunks' BLASes, then the TLAS with
-    /// the instances relative to `cam_block`. Returns whether the bindings changed.
-    pub fn build(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, cam_block: IVec3) -> bool {
+    /// Builds this frame's structures into `enc`: dirty chunks' BLASes (through the gates
+    /// at `now`, if any), then the TLAS with the instances relative to `cam_block`. Returns
+    /// whether the bindings changed.
+    pub fn build(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, cam_block: IVec3, now: f64) -> bool {
         let start = Instant::now();
-        self.rebuilt = self.rebuild(world, enc, cam_block >> 5);
+        self.rebuilt = self.rebuild(world, enc, cam_block >> 5, now);
         self.build_ms = start.elapsed().as_secs_f64() * 1e3;
         let n = self.chunks.len() as u32;
         if n > self.tlas_cap {
@@ -199,6 +349,15 @@ impl Accel {
         enc.build_acceleration_structures(std::iter::empty(), std::iter::once(&self.tlas));
         self.instances = n;
         std::mem::take(&mut self.rebind)
+    }
+
+    /// The host's time in the gates this frame (`None` without gates).
+    pub fn gate_ms(&self) -> Option<f32> {
+        self.gate.as_ref().map(|g| g.ms as f32)
+    }
+
+    pub fn gate_reports(&self) -> Vec<GateReport> {
+        self.gate.as_ref().map_or(vec![], |g| g.chain.reports())
     }
 
     pub fn counters(&self) -> Vec<(String, f64)> {
@@ -242,21 +401,11 @@ impl Accel {
                 let center = world.chunk(pos)?;
                 let neighbors = Face::ALL.map(|f| world.chunk(pos + f.normal()));
                 let mesh = mesh(center, neighbors, 0, self.knobs);
-                if mesh.quads.is_empty() {
-                    return None;
-                }
-                let mut vertices = Vec::with_capacity(mesh.quads.len() * 4);
-                let mut indices = Vec::with_capacity(mesh.quads.len() * 6);
-                for q in &mesh.quads {
-                    let base = vertices.len() as u32;
-                    vertices.extend(mr_mesh::Quad::decode(*q).corners().map(|c| c.to_array()));
-                    indices.extend([base, base + 1, base + 2, base + 2, base + 1, base + 3]);
-                }
-                Some(Built::Triangles { vertices, indices, quads: mesh.quads })
+                (!mesh.quads.is_empty()).then(|| Built::triangles(mesh.quads))
             }
             RtKind::Boxes => match world.chunk(pos)? {
                 ChunkData::Uniform(b) if b.is_air() => None,
-                ChunkData::Uniform(_) => Some(Built::Aabbs { boxes: vec![[0.0, 0.0, 0.0, 32.0, 32.0, 32.0]], bricks: vec![NO_BRICK] }),
+                ChunkData::Uniform(_) => Some(Built::aabbs(vec![NO_BRICK])),
                 ChunkData::Dense(d) => {
                     let mut occupied = [false; 512];
                     for (i, b) in d.0.iter().enumerate() {
@@ -265,15 +414,8 @@ impl Accel {
                             occupied[(l.x | (l.z << 3) | (l.y << 6)) as usize] = true;
                         }
                     }
-                    let mut boxes = vec![];
-                    let mut bricks = vec![];
-                    for (bi, _) in occupied.iter().enumerate().filter(|(_, o)| **o) {
-                        let b = bi as i32;
-                        let lo = IVec3::new(b & 7, (b >> 6) & 7, (b >> 3) & 7).as_vec3() * 4.0;
-                        boxes.push([lo.x, lo.y, lo.z, lo.x + 4.0, lo.y + 4.0, lo.z + 4.0]);
-                        bricks.push(bi as u32);
-                    }
-                    (!boxes.is_empty()).then_some(Built::Aabbs { boxes, bricks })
+                    let bricks: Vec<u32> = occupied.iter().enumerate().filter(|(_, o)| **o).map(|(bi, _)| bi as u32).collect();
+                    (!bricks.is_empty()).then(|| Built::aabbs(bricks))
                 }
             },
         }
@@ -283,13 +425,31 @@ impl Accel {
     /// per-chunk inputs and BLASes grow with the world (radius) and the geometry: when the
     /// device runs out of memory for them, the renderer fails naming that (the errors that
     /// follow from the first refused allocation are its consequences, not reported).
-    fn rebuild(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, near: IVec3) -> usize {
-        if self.dirty.is_empty() {
+    fn rebuild(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, near: IVec3, now: f64) -> usize {
+        // Through gates: the geometry builds every dirty chunk, the gates carry them, and
+        // what arrived waits for its BLAS build (within the budget).
+        let built = if let Some(mut g) = self.gate.take() {
+            let dirty: Vec<IVec3> = self.dirty.drain().collect();
+            let fresh: Vec<(IVec3, Option<Built>)> = dirty.par_iter().map(|&p| (p, self.build_geometry(world, p))).collect();
+            g.pass(now, fresh);
+            let (take, _) = budgeted(g.arrived.keys().copied().collect(), self.build_budget, near);
+            let take: Vec<_> = take.into_iter().map(|p| (p, g.arrived.remove(&p).unwrap())).collect();
+            self.gate = Some(g);
+            take
+        } else {
+            if self.dirty.is_empty() {
+                return 0;
+            }
+            let (take, keep) = budgeted(self.dirty.drain().collect(), self.build_budget, near);
+            self.dirty.extend(keep);
+            take.par_iter().map(|&p| (p, self.build_geometry(world, p))).collect()
+        };
+        if built.is_empty() {
             return 0;
         }
         let oom = self.gpu.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let invalid = self.gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let n = self.rebuild_dirty(world, enc, near);
+        let n = self.stage(world, enc, built);
         let invalid = pollster::block_on(invalid.pop());
         if let Some(e) = pollster::block_on(oom.pop()) {
             let bytes: u64 = self.chunks.values().flat_map(|c| c._inputs.iter()).map(|b| b.size()).sum();
@@ -304,15 +464,8 @@ impl Accel {
         n
     }
 
-    fn rebuild_dirty(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, near: IVec3) -> usize {
-        let mut dirty: Vec<IVec3> = self.dirty.drain().collect();
-        if self.build_budget > 0 && dirty.len() > self.build_budget {
-            dirty.sort_unstable_by_key(|p| (*p - near).length_squared());
-            for p in dirty.split_off(self.build_budget) {
-                self.dirty.insert(p);
-            }
-        }
-        let built: Vec<(IVec3, Option<Built>)> = dirty.par_iter().map(|&p| (p, self.build_geometry(world, p))).collect();
+    /// Builds the BLASes of `built` into `enc` (a chunk without geometry dropped).
+    fn stage(&mut self, world: &VoxelWorld, enc: &mut wgpu::CommandEncoder, built: Vec<(IVec3, Option<Built>)>) -> usize {
         let flags = if self.fast_build { wgpu::AccelerationStructureFlags::PREFER_FAST_BUILD } else { wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE };
         // Everything referenced by the build entries must outlive the build call.
         let mut staged: Vec<(IVec3, u32, wgpu::Blas, wgpu::BlasGeometrySizeDescriptors, Vec<wgpu::Buffer>, (u32, u32))> = vec![];
@@ -421,6 +574,17 @@ impl Accel {
         }
         n
     }
+}
+
+/// The chunks of `chunks` to build this frame, nearest `near` first, and the rest (`budget` 0:
+/// all).
+fn budgeted(mut chunks: Vec<IVec3>, budget: usize, near: IVec3) -> (Vec<IVec3>, Vec<IVec3>) {
+    if budget > 0 && chunks.len() > budget {
+        chunks.sort_unstable_by_key(|p| (*p - near).length_squared());
+        let rest = chunks.split_off(budget);
+        return (chunks, rest);
+    }
+    (chunks, vec![])
 }
 
 impl Drop for Accel {

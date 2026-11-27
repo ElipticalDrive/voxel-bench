@@ -400,6 +400,7 @@ impl<R: Region> Executor<R> {
         let (counters, legend, stages) = region.stats(core, req);
         let legend = viewed.or(legend);
         let mut stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages, gates: region.gates() };
+        stats.gates.extend(core.accel.iter().flat_map(|a| a.gate_reports()));
         if !self.gates.is_empty() {
             let ids: Vec<String> = self.gates.iter().flat_map(EdgeGate::nodes).collect();
             stats.stages.push(StageTime::cpu("gate", &ids, gate_ms));

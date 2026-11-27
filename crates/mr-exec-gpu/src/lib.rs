@@ -247,6 +247,8 @@ pub(crate) struct Core {
     /// geometry node they are built from (their timed stage).
     accel: Option<accel::Accel>,
     accel_nodes: Vec<String>,
+    /// The gates on the geometry's edges into the ray queries.
+    accel_gates: Vec<String>,
     /// Shading state (pathtrace's accumulation).
     accum: ShadeState,
     camera_buf: wgpu::Buffer,
@@ -355,6 +357,7 @@ impl Core {
             view_max: 256,
             storages,
             accel_nodes: s.walks.geometry.iter().map(|g| g.node.clone()).collect(),
+            accel_gates: s.accel.as_ref().map_or(vec![], |a| a.gate_nodes()),
             accel,
             world,
             gpu,
@@ -408,12 +411,15 @@ impl Core {
         let Some(a) = &mut self.accel else { return false };
         self.ring.start_clock(&self.gpu, enc, ticket);
         self.ring.stage(enc, ticket, "geometry", &self.accel_nodes);
-        a.build(&self.world, enc, req.camera.split_position().0)
+        a.build(&self.world, enc, req.camera.split_position().0, req.time)
     }
 
     /// The acceleration structures' counters and CPU stage time.
     fn accel_stats(&self) -> (Vec<(String, f64)>, Vec<StageTime>) {
-        self.accel.as_ref().map_or_else(Default::default, |a| (a.counters(), vec![StageTime::cpu("geometry", &self.accel_nodes, a.build_ms as f32)]))
+        self.accel.as_ref().map_or_else(Default::default, |a| {
+            let gate = a.gate_ms().map(|ms| StageTime::cpu("gate", &self.accel_gates, ms));
+            (a.counters(), std::iter::once(StageTime::cpu("geometry", &self.accel_nodes, a.build_ms as f32)).chain(gate).collect())
+        })
     }
 
     /// Group 0's entries before the region's.

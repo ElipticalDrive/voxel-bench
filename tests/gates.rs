@@ -285,8 +285,13 @@ fn gates_refused_naming_them() {
     assert!(log.contains("`g` on `visibility.meshes`") && log.contains("Depth32Float"), "{log}");
     let (_, log) = launch(&dir(), "raster-gpu-culled", "raster-gpu", &format!("[{}]", gate_on("visibility", "draw", "faces", "{}")));
     assert!(log.contains("`g` on `draw.faces`") && log.contains("on the CPU"), "{log}");
-    let (_, log) = launch(&dir(), "rayquery-gpu-geometry", "rayquery-gpu", &format!("[{}]", gate_on("geometry", "kernel", "geometry", "{}")));
-    assert!(log.contains("`g` on `kernel.geometry`") && log.contains("uploaded"), "{log}");
+    // A second ray query over the geometry (the shadow rays') reading it without the gate.
+    let two = format!(
+        r#"[{} {{ add = "k2", role = "traversal", component = "rayquery" }}, {{ node = "k2", input = "geometry", from = "geometry" }}, {{ node = "shading", input = "shadow", from = "k2" }},]"#,
+        gate_on("geometry", "kernel", "geometry", "{}")
+    );
+    let (_, log) = launch(&dir(), "rayquery-gpu-geometry-mixed", "rayquery-gpu", &two);
+    assert!(log.contains("`g` on `kernel.geometry`") && log.contains("`k2`.geometry has other gates"), "{log}");
     let post = r#"[
   { add = "post", role = "post", component = "clamp" },
   { add = "g", role = "gate", component = "net" },
@@ -601,4 +606,40 @@ fn gpu_lossless_points_gate_changes_no_pixel() {
     assert!(gated["error"].is_null(), "{}", gated["error"]);
     crossed(&gated, false);
     assert!(last_image(&dir(), "splat-gpu-points-plain") == last_image(&dir(), "splat-gpu-points-gated"), "a lossless gate changed the frame");
+}
+
+/// On ray queries, the geometry's primitives cross a lossy gate chunk by chunk between the
+/// meshing and the BLAS build: the pass lives through the losses and reports the gate. Needs
+/// a GPU with ray queries (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_rayquery_geometry_through_a_lossy_gate() {
+    for geometry in ["greedy", "boxes"] {
+        let edits = format!(
+            r#"[{{ node = "geometry", component = "{geometry}" }}, {}]"#,
+            gate_on("geometry", "kernel", "geometry", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, reorder = true, seed = 5 }")
+        );
+        let r = run(&dir(), &format!("rayquery-gpu-{geometry}-lossy"), "rayquery-gpu", &edits);
+        assert!(r["error"].is_null(), "{geometry}: {}", r["error"]);
+        let gs = gates(&r);
+        assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["g:kernel.geometry"]);
+        crossed(&r, true);
+    }
+}
+
+/// A lossless gate with no delay on ray queries' geometry changes no pixel: every chunk's
+/// primitives arrive in the frame they were built in. Needs a GPU with ray queries
+/// (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_lossless_rayquery_geometry_gate_changes_no_pixel() {
+    for geometry in ["greedy", "boxes"] {
+        let pick = format!(r#"{{ node = "geometry", component = "{geometry}" }},"#);
+        let plain = run(&dir(), &format!("rayquery-gpu-{geometry}-plain"), "rayquery-gpu", &format!("[{pick}]"));
+        assert!(plain["error"].is_null(), "{geometry}: {}", plain["error"]);
+        let gated = run(&dir(), &format!("rayquery-gpu-{geometry}-gated"), "rayquery-gpu", &format!("[{pick} {}]", gate_on("geometry", "kernel", "geometry", "{}")));
+        assert!(gated["error"].is_null(), "{geometry}: {}", gated["error"]);
+        crossed(&gated, false);
+        assert!(last_image(&dir(), &format!("rayquery-gpu-{geometry}-plain")) == last_image(&dir(), &format!("rayquery-gpu-{geometry}-gated")), "{geometry}: a lossless gate changed the frame");
+    }
 }
