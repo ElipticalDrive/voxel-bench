@@ -14,6 +14,9 @@ impl GpuSampler {
         self.bind_merged = self.drawing.bind(core, &self.merged, &self.cpos);
         self.bind_sorted = self.drawing.bind(core, &self.sorted, &self.cpos);
         self.bind_draw = [0, 1].map(|i| self.drawing.bind(core, &self.lists[i], &self.cpos));
+        if let Some((list, _, bind)) = &mut self.replay_faces {
+            *bind = self.drawing.bind(core, list, &self.cpos);
+        }
     }
 
     /// Row merge active (painter order sorts single faces, so it takes precedence).
@@ -111,11 +114,13 @@ impl GpuSampler {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // Behind a gate on the faces: the list that crossed last frame.
+            let (bind, args) = self.replay_faces.as_ref().map_or((&self.bind_draw[1 - parity], &self.args), |(_, a, b)| (b, a));
             pass.set_pipeline(&self.pipe_id);
-            pass.set_bind_group(0, &self.bind_draw[1 - parity], &[]);
+            pass.set_bind_group(0, bind, &[]);
             pass.set_bind_group(1, world_bg, &[]);
             storage_bg.render(&mut pass);
-            pass.draw_indirect(&self.args, (72 + (1 - parity as u64) * 4) * 4);
+            pass.draw_indirect(args, (72 + (1 - parity as u64) * 4) * 4);
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("incremental needs"), timestamp_writes: None });
         pass.set_bind_group(0, bind_disc, &[0]);

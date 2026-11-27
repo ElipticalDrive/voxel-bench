@@ -230,7 +230,14 @@ impl GpuSampler {
                 tag: (0, 0),
             })
             .collect();
-        let sized = make_sized(gpu, p.width, p.height);
+        let sized = make_sized(gpu, p.width, p.height, holes.is_some_and(|h| g.gates_on(h, "sky").is_some()));
+        // A gate on the faces in the loop: hole detection draws what last crossed.
+        let replay_faces = (g.gates_on(draw_id, "faces").is_some() && matches!(g.node(draw_id).when("faces"), mr_components::graph::When::Iterate(_))).then(|| {
+            let list = storage(gpu, "face list crossed", list_cap as u64 * 16, none, FACES_SET_BY);
+            let args = storage(gpu, "discover args crossed", ARGS_WORDS * 4, wgpu::BufferUsages::INDIRECT, "fixed sizes");
+            let bind = drawing.bind(&core, &list, &cpos);
+            (list, args, bind)
+        });
         let s = Self {
             vis_nodes: g.ids(&[Role::Visibility]),
             holes_nodes: g.ids(&[Role::Holes]),
@@ -290,6 +297,7 @@ impl GpuSampler {
             bind_disc: None,
             bind_args,
             bind_draw,
+            replay_faces,
             profile: gpu.timestamps.then(|| dev.create_query_set(&wgpu::QuerySetDescriptor { label: Some("discover phases"), ty: wgpu::QueryType::Timestamp, count: STAGES as u32 * PROFILE_TS })),
             profile_resolve: gpu.timestamps.then(|| {
                 dev.create_buffer(&wgpu::BufferDescriptor { label: Some("phase ts"), size: STAGES as u64 * 256, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false })
@@ -343,7 +351,7 @@ impl GpuSampler {
                 (20, wgpu::BindingResource::TextureView(&self.drawing.depth)),
                 (21, res(&s.changed_tiles)),
                 (22, res(&s.sky[par])),
-                (23, res(&s.sky[prev])),
+                (23, res(s.sky_in.as_ref().unwrap_or(&s.sky[prev]))),
                 (24, res(&s.cast_frame)),
                 (25, res(&self.hist)),
                 (26, res(&self.sorted)),

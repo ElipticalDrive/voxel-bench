@@ -308,6 +308,13 @@ pub(crate) trait Region: State {
     fn crossing(&self, _core: &Core, _reader: Role, _port: &str, _data: graph::Data) -> Option<Vec<Part>> {
         None
     }
+    /// The resources of its own the node of role `reader` reads the earlier value of a late
+    /// edge at `port` from (`prev`, an `iterate` loop's earlier iterations) when a gate sits
+    /// on it (`Builds::late_crossings`): the executor writes what last arrived there at the
+    /// frame's start ([`crate::cross`]).
+    fn replay(&self, _core: &Core, _reader: Role, _port: &str) -> Option<Vec<Part>> {
+        None
+    }
 }
 
 /// A pass of the frame: its node's id and implementation.
@@ -384,8 +391,13 @@ impl<R: Region> Executor<R> {
             v.clear(&mut enc);
         }
         let mut gate_ms = 0.0;
+        let role = |id: &str| core.graph.nodes.get(id).map(|n| n.role).expect("the reader is a node of the graph");
+        for gate in self.gates.iter().filter(|g| g.late) {
+            let parts = region.replay(core, role(&gate.reader), &gate.port).ok_or_else(|| anyhow::anyhow!("`{}`.{}: no resources hold the edge's earlier value for its gates", gate.reader, gate.port))?;
+            gate.replay(core, &parts);
+        }
         for (i, (_, pass)) in self.passes.iter_mut().enumerate() {
-            for gate in self.gates.iter_mut().filter(|g| g.before == i) {
+            for gate in self.gates.iter_mut().filter(|g| g.before == i && !g.at_end()) {
                 let reader = core.graph.nodes.get(&gate.reader).map(|n| n.role).expect("the reader is a node of the graph");
                 let data = core.gates.iter().find(|e| e.reader == gate.reader && e.port == gate.port).expect("the gate's edge").data;
                 let parts = match core.edges.hits().filter(|_| gate.port == "hits") {
@@ -396,7 +408,7 @@ impl<R: Region> Executor<R> {
                 gate_ms += gate.cross(core, parts, &mut enc, req)?;
             }
             pass.run(&mut Cx { core, region, enc: &mut enc, ticket, req });
-            for gate in self.gates.iter().filter(|g| g.before == i) {
+            for gate in self.gates.iter().filter(|g| g.before == i && !g.at_end()) {
                 gate.restore(&mut enc);
             }
         }
@@ -413,12 +425,19 @@ impl<R: Region> Executor<R> {
         let legend = viewed.or(legend);
         let mut stats = FrameStats { cpu_ms: start.elapsed().as_secs_f32() * 1e3, gpu_ms: None, counters, legend, stages, gates: region.gates() };
         stats.gates.extend(core.accel.iter().flat_map(|a| a.gate_reports()));
+        region.finish(core, &mut enc, ticket);
+        // Edges read only next frame: sent once the frame's value is final.
+        for gate in self.gates.iter_mut().filter(|g| g.at_end()) {
+            let reader = core.graph.nodes.get(&gate.reader).map(|n| n.role).expect("the reader is a node of the graph");
+            let data = core.gates.iter().find(|e| e.reader == gate.reader && e.port == gate.port).expect("the gate's edge").data;
+            let parts = region.crossing(core, reader, &gate.port, data).ok_or_else(|| anyhow::anyhow!("`{}`.{}: nothing holds the frame's value to put through its gates", gate.reader, gate.port))?;
+            gate_ms += gate.send(core, parts, &mut enc, req)?;
+        }
         if !self.gates.is_empty() {
             let ids: Vec<String> = self.gates.iter().flat_map(EdgeGate::nodes).collect();
             stats.stages.push(StageTime::cpu("gate", &ids, gate_ms));
             stats.gates.extend(self.gates.iter().flat_map(EdgeGate::reports));
         }
-        region.finish(core, &mut enc, ticket);
         Ok((enc, ticket, stats))
     }
 
@@ -568,7 +587,9 @@ impl<R: Region, F: Region> Renderer for Split<R, F> {
         self.near.update(updates)
     }
 
+    /// The meshes reach both executors (the second decodes the records' mesh triangles).
     fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
+        self.far.update_meshes(update.clone())?;
         self.near.update_meshes(update)
     }
 

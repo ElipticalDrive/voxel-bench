@@ -196,13 +196,7 @@ fn device_blocker(ck: &Checked) -> Option<String> {
         )),
         _ => {}
     }
-    if let Some((id, n)) = g
-        .nodes
-        .iter()
-        .find(|(_, n)| n.role == Role::Meshes && n.component != "none")
-    {
-        why.push(format!("`{id}` ({}): mesh surfaces are rasterised on {near}, and the shading on {far} has not their triangles (meshes = none)", n.component));
-    }
+    // Mesh records name triangles of the shading GPU's own copy of the meshes.
     (!why.is_empty()).then(|| why.join("; "))
 }
 

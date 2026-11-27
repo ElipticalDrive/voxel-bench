@@ -270,5 +270,29 @@ mod tests {
         // itself (here the CPU ray caster), naming the gate.
         let why = g.check().and_then(|c| c.built()).unwrap_err();
         assert!(why.contains("`g` on `shading.hits`") && why.contains("timing `prev`"), "{why}");
+        // GPU discovery's hole detection: last frame's sky mask and the drawer's faces in
+        // its loop cross gates (what crossed is read from the reader's own copy next
+        // frame), except with the row merge, whose runs hole detection cannot draw.
+        let holes = shipped("discover-gpu").unwrap().with_edits(&[
+            Change::add("holes", Role::Holes, "coverage"),
+            Change::bind("holes", "covered", "draw"),
+            Change::bind("holes", "sky", "draw"),
+            Change::Timing("holes".into(), "sky".into(), When::Prev),
+            Change::bind("holes", "changes", "world"),
+            Change::bind("visibility", "where", "holes"),
+            Change::Timing("draw".into(), "faces".into(), When::Iterate(2)),
+        ]);
+        let holes = holes.unwrap();
+        let mut sky = holes.clone();
+        sky.nodes.insert("g".into(), gate("draw", ""));
+        sky.nodes.get_mut("holes").unwrap().inputs.insert("sky".into(), "g".into());
+        sky.check().and_then(|c| c.built()).unwrap();
+        let mut faces = holes.clone();
+        faces.nodes.insert("g".into(), gate("visibility", ""));
+        faces.nodes.get_mut("draw").unwrap().inputs.insert("faces".into(), "g".into());
+        faces.check().and_then(|c| c.built()).unwrap();
+        faces.nodes.get_mut("visibility").unwrap().knobs.insert("merge".into(), "rows".into());
+        let why = faces.check().and_then(|c| c.built()).unwrap_err();
+        assert!(why.contains("`g` on `draw.faces`") && why.contains("merge"), "{why}");
     }
 }

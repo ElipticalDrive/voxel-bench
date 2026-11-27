@@ -207,8 +207,13 @@ pub struct Builds {
     pub split: bool,
     /// The edges (the reader's role and port) whose data it holds in GPU resources between
     /// two passes, so a gate on the edge reads them back, sends them through and writes the
-    /// last that arrived for the reader's pass.
+    /// last that arrived for the reader's pass. A late edge among them (`prev`, `iterate`)
+    /// is sent where its value is final and what arrived is written, at the next frame's
+    /// start, into resources of the reader's own ([`late_crossings`](Self::late_crossings)).
     pub crossings: &'static [(Role, &'static str)],
+    /// The late edges (reader's role and port, timing) among `crossings` whose earlier
+    /// value the reader reads from resources of its own when a gate sits on the edge.
+    pub late_crossings: &'static [(Role, &'static str, When)],
     /// The choice of API it offers, if any (the CPU ray caster: `isa`, its one hot loop; the
     /// GPU walk: `dispatch`, in a compute or fragment shader).
     pub api_choice: Option<ApiChoice>,
@@ -229,6 +234,7 @@ impl Builds {
             timing_knobs: &[],
             split: false,
             crossings: &[],
+            late_crossings: &[],
             api_choice: None,
             live: &[],
         }
@@ -626,7 +632,10 @@ pub const GPU_SAMPLER: Builds = Builds {
         Live::of(Role::Draw),
     ],
     split: true,
-    crossings: &[(Role::Visibility, "where"), (Role::Draw, "faces")],
+    // Hole detection reads last frame's sky mask (`prev`) and draws last frame's faces (the
+    // loop's first iteration): behind a gate, what crossed.
+    crossings: &[(Role::Visibility, "where"), (Role::Draw, "faces"), (Role::Holes, "sky")],
+    late_crossings: &[(Role::Holes, "sky", When::Prev), (Role::Draw, "faces", When::Iterate(2))],
     ..Builds::plain(RegionId::GpuSampler)
 };
 
@@ -772,8 +781,8 @@ impl Checked {
 
     /// Why the hits `reader`.`port` reads cannot leave the GPU pass that writes them as hit
     /// records (to cross a gate), if they can't: the reader is the shading, and its source
-    /// writes records (rays deferred, a drawer writing records, splats) with no mesh surfaces
-    /// beside them.
+    /// writes records (rays deferred, a drawer writing records, splats; mesh records name
+    /// triangles of the far shading's own copy of the meshes).
     fn records_cross(&self, reader: &str, port: &str) -> Option<String> {
         let g = &self.graph;
         let sn = g.nodes.get(reader)?;
@@ -793,9 +802,7 @@ impl Checked {
             }
             _ => {}
         }
-        g.nodes.iter().find(|(_, n)| n.role == Role::Meshes && n.component != "none").map(|(id, n)| {
-            format!("`{id}` ({}): mesh surfaces are rasterised beside the records, and the shading past the gate has not their triangles (remove `{id}`)", n.component)
-        })
+        None
     }
 
     /// Whether region `builds` builds this graph; else the first node (or role) it cannot,
@@ -811,19 +818,34 @@ impl Checked {
             // where the executor hands that value over itself (the CPU discoverer's faces,
             // the hit records between two GPUs).
             let when = self.graph.nodes.get(&e.reader).map_or(When::Now, |n| n.when(&e.port));
-            let late_ok = match e.data {
-                super::Data::Faces => builds.id == RegionId::CpuSampler,
-                super::Data::Hits => builds.split,
-                _ => false,
-            };
-            if when != When::Now && !(when == When::Prev && late_ok) {
+            let role = self.graph.nodes.get(&e.reader).map(|n| n.role);
+            let late_ok = role.is_some_and(|r| builds.late_crossings.contains(&(r, e.port.as_str(), when)))
+                || when == When::Prev
+                    && match e.data {
+                        super::Data::Faces => builds.id == RegionId::CpuSampler,
+                        super::Data::Hits => builds.split && role == Some(Role::Shading),
+                        _ => false,
+                    };
+            if when != When::Now && !late_ok {
                 return Err(format!(
-                    "`{}` on `{}`: a gate on an edge with timing `{}` is not modelled for {} in {executor} (gates on `prev` edges run on the CPU discoverer's faces and on the hit records a split's second GPU shades)",
+                    "`{}` on `{}`: a gate on an edge with timing `{}` is not modelled for {} in {executor} (gates on late edges run on the CPU discoverer's faces, the hit records a split's second GPU shades, and GPU discovery's hole detection: its sky mask and the drawer's faces in its loop)",
                     e.gates[0].0,
                     e.edge(),
                     when.label(),
                     e.data.name()
                 ));
+            }
+            // The loop's first iteration (hole detection) draws single faces; with the row
+            // merge the drawer draws merged runs, which hole detection cannot draw.
+            if matches!(when, When::Iterate(_)) && role == Some(Role::Draw) {
+                let knob = |r: Role, k: &str| self.graph.nodes.values().find(|n| n.role == r).and_then(|n| n.knobs.get(k)).and_then(|v| v.as_str().map(str::to_string));
+                if knob(Role::Visibility, "merge").as_deref() == Some("rows") && knob(Role::Draw, "order").as_deref() != Some("painter") {
+                    return Err(format!(
+                        "`{}` on `{}`: with `merge = \"rows\"` the drawer draws merged runs, and hole detection (the loop's first iteration) draws single faces: what crosses could not feed both; set `merge = \"none\"`",
+                        e.gates[0].0,
+                        e.edge()
+                    ));
+                }
             }
         }
         for e in self.gates.iter().filter(|e| !e.in_worker()) {
@@ -847,7 +869,8 @@ impl Checked {
                 // pass, through the gates, the last that arrived written in their place.
                 d if self.graph.nodes.get(&e.reader).is_some_and(|n| builds.crossings.contains(&(n.role, e.port.as_str()))) => {
                     let placement = self.graph.nodes.get(&e.reader).and_then(|n| n.knobs.get("placement")).and_then(|v| v.as_str());
-                    if d == super::Data::Hits && placement != Some("deferred") {
+                    let shading = self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Shading);
+                    if d == super::Data::Hits && shading && placement != Some("deferred") {
                         return Err(format!(
                             "{at}: with `placement = inline` the hits never leave the march; set `placement = \"deferred\"` on `{}`",
                             e.reader

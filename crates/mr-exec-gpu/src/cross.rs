@@ -13,11 +13,16 @@
 //! a camera) the reader's pass and the passes after it run with the camera of the frame what
 //! arrived was made in (this frame's when the network zeroed its id). The time on the host is
 //! the CPU stage `gate`.
+//!
+//! A late edge (`prev`, or an `iterate` loop's earlier iterations) is read from resources of
+//! the reader's own ([`crate::exec::Region::replay`]): what last arrived is written there at
+//! the frame's start. An edge read only late (`prev`) is sent at the frame's end, where its
+//! value is final; one read in the frame too (the loop's last iteration) is crossed as above.
 
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use mr_components::graph::Data;
+use mr_components::graph::{Data, When};
 use mr_core::gate::{Get, Put, Wire, WireError};
 use mr_core::*;
 use mr_gpu::wgpu;
@@ -151,6 +156,10 @@ pub(crate) struct EdgeGate {
     pub reader: String,
     pub port: String,
     data: Data,
+    /// The edge's timing, and whether the reader reads its earlier value from resources
+    /// of its own (`Builds::late_crossings`).
+    pub when: When,
+    pub late: bool,
     /// The index of the reader's pass in the executor's frame order.
     pub before: usize,
     chain: mr_core::gate::GateChain,
@@ -170,6 +179,7 @@ pub(crate) struct EdgeGate {
 /// split's transfer carries. Other gates the region runs itself (`Region::gates`).
 pub(crate) fn gates(core: &Core, passes: &[String], split: bool) -> Vec<EdgeGate> {
     let crossings = core.graph.region().map_or(&[][..], |b| b.crossings);
+    let late = core.graph.region().map_or(&[][..], |b| b.late_crossings);
     let role = |id: &str| core.graph.nodes.get(id).map(|n| n.role);
     core.gates
         .iter()
@@ -177,10 +187,14 @@ pub(crate) fn gates(core: &Core, passes: &[String], split: bool) -> Vec<EdgeGate
         .filter(|e| role(&e.reader).is_some_and(|r| crossings.contains(&(r, e.port.as_str()))))
         .filter_map(|e| {
             let before = passes.iter().position(|p| *p == e.reader)?;
+            let node = core.graph.nodes.get(&e.reader)?;
+            let when = node.when(&e.port);
             Some(EdgeGate {
                 reader: e.reader.clone(),
                 port: e.port.clone(),
                 data: e.data,
+                when,
+                late: late.contains(&(node.role, e.port.as_str(), when)),
                 before,
                 chain: mr_core::gate::GateChain::new(&e.edge(), &e.gates),
                 parts: Vec::new(),
@@ -199,15 +213,46 @@ impl EdgeGate {
     /// gates and the last that arrived written in their place. Submits `enc` so far and
     /// waits for it; `enc` is a new encoder after. Returns the host's time in ms.
     pub fn cross(&mut self, core: &Core, parts: Vec<Part>, enc: &mut wgpu::CommandEncoder, req: &FrameRequest) -> anyhow::Result<f32> {
+        self.pass(core, parts, enc, req, true)
+    }
+
+    /// Whether it is sent at the frame's end (read only late: `prev`), not before a pass.
+    pub fn at_end(&self) -> bool {
+        self.late && self.when == When::Prev
+    }
+
+    /// At the frame's end: `parts` (the producer's final value) read back and sent through
+    /// the gates; what arrives is written where the reader reads it next frame
+    /// ([`Self::replay`]), nothing here. Returns the host's time in ms.
+    pub fn send(&mut self, core: &Core, parts: Vec<Part>, enc: &mut wgpu::CommandEncoder, req: &FrameRequest) -> anyhow::Result<f32> {
+        self.pass(core, parts, enc, req, false)
+    }
+
+    /// At the frame's start: the last that arrived (zeros before anything did, or when it
+    /// does not fit) written into `parts`, the resources the reader reads the edge's earlier
+    /// value from.
+    pub fn replay(&self, core: &Core, parts: &[Part]) {
+        let fits = self.last.as_ref().filter(|c| (c.width, c.height) == (core.width, core.height) && c.parts.len() == parts.len() && c.parts.iter().zip(parts).all(|(b, p)| b.len() as u64 == p.bytes()));
+        match fits {
+            Some(c) => parts.iter().zip(&c.parts).for_each(|(p, b)| p.write(&core.gpu.queue, b)),
+            None => parts.iter().for_each(|p| p.write(&core.gpu.queue, &vec![0; p.bytes() as usize])),
+        }
+    }
+
+    /// Reads `parts` back and sends them through the gates; `write`: the last that arrived
+    /// written into them for the reader's pass (kept to restore after it).
+    fn pass(&mut self, core: &Core, parts: Vec<Part>, enc: &mut wgpu::CommandEncoder, req: &FrameRequest, write: bool) -> anyhow::Result<f32> {
         let gpu = &core.gpu;
         let fresh = parts.len() != self.parts.len() || parts.iter().zip(&self.parts).any(|(a, b)| !a.same(b) || a.staged() != b.staged());
         if fresh {
             self.staging = parts.iter().map(|p| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("gate read-back"), size: p.staged(), usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })).collect();
-            self.keep = parts.iter().map(|p| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("gate keep"), size: p.staged(), usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })).collect();
+            self.keep = if write { parts.iter().map(|p| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("gate keep"), size: p.staged(), usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })).collect() } else { Vec::new() };
             self.parts = parts;
         }
-        for ((p, s), k) in self.parts.iter().zip(&self.staging).zip(&self.keep) {
+        for (p, s) in self.parts.iter().zip(&self.staging) {
             p.copy_out(enc, s);
+        }
+        for (p, k) in self.parts.iter().zip(&self.keep) {
             p.copy_out(enc, k);
         }
         let done = std::mem::replace(enc, gpu.device.create_command_encoder(&Default::default()));
@@ -249,6 +294,9 @@ impl EdgeGate {
         // Cameras of messages the network has lost for good are dropped with the oldest.
         while self.cameras.len() > 64 {
             self.cameras.pop_front();
+        }
+        if !write {
+            return Ok(start.elapsed().as_secs_f32() * 1e3);
         }
         match &self.last {
             Some(c) => self.parts.iter().zip(&c.parts).for_each(|(p, b)| p.write(&gpu.queue, b)),

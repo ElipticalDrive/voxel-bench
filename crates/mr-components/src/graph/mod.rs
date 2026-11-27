@@ -1107,7 +1107,8 @@ mod tests {
             .filter(|n| n.role != Role::World)
             .for_each(|n| n.device = Some(Device::Gpu(1)));
         g.accept().unwrap();
-        // Meshes on the first GPU with the shading on the second; three GPUs; a drawer's shading.
+        // Meshes on the first GPU with the shading on the second (it decodes their records
+        // from its own copy); three GPUs; a drawer's shading.
         let mut g = split("raycast-gpu", "deferred");
         g.nodes.insert(
             "m.kernel".into(),
@@ -1123,8 +1124,7 @@ mod tests {
             .unwrap()
             .inputs
             .insert("meshes".into(), "meshes".into());
-        let why = g.accept().unwrap_err();
-        assert!(why.contains("meshes = none"), "{why}");
+        g.accept().unwrap();
         let mut g = split("raycast-gpu", "deferred");
         g.nodes.get_mut("storage").unwrap().device = Some(Device::Gpu(2));
         assert!(g.accept().is_err());
@@ -1141,9 +1141,9 @@ mod tests {
         sh.inputs.insert("shadow".into(), "s.kernel".into());
         sh.device = Some(Device::Gpu(1));
         // A drawer's shading on the second GPU: the gbuffer's records cross (and the
-        // visbuffer's, decoded from its ids; forward shading has none), meshes stay on one GPU.
+        // visbuffer's, decoded from its ids; forward shading has none).
         let why = g.accept().unwrap_err();
-        assert!(why.contains("draw = gbuffer") && why.contains("meshes = none"), "{why}");
+        assert!(why.contains("draw = gbuffer") && !why.contains("meshes"), "{why}");
         let g = g
             .with_edits(&["meshes", "kernel", "storage"].map(|n| Change::Remove(n.into())).into_iter().chain([Change::component("draw", "gbuffer")]).collect::<Vec<_>>())
             .unwrap();
