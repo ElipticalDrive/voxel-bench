@@ -116,7 +116,11 @@ unbound, nothing is filled in and nothing is dropped. If the resulting graph can
 choice is orange with ✱ and hovering over it gives the reason; picking it anyway makes a draft
 (shown with the reason, while the renderer keeps its last graph) to edit on from. In the live session an edit applies in place
 when it changes only nodes the lane's executor replaces while running (the worker is sent the graph's
-edits), and otherwise as a hot swap. Trying the choices is cheap: every
+edits, with a switched node's knobs, so its graph stays the host's), and otherwise as a hot swap;
+also when a switched node's knob that cannot change while running (↻, a shading's `placement`)
+would differ. A node's component picked as its knob (`<node>.component`, in the lane's knobs or by
+the tuner) keeps the node's knobs the new component has too (`placement`, `shadows`); picked in the
+editor, a new component starts its node's knobs anew, as a plan's edit does. Trying the choices is cheap: every
 choice the editor lists on every shipped graph file (1,110) is answered in 0.07 ms each.
 
 ## What the GUI shows

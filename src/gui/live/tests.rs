@@ -629,22 +629,9 @@ fn live_switch_to_a_shading_without_layers() {
     for component in ["pathtrace", "direct"] {
         let frames: Vec<u64> = live.shared.lock().unwrap().lanes.iter().map(|l| l.frames).collect();
         for i in 0..n {
-            // The component, and the placement it had (a switch starts the node's knobs anew).
-            let spec = live.shared.lock().unwrap().lanes[i].spec.clone();
-            let g = spec.graph.as_ref().unwrap();
-            let Some(placement) = g.nodes["shading"].knobs.get("placement").cloned() else {
-                live.send(Cmd::SetParam { lane: i, name: "shading.component".into(), value: ParamValue::Choice(component.into()) });
-                continue;
-            };
-            let g = g.edit(&mr_components::graph::Change::component("shading", component)).unwrap();
-            let g = g.edit(&mr_components::graph::Change::Knob("shading".into(), "placement".into(), Some(placement))).unwrap();
-            let mut new = spec.clone();
-            new.graph = Some(g);
-            new.resolve().unwrap_or_else(|e| panic!("lane {}: {component}: {e:#}", i + 1));
-            // As the editor does: the switched node's knobs start anew, and `placement` is
-            // not live, so a hot swap (a graph edit alone would lose the placement in the
-            // worker: refused by name where the hits leave the pass).
-            live.send(Cmd::Swap { lane: i, spec: new });
+            // The component knob: the node keeps its placement, and the switch is live in
+            // every lane (the worker's graph keeps the placement too).
+            live.send(Cmd::SetParam { lane: i, name: "shading.component".into(), value: ParamValue::Choice(component.into()) });
         }
         wait(&live.shared, &format!("every lane rendering on with {component}"), 120, |s| {
             s.lanes.iter().enumerate().all(|(i, l)| l.frames > frames[i] + 10 && l.spec.graph.as_ref().is_some_and(|g| g.nodes["shading"].component == component))
@@ -654,9 +641,10 @@ fn live_switch_to_a_shading_without_layers() {
         for (i, l) in sh.lanes.iter().enumerate() {
             let bad: Vec<&String> = l.events.iter().map(|(_, e)| e).filter(|e| e.starts_with("refused") || e.starts_with("failed")).collect();
             assert!(l.status == LaneStatus::Running && bad.is_empty(), "lane {} ({component}): {:?} {bad:?}\n{}", i + 1, l.status, sh.log.join("\n"));
-            // Inline, the switch is live (the layered records dropped in the running worker).
             let swapped = l.events.iter().any(|(_, e)| e.starts_with("hot swap"));
-            assert_eq!(swapped, l.spec.label() != "inline", "lane {}: {:?}", i + 1, l.events);
+            assert!(!swapped, "lane {}: a live switch, not a swap: {:?}", i + 1, l.events);
+            let placement = l.spec.graph.as_ref().unwrap().nodes["shading"].knobs.get("placement").and_then(|v| v.as_str().map(String::from));
+            assert_eq!(placement.as_deref(), (l.spec.label() != "inline").then_some("deferred"), "lane {}", i + 1);
         }
     }
     // Back on `direct`: the layers composited as before the switches (a static view; a
