@@ -485,7 +485,7 @@ camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
         ("glass-gpu-lossy", gpu_hits("raycast-gpu", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, reorder = true, seed = 5 }")),
     ];
     for (name, edits) in &runs {
-        let (ok, log) = launch_scene(&dir(), name, "raycast-gpu", edits, 0, glass);
+        let (ok, log) = launch_scene(&dir(), name, "raycast-gpu", edits, 0, "unlit", glass);
         assert!(ok, "{name}: {log}");
         let r = report(name);
         assert!(r["error"].is_null(), "{name}: {}", r["error"]);
