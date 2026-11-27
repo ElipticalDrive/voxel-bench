@@ -28,6 +28,10 @@ pub mod caps;
 pub mod draw;
 pub mod geometry;
 pub mod graph;
+/// The GPU walks' and shadings' sources by name (`build.rs`).
+mod gpu_sources {
+    include!(concat!(env!("OUT_DIR"), "/gpu_sources.rs"));
+}
 pub mod holes;
 pub mod impls;
 pub mod knobs;
@@ -760,6 +764,24 @@ pub fn parse_placement(s: &str) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every WGSL source the build script found by folder belongs to a registered component
+    /// of that role (a misnamed folder would otherwise be a source nothing runs).
+    #[test]
+    fn gpu_sources_are_registered_components() {
+        let tables = [
+            (Role::Traversal, gpu_sources::TRAVERSAL_GPU),
+            (Role::Traversal, gpu_sources::TRAVERSAL_RT),
+            (Role::Shading, gpu_sources::SHADING_GPU),
+        ];
+        for (role, table) in tables {
+            assert!(!table.is_empty());
+            for (name, src) in table {
+                assert!(components(role).any(|c| c.name == *name), "{role:?} `{name}` has a source but no registry entry");
+                assert!(!src.trim().is_empty(), "{name}");
+            }
+        }
+    }
 
     /// Metadata and implementations agree: every component a node of a shipped graph may be
     /// (`Graph::choices`) has code where that graph's executor runs it, every storage's

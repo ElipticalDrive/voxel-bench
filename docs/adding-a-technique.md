@@ -52,8 +52,10 @@ its upload in `storage/gpu_data.rs`. Not rehearsed yet.
    lit, px)` and `shade_surface(s, d, lit, px)`; with transparency (`Cap::Layers`) also
    `radiance_point` / `shade_radiance` under `#ifdef LAYERS`. Available: `direct_light`,
    `occluded` (shadow rays), `btrace` (secondary rays through the composed bounce walk,
-   meshes included where the program has them), `surface_texel`, `display`, `vp`.
-2. Add the source to `shading::gpu_wgsl` (`shading/mod.rs`) and the registry entry. Its
+   meshes included where the program has them), `surface_texel`, `display`, `vp`. A first
+   line `// include ../sampling.wgsl` puts the shared sampling (PCG, cosine directions, the
+   accumulation's signature) before it. The build script finds the file by its folder name.
+2. Add the registry entry. Its
    caps decide the rest: `Cap::Paths` gives it the `bounce` input, the per-pixel state
    (`sp`, `accum`: `shading::state`) and the knobs `spp` and `accumulate`; the knobs the
    state owns go to components by cap (`bounces` to path tracers, `reach` to
@@ -96,7 +98,8 @@ passes (+48 %): one more choice multiplies every graph varying that node with ot
    `storage/adapters.wgsl` derives (`s_dist`, `s_row`). Count iterations in `ct_iters` (the
    `steps` view), stop after `MAX_STEPS`, clip to `vp.bounds_min/max` and `max_t`. Skipping
    the start cell is what lets the layer walk resume through the kernel (`Cap::Layers`).
-2. Add the source to `traversal::gpu_wgsl` (`traversal/mod.rs`) and the registry entry: its
+2. Add the registry entry (the build script finds `NAME/gpu.wgsl` by its folder; a ray-query
+   kernel is `NAME/rt.wgsl`): its
    caps (`Steps`, `Layers`; `Lod` only if it walks the LOD levels) and `needs` on the
    storage's caps (`Voxels`; `Dist`, `Row` for a walk relying on those).
 3. What is derived: the walk joins every GPU site that reads a kernel (primary rays, shadow
@@ -218,27 +221,35 @@ Fixed while rehearsing:
   now takes every shipped file the GPU executor runs.
 - The scenario plans were three hand-kept lists (sweep.py, turn-sweep.py, suite.py, which had
   drifted apart); now one, `SCENARIOS` in `scripts/mr.py`.
+- `shading::gpu_wgsl` and `traversal::gpu_wgsl` were hand-kept matches of names to sources;
+  `crates/mr-components/build.rs` now finds `<role>/<name>/gpu.wgsl` (and `rt.wgsl`) by
+  folder, shared files by a leading `// include` line, and a test checks that every source
+  found is a registered component.
+- `scripts/new.py accept-sweep` built the release test suite (3 minutes); it now runs the
+  debug one `check.py` already built (15 s).
 - The GPU walk composition test listed storages and kernels by hand (a new kernel or GPU
   storage went uncomposed); both now come from the registry. A graph test spelled
   out every kernel in an expected error message; it now checks only what it is about.
 
-Open:
+Handed to S (2026-11-27), each to be done when S first adds the kind it slows, since only
+that addition shows the right shape:
 
 - A new lighting model touches the host in three places (`Lighting`, `lighting()`, the
   reference option in `main.rs`) and the reference: the reference's models could be a
   registry of their own keyed by cap.
 - `new.py` scaffolds CPU storages only; shadings, walks and GPU storages are written by hand.
-- `shading::gpu_wgsl` and `traversal::gpu_wgsl` are hand-kept matches of names to sources.
 - A CPU walk needs a `Traversal` variant and its dispatch in `raycast.rs` in four places, and
   the registry's site check lists CPU kernels by hand.
 - A new shape touches the shared code in about nine places, each a match by name: the
   visibility's ports (`model::inputs`), the region pick (`Graph::region`), `RegionId`, the
   executor's `info` and `create_with`, the registry test's arms per region. A region could
   name its hits source in its `Builds` (as it names its nodes) so that the pick, the
-  executor's dispatch and the registry test read it from `REGIONS`.
-- `scripts/new.py accept-sweep` builds and runs the release test suite to read the new size;
-  it takes minutes (the size could be printed by `multirenderer` from the plan instead).
+  executor's dispatch and the registry test read it from `REGIONS`. The drawers' sources
+  (`draw::gpu_wgsl`) and prepasses' (`prepass::gpu_wgsl`) are hand matches too, composed per
+  drawer; they go with this.
 - The full sweep grows by the product of the choices it varies together; with S adding many
   components it needs pairwise coverage as the turn sweep has, or it stops being runnable.
 - `glass` has a plan but is in no sweep's scenarios (it was in none of the three old lists);
-  whether transparency worlds join the sweeps is open.
+  whether transparency worlds join the sweeps is open. My recommendation: add it to the turn
+  sweep's scenarios when S's first feature-add turn touches transparency (adding it now
+  re-deals the queued turn sweep's parts).

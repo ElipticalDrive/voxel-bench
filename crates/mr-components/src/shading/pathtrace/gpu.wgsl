@@ -1,3 +1,4 @@
+// include ../sampling.wgsl
 // Shading `pathtrace` (from gpu-pathtrace): unlit = the surface's albedo; lit = diffuse path
 // tracing: next-event estimation for sun and point lights with shadow rays (`occluded`),
 // a constant-ambient sky, `sp.bounces` cosine-weighted bounces traced with the composed

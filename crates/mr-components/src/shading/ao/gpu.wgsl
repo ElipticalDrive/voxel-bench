@@ -1,3 +1,4 @@
+// include ../sampling.wgsl
 // Shading `ao`: unlit = the surface's albedo; lit = direct lighting (sun and point lights with
 // their shadow rays, `occluded`) with the ambient term scaled by ambient occlusion: the share
 // of `sp.spp` cosine-weighted rays per pixel per frame, traced with the composed secondary

@@ -1,5 +1,5 @@
 // Sampling for the stateful shadings (`pathtrace`, `ao`; put before their source by
-// `shading::gpu_wgsl`): a per-pixel PCG sequence, cosine-weighted directions, and the
+// their `// include` line): a per-pixel PCG sequence, cosine-weighted directions, and the
 // signature of a pixel's primary surface that their accumulation (`accum`) keys on.
 
 var<private> rng_state: u32;

@@ -192,7 +192,7 @@ def cmd_try(args):
 
 
 def cmd_accept_sweep(_):
-    r = subprocess.run(["cargo", "test", "-q", "--release", "pair_covering_sweeps"], cwd=ROOT, capture_output=True, text=True)
+    r = subprocess.run(["cargo", "test", "-q", "--bin", "multirenderer", "pair_covering_sweeps"], cwd=ROOT, capture_output=True, text=True)
     m = re.search(r"left: (\d+)\s+right: (\d+)", r.stdout + r.stderr)
     if not m:
         print("accept-sweep: the sweep size test passes, nothing to accept" if r.returncode == 0 else "accept-sweep: failed some other way:\n" + (r.stdout + r.stderr)[-1500:])

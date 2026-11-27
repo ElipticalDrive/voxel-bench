@@ -16,24 +16,15 @@ pub mod refloor {
     pub mod cpu;
 }
 
-/// The GPU kernels that walk a storage.
+/// The GPU kernels that walk a storage (`NAME/gpu.wgsl`, found by the build script).
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "refloor" => include_str!("refloor/gpu.wgsl"),
-        "incremental" => include_str!("incremental/gpu.wgsl"),
-        "sphere" => include_str!("sphere/gpu.wgsl"),
-        "rowrun" => include_str!("rowrun/gpu.wgsl"),
-        "topdown" => include_str!("topdown/gpu.wgsl"),
-        _ => return None,
-    })
+    crate::gpu_sources::TRAVERSAL_GPU.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
 
-/// The kernels of the rayquery-gpu back end (hardware ray queries against its BLAS).
+/// The kernels of the rayquery-gpu back end (hardware ray queries against its BLAS;
+/// `NAME/rt.wgsl`).
 pub fn rt_wgsl(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "rayquery" => include_str!("rayquery/gpu.wgsl"),
-        _ => return None,
-    })
+    crate::gpu_sources::TRAVERSAL_RT.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
 
 #[cfg(test)]

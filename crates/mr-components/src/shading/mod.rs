@@ -29,11 +29,8 @@ pub const DEFERRED_PACKED_WGSL: &str = concat!(
 /// Mesh surfaces through the shading component (`shade_mesh`; module `shaders::SHADING_MESH`).
 pub const SHADE_MESH_WGSL: &str = include_str!("mesh.wgsl");
 
+/// The GPU shadings (`NAME/gpu.wgsl`, found by the build script; a source's leading
+/// `// include` lines put shared files such as `sampling.wgsl` before it).
 pub fn gpu_wgsl(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "direct" => include_str!("direct/gpu.wgsl"),
-        "pathtrace" => concat!(include_str!("sampling.wgsl"), include_str!("pathtrace/gpu.wgsl")),
-        "ao" => concat!(include_str!("sampling.wgsl"), include_str!("ao/gpu.wgsl")),
-        _ => return None,
-    })
+    crate::gpu_sources::SHADING_GPU.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
