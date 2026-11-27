@@ -283,8 +283,6 @@ fn gates_refused_naming_them() {
     assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
     let (_, log) = launch(&dir(), "raycast-gpu-surfaces", "raycast-gpu", &format!("[{}]", gate_on("meshes", "visibility", "meshes", "{}")));
     assert!(log.contains("`g` on `visibility.meshes`") && log.contains("Depth32Float"), "{log}");
-    let (_, log) = launch(&dir(), "raster-gpu-culled", "raster-gpu", &format!("[{}]", gate_on("visibility", "draw", "faces", "{}")));
-    assert!(log.contains("`g` on `draw.faces`") && log.contains("on the CPU"), "{log}");
     // A second ray query over the geometry (the shadow rays') reading it without the gate.
     let two = format!(
         r#"[{} {{ add = "k2", role = "traversal", component = "rayquery" }}, {{ node = "k2", input = "geometry", from = "geometry" }}, {{ node = "shading", input = "shadow", from = "k2" }},]"#,
@@ -642,4 +640,31 @@ fn gpu_lossless_rayquery_geometry_gate_changes_no_pixel() {
         crossed(&gated, false);
         assert!(last_image(&dir(), &format!("rayquery-gpu-{geometry}-plain")) == last_image(&dir(), &format!("rayquery-gpu-{geometry}-gated")), "{geometry}: a lossless gate changed the frame");
     }
+}
+
+/// On the GPU rasteriser, the culled faces (each frame's indirect draws) cross a lossy gate
+/// at their upload: the pass lives through the losses and reports the gate, one message a
+/// frame. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_culled_faces_through_a_lossy_gate() {
+    let edits = format!("[{}]", gate_on("visibility", "draw", "faces", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, reorder = true, seed = 5 }"));
+    let r = run(&dir(), "raster-gpu-culled-lossy", "raster-gpu", &edits);
+    assert!(r["error"].is_null(), "{}", r["error"]);
+    let gs = gates(&r);
+    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["g:draw.faces"]);
+    crossed(&r, true);
+}
+
+/// A lossless gate with no delay on the GPU rasteriser's culled faces changes no pixel:
+/// each frame draws the list culled for it. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_lossless_culled_faces_gate_changes_no_pixel() {
+    let plain = run(&dir(), "raster-gpu-culled-plain", "raster-gpu", "[]");
+    assert!(plain["error"].is_null(), "{}", plain["error"]);
+    let gated = run(&dir(), "raster-gpu-culled-gated", "raster-gpu", &format!("[{}]", gate_on("visibility", "draw", "faces", "{}")));
+    assert!(gated["error"].is_null(), "{}", gated["error"]);
+    crossed(&gated, false);
+    assert!(last_image(&dir(), "raster-gpu-culled-plain") == last_image(&dir(), "raster-gpu-culled-gated"), "a lossless gate changed the frame");
 }

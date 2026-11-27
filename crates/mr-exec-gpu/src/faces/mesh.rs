@@ -23,6 +23,12 @@
 //! keeps them until the chunk is remeshed. Slots are the sender's: under `reorder` a slot
 //! freed and taken by another chunk can be drawn at the newer chunk's position until the
 //! older chunk's drop arrives.
+//!
+//! A gate on the culled faces (the drawer's `faces` edge) sits at the upload of the indirect
+//! draws: each frame's draws and their batches cross as one message ([`DrawList`]) with its
+//! frame id, and the drawer draws the last list that arrived (nothing before one has). The
+//! draws index the GPU's quads, so a late list draws whatever the quads hold now, from this
+//! frame's camera (culled with its own frame's).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -260,6 +266,61 @@ struct FacesGate {
     ms: f32,
 }
 
+/// A frame's culled faces as they leave the visibility for the GPU: the indirect draws and
+/// their batches (page of the quads, first draw, draws), with the instances drawn and in all.
+#[derive(Clone, Default)]
+struct DrawList {
+    frame_id: u64,
+    draws: Vec<DrawArgs>,
+    batches: Vec<(usize, u32, u32)>,
+    drawn: u64,
+    total: u64,
+}
+
+impl Wire for DrawList {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.reserve(32 + self.draws.len() * 16 + self.batches.len() * 12);
+        let mut p = Put(out);
+        p.u64(self.frame_id);
+        p.u64(self.drawn);
+        p.u64(self.total);
+        p.u32(self.draws.len() as u32);
+        p.bytes(bytemuck::cast_slice(&self.draws));
+        p.u32(self.batches.len() as u32);
+        for &(page, first, n) in &self.batches {
+            p.u32(page as u32);
+            p.u32(first);
+            p.u32(n);
+        }
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut g = Get(bytes);
+        let (frame_id, drawn, total) = (g.u64()?, g.u64()?, g.u64()?);
+        let n = g.count(16)?;
+        let mut draws = vec![DrawArgs::zeroed(); n];
+        bytemuck::cast_slice_mut::<DrawArgs, u8>(&mut draws).copy_from_slice(g.take(n * 16)?);
+        let mut batches = Vec::with_capacity(g.count(12)?.min(1 << 16));
+        for _ in 0..batches.capacity() {
+            let (page, first, n) = (g.u32()? as usize, g.u32()?, g.u32()?);
+            if first as u64 + n as u64 > draws.len() as u64 {
+                return Err(WireError("a batch of draws past the draws".into()));
+            }
+            batches.push((page, first, n));
+        }
+        g.end()?;
+        Ok(DrawList { frame_id, draws, batches, drawn, total })
+    }
+}
+
+/// The gates on the culled faces, the last list that arrived and the host's time in them
+/// this frame.
+struct DrawsGate {
+    chain: GateChain,
+    last: DrawList,
+    ms: f32,
+}
+
 struct ChunkMesh {
     slot: u16,
     /// Its quads' page of the quad buffer and their offset in it.
@@ -307,6 +368,8 @@ pub(crate) struct Meshing {
     free_slots: Vec<u16>,
     /// The gates on the faces between the geometry and the GPU, if any.
     gate: Option<FacesGate>,
+    /// The gates on the culled faces between the visibility and the drawer, if any.
+    draws_gate: Option<DrawsGate>,
     /// This frame's state: what its nodes did so far, its counters and its groups.
     frame: Frame,
 }
@@ -321,6 +384,9 @@ struct Frame {
     /// Meshes drawn this frame (the meshes stage draws them, `depth`, or not, `none`).
     want_meshes: bool,
     view_proj: Mat4,
+    /// The frame's id and time (the culled faces' gates).
+    frame_id: u64,
+    time: f64,
     /// The camera's block and its fraction.
     camera: (IVec3, Vec3),
     world: Option<wgpu::BindGroup>,
@@ -343,6 +409,7 @@ impl Meshing {
         let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {role:?} node"));
         let (geometry_id, draw_id) = (node(Role::Geometry)?, node(Role::Draw)?);
         let gate = g.gates_on(node(Role::Visibility)?, "faces").map(|e| FacesGate { chain: GateChain::new(&e.edge(), &e.gates), ms: 0.0 });
+        let draws_gate = g.gates_on(node(Role::Draw)?, "faces").map(|e| DrawsGate { chain: GateChain::new(&e.edge(), &e.gates), last: DrawList::default(), ms: 0.0 });
         let geometry = g.node(geometry_id).component.clone();
         let draw = g.node(draw_id).component.clone();
         let shading = g.node(g.shading()).component.clone();
@@ -414,6 +481,7 @@ impl Meshing {
             meshes: HashMap::new(),
             slots: HashMap::new(),
             gate,
+            draws_gate,
             dirty: HashSet::new(),
             free_slots: (0..MAX_SLOTS as u32).rev().map(|s| s as u16).collect(),
             frame: Frame::default(),
@@ -594,7 +662,7 @@ impl Meshing {
                 off += n;
             }
         }
-        let mut batches = Vec::with_capacity(pages.len());
+        let mut batches: Vec<(usize, u32, u32)> = Vec::with_capacity(pages.len());
         let mut first = 0;
         for (page, d) in pages.iter().enumerate() {
             if !d.is_empty() {
@@ -602,7 +670,23 @@ impl Meshing {
                 first += d.len() as u32;
             }
         }
-        let draws = if pages.len() == 1 { pages.pop().unwrap() } else { pages.concat() };
+        let mut draws = if pages.len() == 1 { pages.pop().unwrap() } else { pages.concat() };
+        let mut cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
+        // Through the gates on the culled faces: the last list that arrived is drawn, its
+        // batches on pages the quads no longer have left out.
+        if let Some(g) = &mut self.draws_gate {
+            let start = Instant::now();
+            let sent = DrawList { frame_id: self.frame.frame_id, draws, batches, drawn, total };
+            if let Some(got) = g.chain.gates.pass(self.frame.time, Some(sent)).pop() {
+                g.last = got;
+            }
+            let pages = self.quads.pages();
+            let last = &g.last;
+            (draws, drawn, total) = (last.draws.clone(), last.drawn, last.total);
+            batches = last.batches.iter().copied().filter(|b| b.0 < pages).collect();
+            g.ms = start.elapsed().as_secs_f32() * 1e3;
+            cull_ms = start.duration_since(cull_start).as_secs_f32() * 1e3;
+        }
         let bytes = (draws.len() * 16) as u64;
         if bytes > self.indirect.size() {
             self.indirect = core.gpu.storage("indirect", bytes.next_power_of_two(), wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDIRECT, || {
@@ -614,7 +698,7 @@ impl Meshing {
         }
         let f = &mut self.frame;
         (f.draws, f.batches, f.drawn_instances, f.total) = (draws.len() as u32, batches, drawn, total);
-        f.cull_ms = cull_start.elapsed().as_secs_f32() * 1e3;
+        f.cull_ms = cull_ms;
     }
 
     /// The storages' groups for the shadow rays (and the meshes' occlusion), after the
@@ -836,6 +920,8 @@ impl Region for Meshing {
             camera: c.split_position(),
             world: Some(core.world.prepare(&core.gpu, c).clone()),
             out: Some(core.output.create_view(&Default::default())),
+            frame_id: req.frame_id,
+            time: req.time,
             remeshed,
             mesh_ms,
             ..Frame::default()
@@ -858,13 +944,19 @@ impl Region for Meshing {
         .chain(accel)
         .chain(core.accum.counter(req.mode))
         .collect();
-        let gate = self.gate.as_ref().map(|g| StageTime::cpu("gate", &g.chain.nodes.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), g.ms));
+        let chains = self.gate.as_ref().map(|g| (&g.chain, g.ms)).into_iter().chain(self.draws_gate.as_ref().map(|g| (&g.chain, g.ms)));
+        let (nodes, ms) = chains.fold((Vec::new(), 0.0), |(mut nodes, ms), (c, t)| {
+            nodes.extend(c.nodes.iter().map(|(id, _)| id.clone()));
+            (nodes, ms + t)
+        });
+        let gate = (!nodes.is_empty()).then(|| StageTime::cpu("gate", &nodes, ms));
         let stages = [StageTime::cpu("geometry", &self.geometry_nodes, f.mesh_ms as f32), StageTime::cpu("cull", &self.cull_nodes, f.cull_ms)].into_iter().chain(gate).chain(accel_stages).collect();
         (counters, None, stages)
     }
 
     fn gates(&self) -> Vec<GateReport> {
-        self.gate.as_ref().map_or(vec![], |g| g.chain.reports())
+        let geometry = self.gate.as_ref().map_or(vec![], |g| g.chain.reports());
+        geometry.into_iter().chain(self.draws_gate.as_ref().map_or(vec![], |g| g.chain.reports())).collect()
     }
 
     fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}

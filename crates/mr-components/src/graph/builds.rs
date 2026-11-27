@@ -866,8 +866,9 @@ impl Checked {
                 super::Data::Faces if matches!(builds.id, RegionId::CpuRaster) => {}
                 // The CPU discoverer's face set, on its way to the GPU that draws it.
                 super::Data::Faces if builds.id == RegionId::CpuSampler => {}
-                // The GPU rasteriser's geometry: each chunk's faces at their upload.
-                super::Data::Faces if builds.id == RegionId::GpuMeshing && self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Visibility) => {}
+                // The GPU rasteriser's faces: the geometry's, each chunk's at their upload; the
+                // culling's, each frame's draws at their upload.
+                super::Data::Faces if builds.id == RegionId::GpuMeshing => {}
                 // The splats' points: each chunk's points between the rebuild and the upload.
                 super::Data::Faces if builds.id == RegionId::GpuSplat && self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Visibility) => {}
                 // Ray queries' geometry: each chunk's primitives between the meshing and the
@@ -896,16 +897,11 @@ impl Checked {
                 }
                 super::Data::Faces if self.graph.nodes.get(&e.source).is_some_and(|n| matches!(n.role, Role::Geometry)) && builds.executor() == "gpu" => {
                     return Err(format!(
-                        "{at}: the geometry is built on the CPU and uploaded into the GPU's buffers as chunks change, not sent whole each frame; no serialized form at that upload yet (gates on faces run in the CPU rasteriser, the CPU discoverer, the GPU rasteriser's geometry, the splats' points, ray queries' geometry and between GPU discovery and its drawer)"
-                    ));
-                }
-                super::Data::Faces if matches!(builds.id, RegionId::GpuMeshing) => {
-                    return Err(format!(
-                        "{at}: the visibility runs on the CPU (culling) and its draws reach the GPU as an upload each frame; no serialized form at that upload yet (gates on faces run in the CPU rasteriser, the CPU discoverer, the GPU rasteriser's geometry, the splats' points, ray queries' geometry and between GPU discovery and its drawer)"
+                        "{at}: the geometry is built on the CPU and uploaded into the GPU's buffers as chunks change, not sent whole each frame; no serialized form at that upload yet (gates on faces run in the CPU rasteriser, the CPU discoverer, the GPU rasteriser (geometry and culled draws), the splats' points, ray queries' geometry and between GPU discovery and its drawer)"
                     ));
                 }
                 super::Data::Faces => {
-                    return Err(format!("{at}: {executor} gives its faces no serialized form yet (gates on faces run in the CPU rasteriser, the CPU discoverer, the GPU rasteriser's geometry, the splats' points, ray queries' geometry and between GPU discovery and its drawer)"));
+                    return Err(format!("{at}: {executor} gives its faces no serialized form yet (gates on faces run in the CPU rasteriser, the CPU discoverer, the GPU rasteriser (geometry and culled draws), the splats' points, ray queries' geometry and between GPU discovery and its drawer)"));
                 }
                 super::Data::Surfaces if builds.executor() == "gpu" => {
                     return Err(format!(
