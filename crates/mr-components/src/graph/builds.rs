@@ -485,7 +485,7 @@ pub const GPU_WALK: Builds = Builds {
     only: &[],
     free: HITS_LATE,
     split: true,
-    crossings: &[(Role::Visibility, "start")],
+    crossings: &[(Role::Visibility, "start"), (Role::Visibility, "meshes")],
     api_choice: Some(ApiChoice {
         knob: "dispatch",
         roles: CAST_ROLES,
@@ -905,7 +905,7 @@ impl Checked {
                 }
                 super::Data::Surfaces if builds.executor() == "gpu" => {
                     return Err(format!(
-                        "{at}: mesh surfaces are rasterised into the drawer's own pass (drawers) or into a depth target the rays read (ray casting), and a depth target cannot be written back on a GPU (WebGPU copies nothing into Depth32Float)"
+                        "{at}: {executor} rasterises mesh surfaces into its own pass's targets, beside its faces (no edge resource to read back); gates on mesh surfaces run in GPU ray casting (the mesh records the rays read)"
                     ));
                 }
                 d => return Err(format!("{at}: {executor} runs no gates on {} edges yet", d.name())),

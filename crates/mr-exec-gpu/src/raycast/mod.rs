@@ -180,6 +180,10 @@ trait Cast: Sized {
     fn starts(&self) -> Option<crate::cross::Part> {
         None
     }
+    /// The meshes' records (their surfaces), as a gate on the visibility's `meshes` reads them back.
+    fn surfaces(&self) -> Option<crate::cross::Part> {
+        None
+    }
     /// The caster's bind groups after group 1.
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)>;
     /// The frame's counters before the shading state's, its legend and CPU stage times.
@@ -550,6 +554,7 @@ impl<C: Cast> crate::exec::Region for Raycast<C> {
     fn crossing(&self, _core: &Core, reader: Role, port: &str, _data: mr_components::graph::Data) -> Option<Vec<crate::cross::Part>> {
         match (reader, port) {
             (Role::Visibility, "start") => self.cast.starts().map(|p| vec![p]),
+            (Role::Visibility, "meshes") => self.cast.surfaces().map(|p| vec![p]),
             _ => None,
         }
     }

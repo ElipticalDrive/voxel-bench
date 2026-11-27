@@ -465,6 +465,10 @@ impl Cast for Walk {
         Some(crate::cross::Part::Buffer(self.beam.tiles.clone()))
     }
 
+    fn surfaces(&self) -> Option<crate::cross::Part> {
+        Some(crate::cross::Part::Texture(self.meshes.records().clone()))
+    }
+
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)> {
         std::iter::once((3, self.meshes.bind_group())).chain(self.bound.0.iter().map(|(g, b)| (*g, b)))
     }

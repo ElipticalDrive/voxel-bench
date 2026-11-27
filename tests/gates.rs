@@ -19,12 +19,12 @@ fn launch(dir: &Path, name: &str, graph: &str, edits: &str) -> (bool, String) {
 
 /// [`launch`], saving every `every`-th frame (0: the last).
 fn launch_saving(dir: &Path, name: &str, graph: &str, edits: &str, every: u32) -> (bool, String) {
-    launch_scene(dir, name, graph, edits, every, r#"generator = { type = "terrain", seed = 3 }
+    launch_scene(dir, name, graph, edits, every, "unlit", r#"generator = { type = "terrain", seed = 3 }
 camera = { type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }"#)
 }
 
-/// [`launch_saving`] in `scene` (the plan's scene table's lines).
-fn launch_scene(dir: &Path, name: &str, graph: &str, edits: &str, every: u32, scene: &str) -> (bool, String) {
+/// [`launch_saving`] in `scene` (the plan's scene table's lines), in pass mode `mode`.
+fn launch_scene(dir: &Path, name: &str, graph: &str, edits: &str, every: u32, mode: &str, scene: &str) -> (bool, String) {
     let d = dir.join(name);
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -35,7 +35,7 @@ fn launch_scene(dir: &Path, name: &str, graph: &str, edits: &str, every: u32, sc
 frames = 20
 warmup = 0
 resolution = [48, 32]
-modes = ["unlit"]
+modes = ["{mode}"]
 view_radius = 2
 [[renderer]]
 graph = "{graph}"
@@ -281,8 +281,8 @@ fn gates_refused_naming_them() {
     assert!(log.contains("`g` on `shading.hits`") && log.contains("no hit records"), "{log}");
     let (_, log) = launch(&dir(), "columns-gpu-inline", "columns-gpu", &on_hits("visibility"));
     assert!(log.contains("`g` on `shading.hits`") && log.contains("placement = inline"), "{log}");
-    let (_, log) = launch(&dir(), "raycast-gpu-surfaces", "raycast-gpu", &format!("[{}]", gate_on("meshes", "visibility", "meshes", "{}")));
-    assert!(log.contains("`g` on `visibility.meshes`") && log.contains("Depth32Float"), "{log}");
+    let (_, log) = launch(&dir(), "raster-gpu-surfaces", "raster-gpu", &format!("[{}]", gate_on("meshes", "draw", "meshes", "{}")));
+    assert!(log.contains("`g` on `draw.meshes`") && log.contains("GPU ray casting"), "{log}");
     // A second ray query over the geometry (the shadow rays') reading it without the gate.
     let two = format!(
         r#"[{} {{ add = "k2", role = "traversal", component = "rayquery" }}, {{ node = "k2", input = "geometry", from = "geometry" }}, {{ node = "shading", input = "shadow", from = "k2" }},]"#,
@@ -452,9 +452,9 @@ camera = { type = "static", position = [34, 36, 66], target = [23, 2, 16] }"#;
         let p = find(&dir().join(name).join("out"), &|p| p.file_name().is_some_and(|n| n == "report.json")).expect("a report");
         serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap()[0].clone()
     };
-    let (ok, log) = launch_scene(&dir(), "glass-plain", "raycast-cpu", r#"[{ node = "shading", knobs = { placement = "deferred" } }]"#, 0, glass);
+    let (ok, log) = launch_scene(&dir(), "glass-plain", "raycast-cpu", r#"[{ node = "shading", knobs = { placement = "deferred" } }]"#, 0, "unlit", glass);
     assert!(ok, "{log}");
-    let (ok, log) = launch_scene(&dir(), "glass-gated", "raycast-cpu", &format!("[{}]", inside("{}", "{}")), 0, glass);
+    let (ok, log) = launch_scene(&dir(), "glass-gated", "raycast-cpu", &format!("[{}]", inside("{}", "{}")), 0, "unlit", glass);
     assert!(ok, "{log}");
     let (plain, gated) = (report("glass-plain"), report("glass-gated"));
     for r in [&plain, &gated] {
@@ -549,6 +549,51 @@ fn gpu_lossless_gates_between_passes_change_no_pixel() {
         assert!(gated["error"].is_null(), "{edge}: {}", gated["error"]);
         crossed(&gated, false);
         assert!(last_image(&dir(), &format!("{name}-plain")) == last_image(&dir(), &format!("{name}-gated")), "{edge}: a lossless gate changed the frame");
+    }
+}
+
+/// A room with moving meshes in view (a spinning torus, orbiting spheres), seen from a fixed
+/// camera.
+const MESH_ROOM: &str = r#"generator = { type = "room", size = 48 }
+camera = { type = "static", position = [24, 24, 85], target = [24, 20, 20] }
+meshes = [
+    { shape = "torus", position = [30, 30, 30], scale = 7, detail = 24, animate = [{ type = "spin", axis = [1, 1, 0], period = 16 }] },
+    { shape = "sphere", position = [14, 14, 14], scale = 3, detail = 16, count = 3, seed = 1, animate = [{ type = "orbit", center = [14.5, 0, 14.5], radius = 12, period = 20 }] },
+]"#;
+
+/// A run of `edits` on GPU ray casting in [`MESH_ROOM`] in pass mode `mode`: its report.
+fn mesh_room(name: &str, mode: &str, edits: &str) -> serde_json::Value {
+    let (ok, log) = launch_scene(&dir(), name, "raycast-gpu", edits, 0, mode, MESH_ROOM);
+    assert!(ok, "the run failed:\n{log}");
+    let report = find(&dir().join(name).join("out"), &|p| p.file_name().is_some_and(|n| n == "report.json")).unwrap_or_else(|| panic!("no report:\n{log}"));
+    let r: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(report).unwrap()).unwrap();
+    assert!(r[0]["error"].is_null(), "{name}: {}", r[0]["error"]);
+    r[0].clone()
+}
+
+/// GPU ray casting's mesh surfaces (the records the meshes' pass rasterises, which the rays
+/// stop at) cross gates between the two passes: lossy, the pass lives on and reports the gate,
+/// one frame's records a message; lossless, no pixel changes, with the meshes in the frame
+/// (it differs from the pass without them), inline and deferred. Needs a GPU (`--ignored`).
+#[test]
+#[ignore]
+fn gpu_mesh_surfaces_through_gates() {
+    let r = mesh_room("surfaces-lossy", "unlit+meshes", &format!("[{}]", gate_on("meshes", "visibility", "meshes", "{ latency_ms = 20, jitter_ms = 5, loss = 0.05, mtu = 512, seed = 5 }")));
+    let gs = gates(&r);
+    assert_eq!(gs.iter().map(|(k, (e, _))| format!("{k}:{e}")).collect::<Vec<_>>(), ["g:visibility.meshes"]);
+    crossed(&r, true);
+    let g = &gs["g"].1;
+    assert!(g["messages"].as_f64().unwrap() >= r["frames"].as_f64().unwrap(), "{g}");
+    assert!(g["bytes"].as_f64().unwrap() >= g["messages"].as_f64().unwrap() * 48.0 * 32.0 * 8.0, "{g}");
+    for (placement, name) in [("inline", "surfaces"), ("deferred", "surfaces-deferred")] {
+        let set = format!(r#"{{ node = "shading", knobs = {{ placement = "{placement}" }} }},"#);
+        mesh_room(&format!("{name}-none"), "unlit", &format!("[{set}]"));
+        mesh_room(&format!("{name}-plain"), "unlit+meshes", &format!("[{set}]"));
+        let gated = mesh_room(&format!("{name}-gated"), "unlit+meshes", &format!("[{set} {}]", gate_on("meshes", "visibility", "meshes", "{}")));
+        crossed(&gated, false);
+        let img = |n: &str| last_image(&dir(), &format!("{name}-{n}"));
+        assert!(img("plain") != img("none"), "{placement}: no mesh in the frame");
+        assert!(img("plain") == img("gated"), "{placement}: a lossless gate on the mesh surfaces changed the frame");
     }
 }
 

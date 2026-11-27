@@ -680,7 +680,7 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo {
         role: Role::Meshes,
         name: "composite",
-        description: "Meshes as a surface source: their hit records (the record's mesh capability) rasterised first into a record and depth target; each primary ray is cast only up to the mesh depth at its pixel, and where no voxel is nearer the pixel's surface is the mesh's, shaded where the walk shades (inline, or the deferred pass; voxel shadows in lit mode). Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshRecords).",
+        description: "Meshes as a surface source: their hit records (the record's mesh capability) rasterised first into a record and depth target; each primary ray is cast only up to the mesh hit's distance at its pixel (the record's), and where no voxel is nearer the pixel's surface is the mesh's, shaded where the walk shades (inline, or the deferred pass; voxel shadows in lit mode). Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshRecords).",
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: &[Api::Raster],

@@ -323,15 +323,16 @@ pub fn surface_wgsl(group: u32, binding: u32) -> String {
 pub const MESH_RECORDS_WGSL: &str = r#"
 struct MeshComp { near: f32, enabled: u32, _p0: u32, _p1: u32 }
 @group(3) @binding(0) var mesh_rec_tex: texture_2d<u32>;
-@group(3) @binding(1) var mesh_depth_tex: texture_depth_2d;
 @group(3) @binding(2) var<uniform> mesh_comp: MeshComp;
 
+// The record carries the mesh hit's distance from the camera (`pack_mesh_hit`), the cleared
+// target none (its hit bit 0): the surface is the record alone, one colour target (what a
+// gate on the meshes' edge carries).
 fn mesh_t(p: vec2<u32>, d: vec3<f32>, forward: vec3<f32>) -> f32 {
     if (mesh_comp.enabled == 0u) { return 1e30; }
-    let z = textureLoad(mesh_depth_tex, p, 0);
-    if (z <= 0.0) { return 1e30; }
-    // Reverse-Z infinite projection: depth = near / view distance along `forward`.
-    return (mesh_comp.near / z) / dot(d, forward);
+    let r = textureLoad(mesh_rec_tex, p, 0).xy;
+    if ((r.y & 1u) == 0u) { return 1e30; }
+    return bitcast<f32>(r.x);
 }
 
 fn mesh_record(p: vec2<u32>) -> vec2<u32> {
@@ -349,13 +350,15 @@ struct CompUniform {
 
 /// Mesh mode for ray casters: meshes are rasterised first into a record and
 /// depth target of the frame's size (records only: no shading); the ray caster casts each
-/// primary ray only up to the mesh's distance at that pixel (`mesh_t`), and where no voxel is
+/// primary ray only up to the mesh's distance at that pixel (`mesh_t`, the record's), and where no voxel is
 /// nearer the pixel's surface is the mesh's record, shaded inline by the walk or written for
 /// the deferred pass. Exact for primary visibility, and capped rays trace less.
 pub struct MeshRecords {
     pub meshes: GpuMeshes,
     layout: wgpu::BindGroupLayout,
     uniform: wgpu::Buffer,
+    /// The records (the rays' mesh surfaces) and their view, the depth only the pass tests.
+    records_tex: wgpu::Texture,
     records: wgpu::TextureView,
     depth: wgpu::TextureView,
     bind: wgpu::BindGroup,
@@ -377,20 +380,21 @@ impl MeshRecords {
             label: Some("mesh records"),
             entries: &[
                 tex(0, wgpu::TextureSampleType::Uint),
-                tex(1, wgpu::TextureSampleType::Depth),
                 buf(2, wgpu::BufferBindingType::Uniform),
                 buf(3, wgpu::BufferBindingType::Storage { read_only: true }),
             ],
         });
         let uniform = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh records"), size: size_of::<CompUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let (records, depth) = Self::targets(gpu, width, height);
+        let (records_tex, records, depth) = Self::targets(gpu, width, height);
         let meshes = GpuMeshes::new(gpu, None);
-        let bind = Self::bind(gpu, &layout, &records, &depth, &uniform, meshes.vertices());
-        Self { meshes, layout, uniform, records, depth, bind }
+        let bind = Self::bind(gpu, &layout, &records, &uniform, meshes.vertices());
+        Self { meshes, layout, uniform, records_tex, records, depth, bind }
     }
 
-    fn targets(gpu: &Gpu, w: u32, h: u32) -> (wgpu::TextureView, wgpu::TextureView) {
-        let mk = |label, format| {
+    /// The records (copyable: a gate on the meshes' edge reads them back and writes them) and
+    /// the depth.
+    fn targets(gpu: &Gpu, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
+        let mk = |label, format, copy: wgpu::TextureUsages| {
             gpu.device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
@@ -399,21 +403,22 @@ impl MeshRecords {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | copy,
                     view_formats: &[],
                 })
-                .create_view(&Default::default())
         };
-        (mk("mesh records", wgpu::TextureFormat::Rg32Uint), mk("mesh depth", wgpu::TextureFormat::Depth32Float))
+        let records = mk("mesh records", wgpu::TextureFormat::Rg32Uint, wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST);
+        let view = records.create_view(&Default::default());
+        let depth = mk("mesh depth", wgpu::TextureFormat::Depth32Float, wgpu::TextureUsages::empty()).create_view(&Default::default());
+        (records, view, depth)
     }
 
-    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, records: &wgpu::TextureView, depth: &wgpu::TextureView, uniform: &wgpu::Buffer, verts: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, records: &wgpu::TextureView, uniform: &wgpu::Buffer, verts: &wgpu::Buffer) -> wgpu::BindGroup {
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mesh records"),
             layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(records) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
                 wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: verts.as_entire_binding() },
             ],
@@ -421,7 +426,7 @@ impl MeshRecords {
     }
 
     fn rebind(&mut self, gpu: &Gpu) {
-        self.bind = Self::bind(gpu, &self.layout, &self.records, &self.depth, &self.uniform, self.meshes.vertices());
+        self.bind = Self::bind(gpu, &self.layout, &self.records, &self.uniform, self.meshes.vertices());
     }
 
     /// Layout of bind group 3 for the ray caster's pipeline.
@@ -435,8 +440,14 @@ impl MeshRecords {
     }
 
     pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
-        (self.records, self.depth) = Self::targets(gpu, width, height);
+        (self.records_tex, self.records, self.depth) = Self::targets(gpu, width, height);
         self.rebind(gpu);
+    }
+
+    /// The records the rays read their mesh surfaces from (what a gate on the meshes' edge
+    /// carries).
+    pub fn records(&self) -> &wgpu::Texture {
+        &self.records_tex
     }
 
     /// Whether `encode` will draw a pass this frame (so the renderer can move its frame's
