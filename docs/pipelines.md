@@ -323,9 +323,15 @@ GPU pipelines also keep the driver's pipeline cache per adapter and graph
 A big GPU can stand in for a small one: `MR_GPU_LIMITS=sizes` opens every device with its
 buffer, binding and texture sizes clamped to WebGPU's baseline (128 MiB a binding, 256 MiB a
 buffer, 8192 texels; lavapipe's), `MR_GPU_LIMITS=webgpu` clamps every limit (8 storage buffers a
-stage, which no shipped GPU pipeline fits yet). A buffer over a limit fails the pipeline naming
-the buffer, the device, the limit and what sets its size (a knob, the world, the resolution);
-the voxel pool instead spans several bindings.
+stage, which no shipped GPU pipeline fits yet), `MR_GPU_LIMITS=binding:N` is `sizes` with
+storage bindings of N MiB (the splitting below shown on a small world). A buffer over a limit
+fails the pipeline naming the buffer, the device, the limit and what sets its size (a knob, the
+world, the resolution); the voxel pool, a pool storage's side data (`distance`'s 32 KiB a chunk;
+read through `aux_slot`, `mr_gpu::voxels::SidePages`) and the splats' points (`point_at`)
+instead span several bindings, the pool's and the side data's pages sharing the stage's
+storage-buffer budget (lavapipe's 48 leave 11). With one binding (NVIDIA) the shaders read as
+before, pixel for pixel (`tests/scale.rs`
+`side_data_and_points_past_the_binding_size_render_over_several_bindings`).
 
 ## Meshes
 

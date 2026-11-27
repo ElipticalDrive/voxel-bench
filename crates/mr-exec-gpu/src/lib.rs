@@ -330,9 +330,10 @@ impl Core {
                 view_radius: p.view_radius_chunks,
                 shadows: s.shadows,
                 visibility: s.stages,
+                side_bytes: StorageSet::side_bytes(s.walks),
             },
         )?;
-        let storages = StorageSet::new(&gpu, s.walks, s.stages, gpu_data::Limits { mb: s.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256 });
+        let storages = StorageSet::new(&gpu, s.walks, s.stages, gpu_data::Limits { mb: s.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256, pool_slots: world.max_slots() });
         if storages.groups_end() > gpu.device.limits().max_bind_groups {
             anyhow::bail!("{} storages need {} bind groups; this device has {}", s.walks.storages.len(), storages.groups_end(), gpu.device.limits().max_bind_groups);
         }
@@ -399,6 +400,9 @@ impl Core {
     /// pipeline has them.
     fn bind_program(&self, p: &mut mr_gpu::program::Program, flags: &str) {
         p.pool(self.world.pages());
+        for (group, pages) in self.storages.side_pages() {
+            p.side(group, pages);
+        }
         if let Some(a) = &self.accel {
             p.root(format!("enable wgpu_ray_query;\n{}", a.wgsl(flags)));
         }

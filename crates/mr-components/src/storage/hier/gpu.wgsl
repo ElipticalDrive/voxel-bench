@@ -8,7 +8,7 @@ const S_LEVELS: u32 = 0xdu;
 fn h_region(slot: u32, l: vec3<i32>) -> bool {
     let r = vec3<u32>(l >> vec3<u32>(3u));
     let i = r.x | (r.z << 2u) | (r.y << 4u);
-    return ((aux[slot * AUX_WORDS + (i >> 5u)] >> (i & 31u)) & 1u) != 0u;
+    return ((aux_slot(slot, i >> 5u) >> (i & 31u)) & 1u) != 0u;
 }
 
 fn s_occupied(slot: u32, level: u32, c: vec3<i32>) -> bool {

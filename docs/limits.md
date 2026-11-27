@@ -212,22 +212,28 @@ a storage binding, 256 MiB a buffer. Every stop names its limit:
 | discover-gpu | 16 (r32: face slots, [3] above) | ≥ 32 |
 | raster-gpu, geometry naive / cubes | 16 (r32: pool full, 22528 chunks) | ≥ 32 |
 | raycast-gpu (bricks, hier, prefix, rows) | 16 (r32: pool full, 22528 chunks) | ≥ 32 |
-| raycast-gpu storage=distance | 8 (r16: side data past the binding) | 16 (r32: the same) |
+| raycast-gpu storage=distance | 16 (r32: pool full, 16384 chunks) | ≥ 32 |
 | raycast-gpu storage=tree64 | ≥ 32 | 16 (r32: side data past the binding) |
 | raycast-gpu storage=svo_dag | ≥ 32 | ≥ 32 |
 | raycast-gpu storage=clipmap | 16 (r32: memory for its textures) | 16 (r32: the same, 2146 MiB) |
 | rayquery-gpu | ≥ 32 | 16 (r32: device memory) |
 | rayquery-gpu geometry=naive | 16 (r32: geometry past the binding) | 16 (r32: the same) |
 | rayquery-gpu geometry=boxes | 16 (r32: pool full) | ≥ 32 |
-| splat-gpu | 16 (r32: pool full) | 8 (r16: points past the binding, 13.75 M in view) |
+| splat-gpu | 16 (r32: pool full) | 16 (r32: the large points' list past the binding, 216 MiB) |
 
 The voxel pool pages over several bindings (22528 chunks here, 32767 on the RTX, both
-named); what stops first otherwise is a single buffer that does not page (a storage's side data, merged geometry, the
-points). Fixed by this run: a storage's side data past the binding failed with "the storage's
+named), and so (2026-11-27) do a pool storage's side data and the splats' points: `distance`
+rose from 8 / 16 to 16 / ≥ 32 and splat-gpu on terrain from 8 to 16 (re-run with `--only
+distance` / `--only splat`). The side data's pages share the stage's 48 storage buffers with
+the pool's, so beside `distance` the pool takes 8 pages (16384 chunks) and the side data 4.
+What stops first otherwise is a single buffer that does not page (tree64's blobs, merged
+geometry, splat-gpu's list of large points: 4 bytes a point, past the binding at 54 M points).
+Fixed by an earlier run: a storage's side data past the binding failed with "the storage's
 side data does not fit" (distance) or named `pool_mb` as the limit (tree64; its 2048 MiB asks
 more than the device binds). A buffer the device bounds below what its knob asks now names
-the device's binding size, `(below what `pool_mb` asks)` (test:
-`side_data_past_the_binding_size_names_it`, a flat world under `MR_GPU_LIMITS=sizes`).
+the device's binding size, `(below what `pool_mb` asks)`. Test of the paging:
+`side_data_and_points_past_the_binding_size_render_over_several_bindings` (clamped and
+unclamped pixel-equal, under `MR_GPU_LIMITS=sizes` and `binding:16`).
 
 ## The guard's worlds
 

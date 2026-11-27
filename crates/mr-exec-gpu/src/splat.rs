@@ -179,8 +179,14 @@ impl PointsGate {
 pub(crate) struct Splat {
     pipes: [wgpu::ComputePipeline; 6],
     layout0: wgpu::BindGroupLayout,
+    /// The program (bound to the core) and its root, compiled again when the points take
+    /// another number of bindings ([`PointPages`]).
+    program: mr_gpu::program::Program,
+    own: String,
+    deps: Vec<String>,
+    draw_only: bool,
     zbuf: wgpu::Buffer,
-    points_buf: wgpu::Buffer,
+    points_buf: PointPages,
     /// The large points' list (a count, then up to one id per point).
     big_buf: wgpu::Buffer,
     /// Drawing only: the ids (the edge holds the records).
@@ -204,6 +210,69 @@ fn pixel_buffer(gpu: &Gpu, w: u32, h: u32) -> wgpu::Buffer {
 
 fn points_buffer(gpu: &Gpu, n: u64) -> wgpu::Buffer {
     gpu.storage("points", n.max(1) * 16, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || format!("the world's points ({n} in view)"))
+}
+
+/// The binding of the points' second page (the first is `REGION_BINDING`; 31 is the view's).
+const POINT_PAGE_BINDING: u32 = crate::REGION_BINDING + 4;
+/// Pages the points may take (bindings 12-30 besides the first); past them the last page
+/// fails naming the binding limit.
+const MAX_POINT_PAGES: u64 = 20;
+
+/// The points' buffers: one while they fit what the device binds (16 bytes a point; NVIDIA
+/// binds 2 GiB), else pages of `per` points each (lavapipe's 128 MiB: 8 M points a page),
+/// read in the shader through `point_at` ([`Self::wgsl`]).
+struct PointPages {
+    bufs: Vec<wgpu::Buffer>,
+    per: u64,
+    /// Points the buffers hold.
+    cap: u64,
+}
+
+impl PointPages {
+    /// Buffers for `n` points.
+    fn new(gpu: &Gpu, n: u64) -> Self {
+        let l = gpu.device.limits();
+        let per = ((l.max_storage_buffer_binding_size.min(l.max_buffer_size) & !15) / 16).max(1);
+        let n = n.max(1);
+        let pages = n.div_ceil(per).min(MAX_POINT_PAGES);
+        if pages > 1 {
+            tracing::info!("splat: points over {pages} bindings of {per} points");
+        }
+        let bufs = (0..pages).map(|p| points_buffer(gpu, if p + 1 == pages { n - p * per } else { per })).collect();
+        Self { bufs, per, cap: n }
+    }
+
+    fn pages(&self) -> u32 {
+        self.bufs.len() as u32
+    }
+
+    fn size(&self) -> u64 {
+        self.bufs.iter().map(|b| b.size()).sum()
+    }
+
+    /// Writes `points` from point `start` on, across pages.
+    fn write(&self, queue: &wgpu::Queue, start: u64, points: &[Point]) {
+        let mut at = start;
+        let mut rest = points;
+        while !rest.is_empty() {
+            let (page, off) = ((at / self.per) as usize, at % self.per);
+            let n = ((self.per - off) as usize).min(rest.len());
+            if let Some(b) = self.bufs.get(page) {
+                queue.write_buffer(b, off * 16, bytemuck::cast_slice(&rest[..n]));
+            }
+            (at, rest) = (at + n as u64, &rest[n..]);
+        }
+    }
+
+    fn binding(p: u32) -> u32 {
+        if p == 0 { crate::REGION_BINDING } else { POINT_PAGE_BINDING + p - 1 }
+    }
+
+    /// The splat shader `own` reading these pages (as written for one).
+    fn wgsl(&self, own: &str) -> String {
+        let bindings: Vec<u32> = (1..self.pages()).map(Self::binding).collect();
+        splat::paged(own, &bindings, self.per)
+    }
 }
 
 /// The large points' list for a points buffer of `points_bytes`: a count and one id per point.
@@ -248,19 +317,13 @@ impl Splat {
         let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
         core.bind_program(&mut program, "0u");
         let gpu = &core.gpu;
-        let module = mr_gpu::program::compile(&gpu.device, "splat", &program, &own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
-        let mut entries = core.layout_entries();
-        entries.extend([storage_entry(REGION_BINDING, true, core.stages), storage_entry(REGION_BINDING + 1, false, core.stages), storage_entry(REGION_BINDING + 2, false, core.stages), storage_entry(REGION_BINDING + 3, false, core.stages)]);
-        let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("splat"), entries: &entries });
-        let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("splat"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
-        let pipe = |e: &str| gpu.device.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
-        let pipes = splat::ENTRIES.map(|e| pipe(if draw_only && e == "shade" { "decode" } else { e }));
-        let (points_buf, zbuf) = (points_buffer(gpu, 1024), pixel_buffer(gpu, p.width, p.height));
+        let (points_buf, zbuf) = (PointPages::new(gpu, 1024), pixel_buffer(gpu, p.width, p.height));
+        let (layout0, pipes) = pipelines(&core, &program, &points_buf.wgsl(&own), &deps, draw_only, points_buf.pages());
         let big_buf = big_buffer(gpu, points_buf.size());
         let ids = draw_only.then(|| pixel_buffer(gpu, p.width, p.height));
         let bind0 = bind0(&core, &layout0, &points_buf, &zbuf, &big_buf, ids.as_ref());
         let gate = g.gates_on(visibility, "points").map(|e| PointsGate { chain: GateChain::new(&e.edge(), &e.gates), pending: vec![], sent: HashMap::new(), ms: 0.0 });
-        let splat = Self { pipes, layout0, zbuf, points_buf, big_buf, ids, bind0, points: Points::default(), gate, count: 0, max_splat: v.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
+        let splat = Self { pipes, layout0, program, own, deps, draw_only, zbuf, points_buf, big_buf, ids, bind0, points: Points::default(), gate, count: 0, max_splat: v.max_splat.clamp(1, 64), world: None, bound: Bound(Vec::new()) };
         Ok((core, splat, far))
     }
 
@@ -270,17 +333,22 @@ impl Splat {
         let Some(ch) = self.points.changes() else { return };
         self.count = ch.all.len() as u32;
         let queue = &core.gpu.queue;
-        if (ch.all.len() as u64) * 16 > self.points_buf.size() {
-            self.points_buf = points_buffer(&core.gpu, ch.all.len() as u64 * 3 / 2);
+        if ch.all.len() as u64 > self.points_buf.cap {
+            let pages = self.points_buf.pages();
+            self.points_buf = PointPages::new(&core.gpu, ch.all.len() as u64 * 3 / 2);
+            if self.points_buf.pages() != pages {
+                // Another number of bindings: the program reads them all.
+                (self.layout0, self.pipes) = pipelines(core, &self.program, &self.points_buf.wgsl(&self.own), &self.deps, self.draw_only, self.points_buf.pages());
+            }
             self.big_buf = big_buffer(&core.gpu, self.points_buf.size());
             self.bind0 = bind0(core, &self.layout0, &self.points_buf, &self.zbuf, &self.big_buf, self.ids.as_ref());
-            queue.write_buffer(&self.points_buf, 0, bytemuck::cast_slice(ch.all));
+            self.points_buf.write(queue, 0, ch.all);
             let rest = ch.all.len() as u64 - ch.ranges.iter().map(|r| r.len() as u64).sum::<u64>();
             self.points.uploaded += rest;
             return;
         }
         for r in ch.ranges {
-            queue.write_buffer(&self.points_buf, r.start as u64 * 16, bytemuck::cast_slice(&ch.all[r]));
+            self.points_buf.write(queue, r.start as u64, &ch.all[r]);
         }
     }
 }
@@ -288,11 +356,26 @@ impl Splat {
 /// Group 0: the core's (with the hits edge's records when drawing only), the points, the
 /// depths, the ids (the hits edge, the executor's; drawing only, `own`) and the large points'
 /// list.
-fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &wgpu::Buffer, z: &wgpu::Buffer, big: &wgpu::Buffer, own: Option<&wgpu::Buffer>) -> wgpu::BindGroup {
+/// The splat program's group 0 layout and pipelines, its points over `pages` bindings
+/// (`own` already reads them so).
+fn pipelines(core: &Core, program: &mr_gpu::program::Program, own: &str, deps: &[String], draw_only: bool, pages: u32) -> (wgpu::BindGroupLayout, [wgpu::ComputePipeline; 6]) {
+    let gpu = &core.gpu;
+    let module = mr_gpu::program::compile(&gpu.device, "splat", program, own, &deps.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut entries = core.layout_entries();
+    entries.extend([storage_entry(REGION_BINDING, true, core.stages), storage_entry(REGION_BINDING + 1, false, core.stages), storage_entry(REGION_BINDING + 2, false, core.stages), storage_entry(REGION_BINDING + 3, false, core.stages)]);
+    entries.extend((1..pages).map(|p| storage_entry(PointPages::binding(p), true, core.stages)));
+    let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("splat"), entries: &entries });
+    let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("splat"), bind_group_layouts: &core.storages.layouts(&[Some(&layout0), Some(core.world.layout())]), immediate_size: 0 });
+    let pipe = |e: &str| gpu.device.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
+    (layout0, splat::ENTRIES.map(|e| pipe(if draw_only && e == "shade" { "decode" } else { e })))
+}
+
+fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &PointPages, z: &wgpu::Buffer, big: &wgpu::Buffer, own: Option<&wgpu::Buffer>) -> wgpu::BindGroup {
     let view = core.output.create_view(&Default::default());
     let mut entries = core.bind_entries(&view);
+    entries.extend((1..pts.pages()).map(|p| wgpu::BindGroupEntry { binding: PointPages::binding(p), resource: pts.bufs[p as usize].as_entire_binding() }));
     entries.extend([
-        wgpu::BindGroupEntry { binding: REGION_BINDING, resource: pts.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: REGION_BINDING, resource: pts.bufs[0].as_entire_binding() },
         wgpu::BindGroupEntry { binding: REGION_BINDING + 1, resource: z.as_entire_binding() },
         match own {
             Some(ids) => wgpu::BindGroupEntry { binding: REGION_BINDING + 2, resource: ids.as_entire_binding() },
