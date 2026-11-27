@@ -166,7 +166,7 @@ camera, by two storage lookups; records shaded by the common deferred pass).
    (settled score); `scripts/check.py`; `scripts/new.py accept-sweep` for the sweep sizes.
 7. Docs: the visibility row and the region list in `docs/pipelines.md`.
 
-Measured (`slices`, 2026-11-27): about 45 minutes, the region module most of it (325 lines with its test,
+Measured (`slices`, 2026-11-26): about 45 minutes, the region module most of it (325 lines with its test,
 after `splat.rs`; the shader 113). Files outside the component: 9 code files (registry and
 its test, `visibility/mod.rs`, `model.rs`, `compose.rs`, `builds.rs`, `edit.rs`, the
 executor's `lib.rs` in two places (its list of regions' knobs now reads `REGIONS`), a `VoxelWorld::bounds` accessor in `mr-gpu`), the sweep
@@ -231,7 +231,7 @@ Fixed while rehearsing:
   storage went uncomposed); both now come from the registry. A graph test spelled
   out every kernel in an expected error message; it now checks only what it is about.
 
-Handed to S (2026-11-27), each to be done when S first adds the kind it slows, since only
+Handed to S (2026-11-26), each to be done when S first adds the kind it slows, since only
 that addition shows the right shape:
 
 - A new lighting model touches the host in three places (`Lighting`, `lighting()`, the
