@@ -7,7 +7,10 @@
 //!   (procedural geometry);
 //! * **visibility** `raycast` with the **traversal** kernel `rayquery`: primary, shadow and
 //!   bounce rays are ray queries;
-//! * **shading**: the same `shade_surface` as the other back ends (`direct`, `pathtrace`).
+//! * **shading**: the same `shade_surface` as the other back ends (`direct`, `pathtrace`);
+//! * **meshes** `composite` (optional): the meshes' hit records rasterised first
+//!   (`mr_gpu::meshes::MeshRecords`, as the walk does), each primary ray query ends at its
+//!   pixel's mesh hit, and where no voxel is nearer the mesh's surface is shaded.
 //!
 //! The TLAS is rebuilt every frame with instances translated relative to the camera's
 //! block, so precision never degrades far from the origin. Replaces gpu-rtx and
@@ -20,11 +23,12 @@ use mr_components::shading::state as shade_state;
 use mr_components::storage::gpu_data::Bound;
 use mr_components::traversal;
 use mr_core::*;
+use mr_gpu::meshes::{MESH_RECORDS_WGSL, MeshRecords};
 use mr_gpu::voxels::{Shadows, shadows_param};
 use mr_gpu::{GpuNeeds, wgpu};
 use serde::Deserialize;
 
-use super::{Cast, CastProgram};
+use super::{Cast, CastProgram, Meshed, Ticket};
 use crate::accel::AccelSpec;
 use crate::{Core, CoreSpec};
 
@@ -36,7 +40,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "gpu".into(),
         description: "GPU hardware ray tracing (wgpu ray queries; RT cores): one BLAS per chunk from the geometry component (triangles or brick boxes), a TLAS of chunks translated to the camera block each frame; primary, shadow and bounce rays are ray queries".into(),
         tags: vec!["gpu".into(), "raytrace".into(), "hardware-rt".into(), "modular".into(), "wgpu".into()],
-        features: Features::of(&[Feature::Lit, Feature::Volume]),
+        features: Features::of(&[Feature::Lit, Feature::Volume, Feature::Meshes, Feature::MeshRays]),
         params: REGION.lighting_knobs(params()),
     }
 }
@@ -125,14 +129,23 @@ pub(crate) struct RayQuery {
     walks: Walks,
     shadow: usize,
     bounce: usize,
+    /// The mesh-shadow rays' site (the meshes' `shadow`, else the shadow rays').
+    mesh_shadow: usize,
+    /// The meshes stage draws meshes (`composite`); `built`: what the compiled program has.
+    meshes: bool,
+    built: bool,
+    /// The meshes' hit records, rasterised before the primary rays (mesh mode).
+    records: MeshRecords,
+    /// The meshes node (its timed stage).
+    stage_nodes: Vec<String>,
     /// Triangle facing culled for primary rays.
     cull_faces: Cull,
     /// The walks' storages' bind groups this frame.
     bound: Bound,
 }
 
-/// The storage groups of walks at the shading's sites.
-const STORAGE_GROUPS: &[u32] = &[2, 3, 4, 5];
+/// The storage groups of walks at the shading's sites (3 is the mesh records').
+const STORAGE_GROUPS: &[u32] = &[2, 4, 5, 6];
 
 impl RayQuery {
     pub(crate) fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked) -> anyhow::Result<(Core, Self, String, Option<crate::remote::Far>)> {
@@ -154,6 +167,8 @@ impl RayQuery {
             Some(Some(s)) => walks.site(g, s, STORAGE_GROUPS, false),
             _ => shadow,
         };
+        let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        let meshes = g.find(Role::Meshes).is_some_and(|id| g.node(id).component != "none");
         let accel = AccelSpec { geometry, cull: gk.cull, fast_build: opts.fast_build, build_budget: opts.build_budget, gates: crate::accel::gates_of(g, geometry_id) };
         let spec = CoreSpec {
                 gpu: GpuNeeds { experimental: true, required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY, optional_features: wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS },
@@ -173,7 +188,9 @@ impl RayQuery {
         let core = Core::new(p, devices, waker.clone(), g, spec.clone())?;
         let far = crate::remote::create(p, devices, waker, g, &core, &spec)?;
         tracing::info!("rayquery-gpu: primary {}, shadow {}, bounce {}, shading {shading}", walks.label(0), walks.label(shadow), walks.label(bounce));
-        Ok((core, Self { walks, shadow, bounce, cull_faces: gk.cull_faces, bound: Bound(Vec::new()) }, shading, far))
+        let records = MeshRecords::new(&core.gpu, p.width, p.height);
+        let rq = Self { walks, shadow, bounce, mesh_shadow, meshes, built: meshes, records, stage_nodes: g.ids(&[Role::Meshes]), cull_faces: gk.cull_faces, bound: Bound(Vec::new()) };
+        Ok((core, rq, shading, far))
     }
 }
 
@@ -190,18 +207,52 @@ impl Cast for RayQuery {
     }
 
     fn layouts<'a>(&'a self, core: &'a Core, [layout0, world]: [&'a wgpu::BindGroupLayout; 2]) -> Vec<Option<&'a wgpu::BindGroupLayout>> {
-        core.storages.layouts(&[Some(layout0), Some(world)])
+        core.storages.layouts(&[Some(layout0), Some(world), None, Some(self.records.layout())])
     }
 
-    fn program(&self, shading: &str, _meshed: super::Meshed) -> CastProgram {
-        program(&self.walks, self.shadow, self.bounce, shading)
+    fn program(&self, shading: &str, meshed: Meshed) -> CastProgram {
+        program(&self.walks, [self.shadow, self.bounce, self.mesh_shadow], shading, meshed)
     }
 
     fn stale(&self) -> bool {
-        false
+        self.meshes != self.built
     }
 
-    fn compiled(&mut self) {}
+    fn compiled(&mut self) {
+        self.built = self.meshes;
+    }
+
+    fn meshes(&self) -> bool {
+        self.meshes
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) {
+        self.records.meshes.apply(update);
+    }
+
+    fn encode_meshes(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: Ticket, req: &FrameRequest, first: bool) -> bool {
+        let want = req.meshes && self.built;
+        let on = self.records.active(want);
+        let ts = if on { core.ring.render_timestamps(ticket, first, false) } else { None };
+        if on {
+            core.ring.stage(enc, ticket, "meshes", &self.stage_nodes);
+        }
+        self.records.encode(&core.gpu, enc, &req.camera, core.width as f32 / core.height as f32, req.mode, want, ts);
+        on
+    }
+
+    fn surfaces(&self) -> Option<crate::cross::Part> {
+        Some(crate::cross::Part::Texture(self.records.records().clone()))
+    }
+
+    /// The mesh records: compiled into the program, rebuilt at the next frame.
+    fn switch(&mut self, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
+        match s.role {
+            Role::Meshes => self.meshes = s.component.is_some(),
+            _ => return None,
+        }
+        Some(Ok(()))
+    }
 
     fn camera(&self) -> [u32; 2] {
         let cull = match self.cull_faces {
@@ -221,7 +272,7 @@ impl Cast for RayQuery {
     }
 
     fn groups(&self) -> impl Iterator<Item = (u32, &wgpu::BindGroup)> {
-        self.bound.0.iter().map(|(g, b)| (*g, b))
+        std::iter::once((3, self.records.bind_group())).chain(self.bound.0.iter().map(|(g, b)| (*g, b)))
     }
 
     fn stats(&self, _core: &Core) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
@@ -242,7 +293,9 @@ impl Cast for RayQuery {
         Some(Ok(()))
     }
 
-    fn resize(&mut self, _core: &Core) {}
+    fn resize(&mut self, core: &Core) {
+        self.records.resize(&core.gpu, core.width, core.height);
+    }
 
     fn memory_bytes(&self) -> u64 {
         0
@@ -252,16 +305,21 @@ impl Cast for RayQuery {
 /// The shader: the world, lighting and the shading component as modules, the shading's ray
 /// services through their sites (ray queries: virtual functions the root code overrides,
 /// see `Walks::services`); the root casts the primary rays with the ray-query kernel's
-/// `ctrace` over the trace the core's root code holds (`Core::bind_program`).
-fn program(walks: &Walks, shadow: usize, bounce: usize, shading: &str) -> CastProgram {
+/// `ctrace` over the trace the core's root code holds (`Core::bind_program`); `meshed`: with
+/// the mesh records at group 3 (primary rays end at them), and with `Rays` the shading's rays
+/// meeting the triangles too.
+fn program(walks: &Walks, [shadow, bounce, mesh_shadow]: [usize; 3], shading: &str, meshed: Meshed) -> CastProgram {
     use mr_components::shaders;
     let mut program = mr_gpu::program::Program::world(Some("rays::shadow"));
     walks.add_to(&mut program);
     let rays = shaders::shading_rays(&mut program, walks, shadow, bounce);
     shaders::shading(&mut program, shading, &rays.iter().map(String::as_str).collect::<Vec<_>>(), 0, crate::STATE_BINDING);
+    let meshes = (meshed != Meshed::No).then(|| shaders::meshes(&mut program, walks, shading, [shadow, bounce], mesh_shadow, 3, 3, meshed == Meshed::Rays));
     let geometry = walks.geometry.as_ref().map_or("-", |g| g.component.as_str());
-    let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {}, shading = {shading}\n{}\n{}", walks.kernels[0].component, include_str!("rayquery.wgsl"), traversal::rt_wgsl(&walks.kernels[0].component).expect("validated"));
+    let records = if meshed != Meshed::No { MESH_RECORDS_WGSL } else { "" };
+    let root = format!("enable wgpu_ray_query;\n// Composition: geometry = {geometry}, traversal = {}, shading = {shading}\n{records}\n{}\n{}", walks.kernels[0].component, include_str!("rayquery.wgsl"), traversal::rt_wgsl(&walks.kernels[0].component).expect("validated"));
     let mut deps = vec![shaders::SHADING.to_string(), shaders::STATE.to_string()];
+    deps.extend(meshes.into_iter().flatten());
     deps.extend(rays);
     deps.extend([mr_gpu::program::LIGHTING, mr_gpu::program::VOXELS, mr_gpu::program::COMMON].map(String::from));
     CastProgram { program, root, deps }
@@ -289,9 +347,11 @@ mod tests {
                     let mut walks = Walks::of(&ck);
                     walks.site(&ck, ck.site(Role::Visibility, "primary").unwrap(), STORAGE_GROUPS, false);
                     let shadow = walks.site(&ck, ck.site(Role::Shading, "shadow").unwrap(), STORAGE_GROUPS, false);
-                    let mut lp = program(&walks, shadow, shadow, shading);
-                    lp.program.root(format!("enable wgpu_ray_query;\n{}", crate::accel::wgsl(geometry, RayQuery::RT_FLAGS)));
-                    super::super::tests::validate(lp, deferred, super::super::View::Image, false, false, &format!("{geometry} {shading} {deferred}"));
+                    for meshed in [Meshed::No, Meshed::Records, Meshed::Rays] {
+                        let mut lp = program(&walks, [shadow, shadow, shadow], shading, meshed);
+                        lp.program.root(format!("enable wgpu_ray_query;\n{}", crate::accel::wgsl(geometry, RayQuery::RT_FLAGS)));
+                        super::super::tests::validate(lp, deferred, super::super::View::Image, false, false, &format!("{geometry} {shading} {deferred} {meshed:?}"));
+                    }
                 }
             }
         }

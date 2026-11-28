@@ -2,7 +2,8 @@
 // traversal kernel `rayquery` over the core's acceleration structures, whose bindings and
 // trace are the program's root code).
 
-// What the primary ray `d` through pixel `px` hits (no meshes stage: `mt` is 1e30).
+// What the primary ray `d` through pixel `px` hits (mesh mode: the query ends at the mesh
+// surface, `mt`; a voxel in front of it still wins; no meshes stage: `mt` is 1e30).
 fn pixel_hit(px: vec2<u32>, d: vec3<f32>, mt: f32) -> Hit {
-    return ctrace(cam.origin, d, vp.max_dist);
+    return ctrace(cam.origin, d, min(vp.max_dist, mt));
 }

@@ -489,9 +489,10 @@ mod tests {
         let e = set(&gc, &[("kernel", Api::RayQuery)])
             .validate()
             .unwrap_err();
-        // Primary rays as ray queries run on the ray-query caster, which draws no meshes.
+        // Primary rays as ray queries run on the ray-query caster, whose queries need the
+        // geometry of its acceleration structures (raycast-gpu has none; its meshes it draws).
         assert!(
-            e.contains("`meshes`: the gpu executor (for this shape) builds no meshes node"),
+            e.contains("the gpu executor (for this shape) builds 1 geometry node (here: none)"),
             "{e}"
         );
         // A face drawer's shading: in the fragment shader for `raster`, else deferred compute.

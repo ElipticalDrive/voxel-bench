@@ -822,7 +822,7 @@ mod tests {
                             traversal::gpu_wgsl(c).is_some()
                         }
                         (GpuWalk, Role::Prepass) => prepass::gpu_wgsl(c).is_some(),
-                        (GpuWalk, Role::Meshes) => c == "composite",
+                        (GpuWalk | GpuRayQuery, Role::Meshes) => c == "composite",
                         (GpuMeshing, Role::Meshes) => c == "depth",
                         (GpuMeshing | GpuSampler, Role::Storage) => storage::gpu(c).is_some(),
                         // Boxes and points as their exposed faces (`geometry::drawn`).

@@ -224,9 +224,9 @@ names (`multirenderer audit --refused` prints the table; the test
 |---|---|---|---|
 | no region of that shape | no region has the shape | 1 (33 before the unfused passes) | GPU discovery drawn by the CPU rasteriser |
 | no region of that shape | the shape is the other executor's | 9 | the visibility on one device kind, the drawer on the other (cross-device graphs) |
-| node outside the declarations | role not built | 5 | mesh records beside ray queries or GPU discovery, holes beside CPU discovery |
+| node outside the declarations | role not built | 3 (5) | meshes beside GPU discovery, holes beside CPU discovery |
 | node outside the declarations | role on the other device kind | 11 | a kernel, a culling or a shading on the other device than its region's |
-| node outside the declarations | component not built | 11 (19) | the heightfield march in the GPU ray caster, a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
+| node outside the declarations | component not built | 12 (19) | the heightfield march in the GPU ray caster, `depth` meshes in a GPU ray caster (`composite` there), a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
 | node outside the declarations | number of nodes of a role | 6 (37) | no kernel or no storage in the GPU regions, a second heightmap for the GPU column march |
 | node outside the declarations | what a port reads | 7 (10) | an unbound shadow site in the GPU regions, faces splatted as points, ray queries into GPU discovery's set |
 | edge without a resource form | edge timing | 6 (41 before the CPU's `prev` edges) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, a drawer's meshes); hits late behind a forward drawer (no records) |

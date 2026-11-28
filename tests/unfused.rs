@@ -15,18 +15,24 @@ fn dir() -> PathBuf {
 /// Runs a one-renderer plan of `edits` on `graph` with the camera orbiting, saving every
 /// frame: its success and log.
 fn launch(name: &str, graph: &str, edits: &str) -> (bool, String) {
+    const TERRAIN: &str = r#"generator = { type = "terrain", seed = 3 }
+camera = { type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }"#;
+    launch_in(name, graph, edits, TERRAIN, r#"["unlit", "lit"]"#)
+}
+
+/// [`launch`] in another scene (the `[scene]` table's lines) and pass modes.
+fn launch_in(name: &str, graph: &str, edits: &str, scene: &str, modes: &str) -> (bool, String) {
     let d = dir().join(name);
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let plan = format!(
         r#"[scene]
-generator = {{ type = "terrain", seed = 3 }}
-camera = {{ type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }}
+{scene}
 [run]
 frames = 4
 warmup = 0
 resolution = [48, 32]
-modes = ["unlit", "lit"]
+modes = {modes}
 view_radius = 2
 [[renderer]]
 graph = "{graph}"
@@ -293,5 +299,43 @@ fn gpu_raster_draws_boxes_and_points_as_their_faces() {
     for c in ["boxes", "points"] {
         check("raster-gpu", plain, &format!(r#"{{ node = "geometry", component = "{c}" }}"#), BOTH);
         check("raster-gpu", &format!("{plain}, {straight}"), &format!(r#"{{ node = "geometry", component = "{c}" }}, {straight}"#), BOTH);
+    }
+}
+
+/// The meshes plan's room, its meshes animated (`plans/meshes.toml`, lit by its lights).
+const MESH_ROOM: &str = r#"generator = { type = "room", size = 48 }
+camera = { type = "static", position = [24, 24, 85], target = [24, 20, 20] }
+environment = { no_sun = true, ambient = [0.03, 0.03, 0.03] }
+lights = [{ type = "point", position = [24, 44, 24], color = [1.0, 0.95, 0.85], intensity = 400.0, radius = 70.0 }]
+meshes = [
+    { shape = "torus", position = [30, 30, 30], scale = 7, detail = 48, animate = [{ type = "spin", axis = [1, 1, 0], period = 160 }] },
+    { shape = "box", position = [17, 9, 40], scale = 1.5, count = 12, spread = [6, 3, 4], seed = 2, animate = [{ type = "bob", amplitude = 1, period = 50 }] },
+]"#;
+
+/// GPU: the ray-query caster with meshes (`composite`: their records rasterised first, the
+/// primary queries ending at them), inline and deferred. Against the reference it scores as
+/// the walk with the same meshes does, within `CAST_DB` and `CAST_BAD` points (measured
+/// 2026-11-28 at 48x32: both 84.8 dB, 0 % bad; at 320x180 81.1 dB unlit, 76.6 dB lit), and the meshes show (the
+/// frames differ from the caster's without them).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_rayquery_with_meshes() {
+    const MODES: &str = r#"["unlit+meshes", "lit+meshes"]"#;
+    let meshes = r#"{ add = "meshes", role = "meshes", component = "composite" }, { node = "visibility", input = "meshes", from = "meshes" }"#;
+    let (ok, log) = launch_in("meshes-walk", "raycast-gpu", "", MESH_ROOM, MODES);
+    assert!(ok, "{log}");
+    let (walk, walk_bad) = score("meshes-walk");
+    let (ok, log) = launch_in("meshes-rq-none", "rayquery-gpu", "", MESH_ROOM, MODES);
+    assert!(ok, "{log}");
+    for (how, edits) in [("inline", meshes.to_string()), ("deferred", format!("{meshes}, {DEFERRED}"))] {
+        let name = format!("meshes-rq-{how}");
+        let (ok, log) = launch_in(&name, "rayquery-gpu", &edits, MESH_ROOM, MODES);
+        assert!(ok, "{how}: {log}");
+        let (p, bad) = score(&name);
+        println!("rayquery + meshes {how}: {p:.1} dB, {bad:.2} % bad (walk {walk:.1} dB, {walk_bad:.2} %)");
+        assert!(p > walk - CAST_DB && bad < walk_bad + CAST_BAD, "{how}: {p:.1} dB, {bad:.2} % bad; walk {walk:.1} dB, {walk_bad:.2} %");
+        for mode in ["unlit+meshes", "lit+meshes"] {
+            assert!(images(&name, mode) != images("meshes-rq-none", mode), "{how} {mode}: the frames are the caster's without meshes");
+        }
     }
 }

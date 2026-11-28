@@ -562,10 +562,12 @@ pub const GPU_WALK: Builds = Builds {
 
 /// GPU ray queries (`rayquery-gpu`): the geometry of the acceleration structures (on the CPU), the
 /// primary ray queries, storages and kernels for walked shadow and bounce rays, the visibility
-/// and the shading (on this GPU or another). No meshes and no prepass.
+/// and the shading (on this GPU or another), the mesh records (primary queries end at them). No
+/// prepass.
 pub const GPU_RAYQUERY: Builds = Builds {
     nodes: &[
         Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR),
+        Build::providing(Role::Meshes, Cap::RayLimit, impls::GPU_RASTER).count(0, 1),
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_RAYQUERY).count(0, 2),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_RAYQUERY).count(1, 3),
         Build::one(Role::Visibility, &["raycast"], impls::GPU_RAYQUERY),
@@ -575,7 +577,8 @@ pub const GPU_RAYQUERY: Builds = Builds {
     only: &[],
     free: HITS_LATE,
     split: true,
-    live: &[Live::of(Role::Shading)],
+    crossings: &[(Role::Visibility, "meshes")],
+    live: &[Live::of(Role::Shading), Live::of(Role::Meshes)],
     ..Builds::plain(RegionId::GpuRayQuery)
 };
 
