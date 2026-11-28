@@ -39,6 +39,7 @@ use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawNodes};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
 use mr_components::graph::{Checked, Role, When};
 use mr_components::storage::gpu_data::Bound;
+use mr_components::storage::heightmap::Heightmap;
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
 use mr_core::gate::{GateChain, GateReport, Get, Put, Wire, WireError};
@@ -348,6 +349,10 @@ pub(crate) struct Meshing {
     /// The face source's storage is bound: faces may merge across block types (`merge =
     /// exposure`).
     lookup: bool,
+    /// The face source's storage when a heightmap: a pass of its own on the CPU, kept up to
+    /// date and read by nothing (its geometry merges only faces of one block; a heightmap
+    /// holds no blocks to look up).
+    unread: Option<Heightmap>,
     /// Mesh mode: drawn into the same depth buffer.
     mesh: GpuMeshes,
     /// The quads, in pages (draw batches) of at most what the device binds.
@@ -440,10 +445,16 @@ impl Meshing {
             anyhow::bail!("the faces do not cross from the CPU to the GPU");
         }
         let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
-        // Faces merged across block types look their blocks up in the face source's storage.
-        let lookup = visibility.and_then(|v| g.node(v).inputs.get("storage")).map(|st| walks.storage(g, st, STORAGE_GROUPS));
+        // Faces merged across block types look their blocks up in the face source's storage
+        // (a voxel storage; a heightmap there is a pass of its own, read by nothing).
+        let bound = visibility.and_then(|v| g.node(v).inputs.get("storage"));
+        let heights = bound.filter(|st| !mr_components::caps::provides(mr_components::Kind::Gpu, Role::Storage, &g.node(st).component, mr_components::Cap::Voxels));
+        let lookup = bound.filter(|_| heights.is_none()).map(|st| walks.storage(g, st, STORAGE_GROUPS));
         if knobs.merge == Merge::Exposure && lookup.is_none() {
-            anyhow::bail!("merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)");
+            match heights {
+                Some(st) => anyhow::bail!("merge = exposure: the visibility node's storage `{st}` is a heightmap, which holds no blocks to look the merged faces' up in (bind a voxel storage, or merge = block)"),
+                None => anyhow::bail!("merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)"),
+            }
         }
         walks.set_max_steps(opts.max_steps);
         tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages.first().map_or("none", |s| s.component.as_str()), walks.kernels.first().map_or("none", |k| k.component.as_str()), walks.kernels.len());
@@ -486,6 +497,7 @@ impl Meshing {
             built: geometry.clone(),
             stale: false,
             lookup: lookup.is_some(),
+            unread: heights.map(|_| Heightmap::new(p.view_radius_chunks)),
             mesh,
             quads,
             chunk_buf,
@@ -831,6 +843,10 @@ impl Meshing {
 
 impl State for Meshing {
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
+        if let Some(hm) = &mut self.unread {
+            let world = &core.world;
+            hm.apply(changed.iter().copied(), |pos| world.chunk(pos));
+        }
         for &pos in changed {
             self.dirty.insert(pos);
             for f in Face::ALL {
@@ -876,7 +892,7 @@ impl State for Meshing {
     }
 
     fn memory(&self, core: &Core) -> (u64, u64) {
-        (0, self.quads.size() + self.chunk_buf.size() + self.indirect.size() + self.drawing.memory_bytes(core))
+        (self.unread.as_ref().map_or(0, |hm| hm.hm.len() as u64 * 4), self.quads.size() + self.chunk_buf.size() + self.indirect.size() + self.drawing.memory_bytes(core))
     }
 }
 

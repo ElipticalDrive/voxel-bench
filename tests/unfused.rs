@@ -513,3 +513,51 @@ fn gpu_splat_over_any_geometry() {
         check("splat-gpu", "", &rq, BOTH);
     }
 }
+
+/// GPU: the column march's shadow (and bounce) rays over a heightmap node of their own (a GPU
+/// copy each, kept alike): the same image, inline and deferred. Needs a GPU (`--ignored`).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_columns_shadow_rays_over_a_heightmap_of_their_own() {
+    let own = r#"{ node = "kernel", input = "storage", from = { role = "storage", component = "heightmap" } }, { node = "storage-2", input = "changes", from = "world" }"#;
+    check("columns-gpu", "", own, BOTH);
+    check("columns-gpu", DEFERRED, &format!("{own}, {DEFERRED}"), BOTH);
+}
+
+/// GPU: the rasteriser's face source with a lookup storage: a voxel storage (compiled in for
+/// the merged faces' blocks), or a heightmap (a pass of its own on the CPU, read by nothing:
+/// greedy merges only faces of one block). The same image. Needs a GPU (`--ignored`).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_raster_lookup_storage_kept_as_a_pass() {
+    check("raster-gpu", "", r#"{ node = "visibility", input = "storage", from = "storage" }"#, BOTH);
+    check("raster-gpu", "", r#"{ node = "visibility", input = "storage", from = { role = "storage", component = "heightmap" } }, { node = "storage-2", input = "changes", from = "world" }"#, BOTH);
+}
+
+/// GPU: the rasteriser's meshes lit through ray queries into the drawn geometry's
+/// acceleration structure (the meshes' shadow site) instead of walks: the same image (both
+/// find the same blocks), forward and deferred, in sunlit hills with boxes scattered over
+/// them (the hills shadow some: without the meshes' shadow rays the frames differ). Needs a
+/// GPU (`--ignored`).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_raster_meshes_shadow_rays_ray_queried() {
+    const MODES: &str = r#"["unlit+meshes", "lit+meshes"]"#;
+    const HILLS: &str = r#"generator = { type = "terrain", seed = 3 }
+camera = { type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }
+environment = { sun_direction = [1.0, -0.15, 0.3] }
+meshes = [{ shape = "box", position = [0, 26, 0], scale = 2, count = 80, spread = [30, 8, 30], seed = 2 }]"#;
+    let rq = r#"{ node = "meshes", input = "shadow", from = { role = "traversal", component = "rayquery" } }, { node = "traversal", input = "geometry", from = "geometry" }"#;
+    let gbuffer = r#"{ node = "draw", component = "gbuffer" }"#;
+    for (i, (plain, edits)) in [(String::new(), rq.to_string()), (gbuffer.to_string(), format!("{rq}, {gbuffer}"))].iter().enumerate() {
+        let (a, b) = (format!("meshes-rq-shadow-{i}-plain"), format!("meshes-rq-shadow-{i}"));
+        let (ok, log) = launch_in(&a, "raster-gpu", plain, HILLS, MODES);
+        assert!(ok, "[{plain}]: {log}");
+        let (ok, log) = launch_in(&b, "raster-gpu", edits, HILLS, MODES);
+        assert!(ok, "[{edits}] does not run: {log}");
+        for mode in ["unlit+meshes", "lit+meshes"] {
+            let (p, q) = (images(&a, mode), images(&b, mode));
+            assert!(!p.is_empty() && p == q, "[{edits}] {mode}: the frames differ from [{plain}]'s ({} and {} saved)", p.len(), q.len());
+        }
+    }
+}

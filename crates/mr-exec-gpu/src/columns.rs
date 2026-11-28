@@ -71,13 +71,31 @@ impl Default for ShadingKnobs {
     }
 }
 
-/// The region the columns' nodes share: the heightmap, the program, group 0, the frame's world.
-pub(crate) struct Columns {
-    /// The heightmap storage (on the CPU) and its GPU copy; `hm_info` = mask, columns a walk
-    /// may cross.
+/// A heightmap storage node: the heightmap (on the CPU) and its GPU copy; `info` = mask,
+/// columns a walk may cross.
+struct HeightmapCopy {
     hm: Heightmap,
-    hm_buf: wgpu::Buffer,
-    hm_info: wgpu::Buffer,
+    buf: wgpu::Buffer,
+    info: wgpu::Buffer,
+}
+
+impl HeightmapCopy {
+    fn new(core: &Core, p: &InitParams) -> Self {
+        let gpu = &core.gpu;
+        let hm = Heightmap::new(p.view_radius_chunks);
+        let buf = gpu.storage("heightmap", hm.hm.len() as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || format!("the world's columns ({} of them, 4 bytes each)", hm.hm.len()));
+        let info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        gpu.queue.write_buffer(&info, 0, bytemuck::cast_slice(&hm.info()));
+        Self { hm, buf, info }
+    }
+}
+
+/// The region the columns' nodes share: the heightmaps, the program, group 0, the frame's world.
+pub(crate) struct Columns {
+    /// The heightmap storage the march (or the ray caster's primary rays) reads, then, when
+    /// the shadow and bounce rays walk another heightmap node, that one's (a pass of its own,
+    /// at the next two bindings).
+    hms: Vec<HeightmapCopy>,
     /// The programs per render mode (unlit, lit), each compiled when a frame first asks
     /// for its mode; `mode` = this frame's.
     variants: [Option<Variant>; 2],
@@ -107,7 +125,7 @@ struct Variant {
 impl Columns {
     fn variant(&self, core: &Core, lit: bool) -> Variant {
         let gpu = &core.gpu;
-        let (mut program, root, deps) = program(&self.shading, self.deferred, self.cast, self.shadowed, lit, self.tone);
+        let (mut program, root, deps) = program(&self.shading, self.deferred, self.cast, self.shadowed, self.hms.len() > 1, lit, self.tone);
         core.bind_program(&mut program, "0u");
         let module = mr_gpu::program::compile(&gpu.device, if lit { "voxelspace lit" } else { "voxelspace" }, &program, &root, &deps);
         let pipe = |e: &str| gpu.device.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&self.pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
@@ -122,7 +140,13 @@ impl Columns {
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         let deferred = mr_components::shading_deferred(g, &k.placement)?;
         let cast = g.find(Role::Visibility).is_some_and(|v| g.node(v).component == "raycast");
-        let shadowed = g.site(Role::Shading, "shadow").is_some();
+        let shadow = g.site(Role::Shading, "shadow");
+        let shadowed = shadow.is_some();
+        // The march's heightmap (the column march's storage, or the ray caster's primary
+        // rays'), and the shadow rays' when another node.
+        let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
+        let marched = if cast { g.site(Role::Visibility, "primary").map(|s| s.storage) } else { g.node(vis).inputs.get("storage").map(String::as_str) };
+        let apart = matches!((marched, shadow), (Some(a), Some(s)) if a != s.storage);
         // The voxel world holds the chunks, the texture atlas and the lighting parameters only.
         let core = Core::new(
             p,
@@ -144,30 +168,31 @@ impl Columns {
                 frames_in_flight: opts.frames_in_flight,
             },
         )?;
+        let hms: Vec<HeightmapCopy> = (0..1 + apart as usize).map(|_| HeightmapCopy::new(&core, p)).collect();
         let gpu = &core.gpu;
-        let hm = Heightmap::new(p.view_radius_chunks);
-        let hm_buf = gpu.storage("heightmap", hm.hm.len() as u64 * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, || format!("the world's columns ({} of them, 4 bytes each)", hm.hm.len()));
-        let hm_info = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("heightmap info"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        gpu.queue.write_buffer(&hm_info, 0, bytemuck::cast_slice(&hm.info()));
         let mut entries = core.layout_entries();
-        entries.push(storage_entry(REGION_BINDING, true, core.stages));
-        entries.push(wgpu::BindGroupLayoutEntry {
-            binding: REGION_BINDING + 1,
-            visibility: core.stages,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-            count: None,
-        });
+        for i in 0..hms.len() as u32 {
+            entries.push(storage_entry(REGION_BINDING + 2 * i, true, core.stages));
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: REGION_BINDING + 2 * i + 1,
+                visibility: core.stages,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            });
+        }
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxelspace"), entries: &entries });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxelspace"), bind_group_layouts: &[Some(&layout0), Some(core.world.layout())], immediate_size: 0 });
-        let bind0 = bind0(&core, &layout0, &hm_buf, &hm_info);
-        Ok((core, Self { hm, hm_buf, hm_info, variants: [None, None], mode: 0, shading: shading.clone(), deferred, cast, shadowed, tone: g.tone(), pl, layout0, bind0, world: None }))
+        let bind0 = bind0(&core, &layout0, &hms);
+        Ok((core, Self { hms, variants: [None, None], mode: 0, shading: shading.clone(), deferred, cast, shadowed, tone: g.tone(), pl, layout0, bind0, world: None }))
     }
 }
 
-fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, hm: &wgpu::Buffer, hm_info: &wgpu::Buffer) -> wgpu::BindGroup {
+fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, hms: &[HeightmapCopy]) -> wgpu::BindGroup {
     let view = core.output.create_view(&Default::default());
     let mut entries = core.bind_entries(&view);
-    entries.extend([wgpu::BindGroupEntry { binding: REGION_BINDING, resource: hm.as_entire_binding() }, wgpu::BindGroupEntry { binding: REGION_BINDING + 1, resource: hm_info.as_entire_binding() }]);
+    for (i, c) in (0u32..).zip(hms) {
+        entries.extend([wgpu::BindGroupEntry { binding: REGION_BINDING + 2 * i, resource: c.buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: REGION_BINDING + 2 * i + 1, resource: c.info.as_entire_binding() }]);
+    }
     core.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxelspace"), layout, entries: &entries })
 }
 
@@ -176,13 +201,15 @@ impl State for Columns {
     /// rows.
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
         let world = &core.world;
-        let tiles = self.hm.apply(changed.iter().copied(), |pos| world.chunk(pos));
-        for &c in &tiles {
-            for (start, len) in self.hm.dirty_rows(c) {
-                core.gpu.queue.write_buffer(&self.hm_buf, start as u64 * 4, bytemuck::cast_slice(&self.hm.hm[start..start + len]));
+        for c in &mut self.hms {
+            let tiles = c.hm.apply(changed.iter().copied(), |pos| world.chunk(pos));
+            for &t in &tiles {
+                for (start, len) in c.hm.dirty_rows(t) {
+                    core.gpu.queue.write_buffer(&c.buf, start as u64 * 4, bytemuck::cast_slice(&c.hm.hm[start..start + len]));
+                }
             }
+            core.gpu.queue.write_buffer(&c.info, 0, bytemuck::cast_slice(&c.hm.info()));
         }
-        core.gpu.queue.write_buffer(&self.hm_info, 0, bytemuck::cast_slice(&self.hm.info()));
         Ok(())
     }
 
@@ -191,11 +218,11 @@ impl State for Columns {
     }
 
     fn resize(&mut self, core: &Core) {
-        self.bind0 = bind0(core, &self.layout0, &self.hm_buf, &self.hm_info);
+        self.bind0 = bind0(core, &self.layout0, &self.hms);
     }
 
     fn memory(&self, _core: &Core) -> (u64, u64) {
-        let hm = self.hm.hm.len() as u64 * 4;
+        let hm = self.hms.iter().map(|c| c.hm.hm.len() as u64 * 4).sum();
         (hm, hm)
     }
 }
@@ -212,13 +239,13 @@ impl Region for Columns {
 
     fn setup(&mut self, core: &mut Core, req: &FrameRequest) {
         let c = &req.camera;
-        core.write_camera(c, req.mode, [0, self.hm.march_cells()]);
+        core.write_camera(c, req.mode, [0, self.hms[0].hm.march_cells()]);
         core.accum.begin(&core.gpu, c, req.mode);
         self.world = Some(core.world.prepare(&core.gpu, c).clone());
     }
 
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {
-        (self.hm.counters().into_iter().chain(core.accum.counter(req.mode)).collect(), None, Vec::new())
+        (self.hms[0].hm.counters().into_iter().chain(core.accum.counter(req.mode)).collect(), None, Vec::new())
     }
 
     fn finish(&mut self, _: &Core, _: &mut wgpu::CommandEncoder, _: mr_gpu::Ticket) {}
@@ -286,14 +313,20 @@ const CAST_WGSL: &str = include_str!("columns_cast.wgsl");
 /// in one), the ray services through it, the column march and the
 /// shading component as the root, the post's `tone` in its output; with `deferred`, the march writes records and
 /// the common deferred pass shades them; `cast`: the ray caster's entry `cast_rays` beside the
-/// march (its camera and helpers); `lit` (shader def `LIT`) the lit frames' program.
-fn program(shading: &str, deferred: bool, cast: bool, shadowed: bool, lit: bool, tone: mr_components::post::Tone) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
+/// march (its camera and helpers); `apart`: the shadow and bounce rays walk a heightmap node of
+/// their own (module `shadow_heightmap`, at the next two bindings); `lit` (shader def `LIT`)
+/// the lit frames' program.
+#[allow(clippy::too_many_arguments)]
+fn program(shading: &str, deferred: bool, cast: bool, shadowed: bool, apart: bool, lit: bool, tone: mr_components::post::Tone) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
     use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
     let mut p = Program::world(Some("heightmap::rays"));
     mr_components::post::add_to(tone, &mut p);
     p.add("heightmap", heightmap::gpu_wgsl(0, REGION_BINDING), &[VOXELS]);
     // The shading's rays: the heightmap's march, or none (no shadow site: no shadow rays).
-    if shadowed {
+    if shadowed && apart {
+        p.add("shadow_heightmap", heightmap::gpu_wgsl(0, REGION_BINDING + 2), &[VOXELS]);
+        mr_components::shaders::rays(&mut p, "heightmap::rays", "shadow_heightmap");
+    } else if shadowed {
         mr_components::shaders::rays(&mut p, "heightmap::rays", "heightmap");
     } else {
         mr_components::shaders::no_rays(&mut p, "heightmap::rays", true, true);
@@ -321,8 +354,8 @@ mod tests {
         let shadings = mr_components::graph::shipped("columns-gpu").unwrap().choices("shading");
         assert!(shadings.len() > 1, "{shadings:?}");
         for shading in shadings {
-            for (deferred, lit, cast, shadowed) in (0..16).map(|i| (i & 1 != 0, i & 2 != 0, i & 4 != 0, i & 8 != 0)) {
-                let (p, root, deps) = super::program(shading, deferred, cast, shadowed, lit, mr_components::post::Tone::Aces);
+            for (deferred, lit, cast, shadowed, apart) in (0..32).map(|i| (i & 1 != 0, i & 2 != 0, i & 4 != 0, i & 8 != 0, i & 16 != 0)) {
+                let (p, root, deps) = super::program(shading, deferred, cast, shadowed, apart, lit, mr_components::post::Tone::Aces);
                 let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading} {deferred} {cast} {lit}: {e}"));
                 Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{shading} {deferred} {cast} {lit}: {e:?}"));
             }

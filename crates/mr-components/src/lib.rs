@@ -826,7 +826,9 @@ mod tests {
                         (GpuWalk, Role::Prepass) => prepass::gpu_wgsl(c).is_some(),
                         // Each an alias of the other where the region draws it (the same image).
                         (GpuWalk | GpuRayQuery | GpuMeshing, Role::Meshes) => ["composite", "depth"].contains(&c),
-                        (GpuMeshing | GpuSampler, Role::Storage) => storage::gpu(c).is_some(),
+                        // A heightmap as the face source's lookup: a pass of its own on the CPU.
+                        (GpuMeshing, Role::Storage) => storage::gpu(c).is_some() || c == "heightmap",
+                        (GpuSampler, Role::Storage) => storage::gpu(c).is_some(),
                         // Boxes and points as their exposed faces (`geometry::drawn`).
                         (GpuMeshing, Role::Geometry) => geometry::drawn(c).is_some(),
                         (GpuMeshing, Role::Visibility) => c == "faces",

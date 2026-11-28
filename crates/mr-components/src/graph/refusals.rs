@@ -242,16 +242,19 @@ mod tests {
             // caster over a heightmap's march (the columns region's, 2026-11-28: -1): 11.
             // `composite` and `depth` one another's alias where a region draws the other
             // (user, 2026-11-28): 11 -> 8. The splats over any drawn geometry (2026-11-28,
-            // cubes): 8 -> 7.
-            (Why::Component, 7),
+            // cubes): 8 -> 7. A heightmap as the GPU face source's lookup (a pass of its own,
+            // unread; 2026-11-28): 7 -> 6.
+            (Why::Component, 6),
             // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
             // on the GPU drawer): 23 -> 6. GPU shadings without a shadow site (no shadow rays,
             // as on the CPU; 2026-11-28): 6 -> 1 (the splat without a storage then refused by
-            // its port, as the walk-shadowed one: port stays 7).
-            (Why::Count, 1),
+            // its port, as the walk-shadowed one: port stays 7). The GPU column march's shadow
+            // rays over a heightmap of their own (a GPU copy each, 2026-11-28): 1 -> 0.
+            (Why::Count, 0),
             // The splats over any drawn geometry as its exposed blocks, their shadow rays
-            // walked or ray-queried (2026-11-28): 7 -> 3.
-            (Why::Port, 3),
+            // walked or ray-queried (2026-11-28): 7 -> 3. The GPU rasteriser's meshes lit
+            // through ray queries (2026-11-28): 3 -> 2.
+            (Why::Port, 2),
             // The world's changes timed per copy of the world on the GPU executor (2026-11-27:
             // the geometry its own copy, the CPU storages theirs): 12 -> 6. A geometry's or
             // meshes' value read a frame late = its copy of the world held (2026-11-28), a
