@@ -77,6 +77,13 @@ pub fn drawn(name: &str) -> Option<GpuGeometry> {
     }
 }
 
+/// Whether the splats splat `name`: `points`, or any geometry a drawer draws ([`drawn`]) as
+/// the blocks it exposes, one point each: the same points as `points` ([`points::build`]),
+/// whatever the geometry's knobs (a block whose faces are all hidden draws nothing seen).
+pub fn splatted(name: &str) -> bool {
+    drawn(name).is_some()
+}
+
 /// Implementation details a raster back end needs for a geometry.
 pub struct GpuGeometry {
     pub wgsl: &'static str,
