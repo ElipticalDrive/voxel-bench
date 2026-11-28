@@ -588,13 +588,12 @@ pub fn rgba8(format: PixelFormat, px: Vec<u8>) -> (Vec<u8>, Option<Vec<u8>>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     /// A process that does not end in time is handed to a reaper: the caller never blocks on
     /// it (what a worker stuck in the kernel, unkillable, needs); one that ends is waited for.
-    #[cfg(unix)]
     #[test]
     fn waiting_for_a_worker_never_blocks_past_its_deadline() {
         let mut slot = Some(Command::new("sleep").arg("2").spawn().unwrap());
