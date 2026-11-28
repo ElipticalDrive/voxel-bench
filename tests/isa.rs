@@ -67,9 +67,13 @@ fn every_instruction_set_renders_the_same_pixels() {
         let frames = run.join("frames");
         let all = files(&frames);
         let repeat = |n: &str| n.rsplit_once('-').is_some_and(|(l, _)| l.rsplit_once("__").is_some_and(|(_, k)| k.parse::<u32>().is_ok()));
-        let lanes: Vec<&String> = all.iter().filter(|n| !repeat(n)).collect();
+        // A lane outside raycast-cpu's ISA dispatch (the heightfield kernel runs in the column
+        // march's region, which has no `isa`) is one renderer whatever the option: it runs once.
+        let dispatched = |n: &str| !n.contains("heightfield");
+        let lanes: Vec<&String> = all.iter().filter(|n| !repeat(n) && dispatched(n)).collect();
         assert!(lanes.len() >= 20, "{world}: only {} lanes x modes: {all:?}", lanes.len());
-        assert_eq!(all.len(), 3 * lanes.len(), "{world}: every lane once per instruction set: {all:?}");
+        let once = all.iter().filter(|n| !dispatched(n)).count();
+        assert_eq!(all.len() - once, 3 * lanes.len(), "{world}: every lane once per instruction set: {all:?}");
         let mut differ = vec![];
         for lane in &lanes {
             // `<label>-<mode>`: the repeats insert `__N` before the mode.
