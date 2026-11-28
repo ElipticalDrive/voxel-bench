@@ -243,8 +243,9 @@ mod tests {
             // `composite` and `depth` one another's alias where a region draws the other
             // (user, 2026-11-28): 11 -> 8. The splats over any drawn geometry (2026-11-28,
             // cubes): 8 -> 7. A heightmap as the GPU face source's lookup (a pass of its own,
-            // unread; 2026-11-28): 7 -> 6.
-            (Why::Component, 6),
+            // unread; 2026-11-28): 7 -> 6. CPU discovery's rays walking `incremental`, a
+            // `faces` culling over GPU discovery's set (passed on whole; 2026-11-28): 6 -> 3.
+            (Why::Component, 3),
             // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
             // on the GPU drawer): 23 -> 6. GPU shadings without a shadow site (no shadow rays,
             // as on the CPU; 2026-11-28): 6 -> 1 (the splat without a storage then refused by

@@ -454,7 +454,7 @@ pub const CPU_RAYCAST: Builds = Builds {
 /// shadow rays, a face source's lookup storage is a pass of its own (its geometry merges
 /// only faces of one block: nothing is looked up in it). The faces may come from CPU
 /// discovery instead (`quadtree`, `cluster`: the face set it found, drawn from this frame's
-/// camera; its rays walk with `refloor` over the storage it tests exposure in). Boxes and
+/// camera; its rays walk with `refloor` or `incremental` over the storage it tests exposure in). Boxes and
 /// points are drawn as the exposed block faces they stand for (a box's: those the ray
 /// queries' search inside it finds; a point's: its exposed faces).
 pub const CPU_RASTER: Builds = Builds {
@@ -480,7 +480,7 @@ pub const CPU_RASTER: Builds = Builds {
             role: Role::Visibility,
             of: &["quadtree", "cluster"],
             port: "rays",
-            components: Pick::Named(&["refloor"]),
+            components: Pick::Named(&["refloor", "incremental"]),
             bound: true,
         },
         Only {
@@ -663,14 +663,17 @@ pub const GPU_MESHING: Builds = Builds {
 };
 
 /// GPU discovery (`discover-gpu`): the sampler (its rays and exposure tests over any GPU
-/// storage), its hole detection, the drawer of the face set (and meshes into its depth), the
+/// storage), a `faces` culling over its set or none (the same set: every face discovered is
+/// in view), its hole detection, the drawer of the face set (and meshes into its depth), the
 /// shading (any rays, a ray-query geometry on the CPU).
 pub const GPU_SAMPLER: Builds = Builds {
     nodes: &[
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(1, 4),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 3),
         Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
-        Build::one(Role::Visibility, &["quadtree"], impls::GPU_COMPUTE),
+        // The sampler, and a culling over its face set or none (every face of it is in view:
+        // passed on whole, the drawer drawing the set itself).
+        Build::one(Role::Visibility, &["quadtree", "faces"], impls::GPU_DRAWN).count(1, 2),
         Build::picking(Role::Holes, Pick::Every, impls::GPU_COMPUTE).count(0, 1),
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
         // Meshes in the drawer's depth (discovery's rays see voxels only; hole detection's
@@ -685,6 +688,13 @@ pub const GPU_SAMPLER: Builds = Builds {
             role: Role::Draw,
             of: &[],
             port: "faces",
+            components: Pick::Named(&["quadtree", "faces"]),
+            bound: true,
+        },
+        Only {
+            role: Role::Visibility,
+            of: &["faces"],
+            port: "faces",
             components: Pick::Named(&["quadtree"]),
             bound: true,
         },
@@ -697,7 +707,7 @@ pub const GPU_SAMPLER: Builds = Builds {
         },
         Only {
             role: Role::Visibility,
-            of: &[],
+            of: &["quadtree"],
             port: "rays",
             components: WALKS,
             bound: true,
@@ -731,7 +741,8 @@ pub const CPU_SAMPLER: Builds = Builds {
     nodes: &[
         // The storage discovery rays walk, and the one its exposure tests read if another.
         Build::providing(Role::Storage, Cap::Voxels, impls::CPU_SCALAR).count(1, 2),
-        Build::one(Role::Traversal, &["refloor"], impls::CPU_SCALAR),
+        // The discovery rays' walk.
+        Build::one(Role::Traversal, &["refloor", "incremental"], impls::CPU_SCALAR),
         Build::one(
             Role::Visibility,
             &["quadtree", "cluster"],

@@ -226,7 +226,7 @@ names (`multirenderer audit --refused` prints the table; the test
 | no region of that shape | the shape is the other executor's | 9 | the visibility on one device kind, the drawer on the other (cross-device graphs) |
 | node outside the declarations | role not built | 1 (5) | holes (GPU) beside CPU discovery |
 | node outside the declarations | role on the other device kind | 11 | a kernel, a culling or a shading on the other device than its region's |
-| node outside the declarations | component not built | 6 (19) | a culling or splatting over GPU discovery, faces beside ray queries or splatting |
+| node outside the declarations | component not built | 3 (19) | a splatting over GPU discovery, faces beside ray queries or splatting |
 | node outside the declarations | number of nodes of a role | 0 (37) | |
 | node outside the declarations | what a port reads | 2 (10) | ray queries into GPU discovery's set |
 | edge without a resource form | device boundary | 6 | a second GPU anywhere but at the split's hit records |

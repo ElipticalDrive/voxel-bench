@@ -39,6 +39,9 @@ pub(crate) mod mesh;
 /// visibility, or the geometry's straight), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
 /// storage when a compiled pipeline names one).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
+    if let Some(h) = culled_discovery(g)? {
+        return create(p, devices, waker, &h, cpu_world);
+    }
     let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("the drawer's faces are not bound"))?;
     if g.node(faces).component == "faces" || g.node(faces).role == Role::Geometry {
         return mesh::create(p, devices, waker, g);
@@ -49,6 +52,28 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
         Device::Gpu(_) => gpu::create(p, devices, waker, g),
         Device::Server => unreachable!("checked graphs run only the world on the server"),
     }
+}
+
+/// A `faces` culling over discovery's face set passes the set on whole (every face of it was
+/// discovered in view, and the drawer depth-tests them): `g` with the drawer reading the set
+/// itself, the culling gone (its time not reported), else `None`. Gates on either edge are
+/// refused by name (not modelled across the culling).
+fn culled_discovery(g: &graph::Checked) -> anyhow::Result<Option<graph::Checked>> {
+    let Some(draw) = g.find(Role::Draw) else { return Ok(None) };
+    let Some(cull) = g.node(draw).inputs.get("faces") else { return Ok(None) };
+    let n = g.node(cull);
+    let Some(set) = n.inputs.get("faces") else { return Ok(None) };
+    if n.role != Role::Visibility || n.component != "faces" || g.node(set).role != Role::Visibility {
+        return Ok(None);
+    }
+    if g.gates_on(draw, "faces").is_some() || g.gates_on(cull, "faces").is_some() {
+        anyhow::bail!("gates around the culling `{cull}` over discovery's face set are not modelled: put them on the drawer's faces with no culling between");
+    }
+    let mut h = g.graph.clone();
+    let (cull, set) = (cull.clone(), set.clone());
+    h.nodes.remove(&cull);
+    h.nodes.get_mut(draw).expect("found above").inputs.insert("faces".into(), set);
+    h.pruned().check().map(Some).map_err(|e| anyhow::anyhow!("the drawer reading discovery's set past `{cull}`: {e}"))
 }
 
 /// What the core and the drawer need of a face source's options.
