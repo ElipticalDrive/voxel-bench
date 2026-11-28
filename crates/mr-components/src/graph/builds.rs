@@ -577,8 +577,8 @@ pub const GPU_RAYQUERY: Builds = Builds {
 };
 
 /// Faces with the meshing source (`raster-gpu`): the geometry the drawer draws (and one for
-/// ray-queried bounce rays), its culling, the drawer, meshes into the depth buffer lit through
-/// walks, and the shading, whose shadow rays (and the meshes') are walks.
+/// ray-queried bounce rays), its culling (or none: every face drawn), the drawer, meshes into the depth buffer lit through
+/// walks, and the shading, whose shadow rays are walks or ray queries (the meshes' walks).
 pub const GPU_MESHING: Builds = Builds {
     nodes: &[
         Build::picking(
@@ -587,10 +587,13 @@ pub const GPU_MESHING: Builds = Builds {
             impls::CPU_SCALAR,
         )
         .count(1, 2),
-        Build::one(Role::Visibility, &["faces"], impls::GPU_RASTER),
+        // The culling, or none (the drawer reads the geometry's faces straight, unculled), or
+        // two (a culling over another's culled set: culled for the same camera, the same set).
+        Build::one(Role::Visibility, &["faces"], impls::GPU_RASTER).count(0, 2),
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
         Build::providing(Role::Meshes, Cap::FaceDepth, impls::GPU_RASTER).count(0, 1),
-        Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(1, 3),
+        // The walks' storages, or none (every ray a ray query).
+        Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(0, 3),
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 3),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
     ],
@@ -600,14 +603,14 @@ pub const GPU_MESHING: Builds = Builds {
             role: Role::Visibility,
             of: &[],
             port: "faces",
-            components: DRAWN_GEOMETRY,
+            components: Pick::Any(&[Pick::Named(&["faces"]), DRAWN_GEOMETRY]),
             bound: true,
         },
         Only {
             role: Role::Draw,
             of: &[],
             port: "faces",
-            components: Pick::Named(&["faces"]),
+            components: Pick::Any(&[Pick::Named(&["faces"]), DRAWN_GEOMETRY]),
             bound: true,
         },
         Only {
@@ -624,10 +627,17 @@ pub const GPU_MESHING: Builds = Builds {
             components: Pick::Providing(Cap::Voxels),
             bound: false,
         },
-        SHADOW_WALKED,
+        // Shadow rays walked or ray-queried (into the drawn geometry's acceleration structure).
+        SHADOW_BOUND,
         RT,
     ],
-    free: HITS_LATE,
+    // Hits a frame late, and the faces a frame late: the geometry's chunks (uploaded a frame
+    // late) or the culled draws (last frame's drawn).
+    free: &[
+        HITS_LATE[0],
+        (Role::Visibility, "faces", &[When::Now, When::Prev]),
+        (Role::Draw, "faces", &[When::Now, When::Prev]),
+    ],
     live: &[
         Live::of(Role::Geometry).read_by(Role::Visibility, "faces"),
         Live::of(Role::Draw),
@@ -923,7 +933,8 @@ impl Checked {
                 d if self.graph.nodes.get(&e.reader).is_some_and(|n| builds.crossings.contains(&(n.role, e.port.as_str()))) => {
                     let placement = self.graph.nodes.get(&e.reader).and_then(|n| n.knobs.get("placement")).and_then(|v| v.as_str());
                     let shading = self.graph.nodes.get(&e.reader).is_some_and(|n| n.role == Role::Shading);
-                    if d == super::Data::Hits && shading && placement != Some("deferred") {
+                    // Plane sweeping always shades in the common deferred pass (no placement).
+                    if d == super::Data::Hits && shading && placement != Some("deferred") && builds.id != RegionId::GpuSlices {
                         return Err(format!(
                             "{at}: with `placement = inline` the hits never leave the march; set `placement = \"deferred\"` on `{}`",
                             e.reader

@@ -227,3 +227,35 @@ fn raycast_over_a_heightfield() {
 
 const CAST_DB: f64 = 1.0;
 const CAST_BAD: f64 = 1.0;
+
+/// GPU: the drawer reads the geometry's faces straight (no culling node): every chunk's faces
+/// drawn, the same image as culled (the culling only leaves out what the depth test and the
+/// hardware's back-face culling would). Needs a GPU (`--ignored`).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_drawer_reads_the_geometry_straight() {
+    let straight = r#"{ node = "draw", input = "faces", from = "geometry" }, { remove = "visibility" }"#;
+    check("raster-gpu", "", straight, BOTH);
+    let gbuffer = r#"{ node = "draw", component = "gbuffer" }"#;
+    check("raster-gpu", gbuffer, &format!("{straight}, {gbuffer}"), BOTH);
+    let naive = r#"{ node = "geometry", component = "naive" }"#;
+    check("raster-gpu", naive, &format!("{straight}, {naive}"), BOTH);
+}
+
+/// GPU: a culling over another's culled set (both for this frame's camera: the same set).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_culling_over_a_culled_set() {
+    let twice = r#"{ add = "cull2", role = "visibility", component = "faces" }, { node = "cull2", input = "faces", from = "visibility" }, { node = "draw", input = "faces", from = "cull2" }"#;
+    check("raster-gpu", "", twice, BOTH);
+}
+
+/// GPU: the rasteriser with no storage at all, its shadow rays ray queries into the drawn
+/// geometry's acceleration structure (no walk): the same image, lit too (both find the same
+/// blocks).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_raster_without_a_storage() {
+    let rq = r#"{ remove = "meshes" }, { node = "shading", input = "shadow", from = { role = "traversal", component = "rayquery" } }, { node = "traversal", input = "geometry", from = "geometry" }, { remove = "kernel" }, { remove = "storage" }"#;
+    check("raster-gpu", r#"{ remove = "meshes" }"#, rq, BOTH);
+}

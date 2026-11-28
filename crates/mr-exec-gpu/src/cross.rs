@@ -169,9 +169,10 @@ pub(crate) struct EdgeGate {
     keep: Vec<wgpu::Buffer>,
     /// The last that arrived and fits the resources.
     last: Option<Crossed>,
-    /// The cameras of the frames sent and not yet arrived (by frame id), the one of `last`.
-    cameras: VecDeque<(u64, CameraUniform)>,
-    shown: Option<CameraUniform>,
+    /// The cameras of the frames sent and not yet arrived (by frame id), with the block the
+    /// camera was in (the world's parameters are relative to it), the one of `last`.
+    cameras: VecDeque<(u64, (CameraUniform, glam::IVec3))>,
+    shown: Option<(CameraUniform, glam::IVec3)>,
 }
 
 /// The gates of `core`'s graph on edges whose reader is one of `passes` (node ids in frame
@@ -280,7 +281,8 @@ impl EdgeGate {
             .collect::<Result<_, wgpu::MapRangeError>>()
             .map_err(|e| anyhow::anyhow!("reading back what crosses `{}`.{}: {e}", self.reader, self.port))?;
         let (w, h) = (core.width, core.height);
-        self.cameras.push_back((req.frame_id, core.camera.get()));
+        let now = (core.camera.get(), req.camera.split_position().0);
+        self.cameras.push_back((req.frame_id, now));
         let got = self.chain.gates.pass(req.time, Some(Crossed { frame_id: req.frame_id, width: w, height: h, parts: bytes }));
         // The last that fits the resources as they are (one sent before a resize does not).
         let sizes: Vec<u64> = self.parts.iter().map(Part::bytes).collect();
@@ -288,7 +290,7 @@ impl EdgeGate {
             while self.cameras.front().is_some_and(|(id, _)| *id < c.frame_id) {
                 self.cameras.pop_front();
             }
-            self.shown = Some(self.cameras.front().filter(|(id, _)| *id == c.frame_id).map_or(core.camera.get(), |(_, cam)| *cam));
+            self.shown = Some(self.cameras.front().filter(|(id, _)| *id == c.frame_id).map_or(now, |(_, cam)| *cam));
             self.last = Some(c);
         }
         // Cameras of messages the network has lost for good are dropped with the oldest.
@@ -302,8 +304,11 @@ impl EdgeGate {
             Some(c) => self.parts.iter().zip(&c.parts).for_each(|(p, b)| p.write(&gpu.queue, b)),
             None => self.parts.iter().zip(&sizes).for_each(|(p, &n)| p.write(&gpu.queue, &vec![0; n as usize])),
         }
-        if let Some(cam) = self.shown.filter(|_| self.last.is_some() && viewed(self.data)) {
+        // The camera and the block it was in: shading positions decoded from the records
+        // against this frame's block would put lights and shadow lookups a block off.
+        if let Some((cam, block)) = self.shown.filter(|_| self.last.is_some() && viewed(self.data)) {
             core.rewrite_camera(cam);
+            core.world.rewrite_block(&core.gpu, block);
         }
         Ok(start.elapsed().as_secs_f32() * 1e3)
     }

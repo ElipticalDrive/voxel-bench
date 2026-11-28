@@ -225,16 +225,19 @@ mod tests {
             }
         }
         let most: &[(Why, usize)] = &[
-            (Why::NoRegion, 25),
-            // discover-cpu with its drawer moved to the CPU: no region before, now the CPU
-            // rasteriser's shape with a GPU shading (a cross-device graph).
-            (Why::OtherExecutor, 7),
+            (Why::NoRegion, 1),
+            // Graphs with no region before (2026-11-27: the GPU drawer reading the geometry's
+            // faces straight now has the meshing region's shape) are refused now by what the
+            // region does not build: a few reasons below rose while the total fell (129 -> 95).
+            // discover-cpu with its drawer moved to the CPU, and CPU graphs whose drawer moved
+            // to a GPU: the other executor's shape (cross-device graphs).
+            (Why::OtherExecutor, 9),
             (Why::Role, 5),
-            (Why::Kind, 10),
-            (Why::Component, 12),
-            (Why::Count, 24),
-            (Why::Port, 9),
-            (Why::Timing, 15),
+            (Why::Kind, 11),
+            (Why::Component, 17),
+            (Why::Count, 23),
+            (Why::Port, 11),
+            (Why::Timing, 12),
             // One graph refused by its timing before (2026-11-27) now meets it and is
             // refused by its devices.
             (Why::Devices, 6),

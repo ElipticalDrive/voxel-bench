@@ -211,3 +211,35 @@ fn world_side_values_a_frame_late_catch_up() {
         }
     }
 }
+
+/// The GPU rasteriser's faces a frame late: the geometry's chunks uploaded a frame late (into
+/// the culling, or straight into the drawer when there is none) catch up once the world has
+/// stopped changing; last frame's culled draws, drawn with this frame's camera, run and draw
+/// the world.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_raster_faces_a_frame_late() {
+    let straight = r#"{ node = "draw", input = "faces", from = "geometry" }, { remove = "visibility" }"#;
+    for (plain_edits, edit) in [
+        ("", r#"{ node = "visibility", input = "faces", when = "prev" }"#.to_string()),
+        (straight, format!(r#"{straight}, {{ node = "draw", input = "faces", when = "prev" }}"#)),
+    ] {
+        let (plain, l) = (format!("raster-gpu-plain-faces-{}", plain_edits.len()), format!("raster-gpu-faces-{}", edit.len()));
+        let (ok, log) = launch(&plain, "raster-gpu", &format!("[{plain_edits}]"));
+        assert!(ok, "{log}");
+        let (ok, log) = launch(&l, "raster-gpu", &format!("[{edit}]"));
+        assert!(ok, "raster-gpu with {edit}: {log}");
+        for mode in ["unlit", "lit"] {
+            let (p, q) = (images(&plain, mode), images(&l, mode));
+            assert!(!p.is_empty() && p.last() == q.last(), "raster-gpu {mode} with {edit}: the last frame differs");
+        }
+    }
+    let edit = r#"{ node = "draw", input = "faces", when = "prev" }"#;
+    let name = "raster-gpu-draws-late";
+    let (ok, log) = launch(name, "raster-gpu", &format!("[{edit}]"));
+    assert!(ok, "raster-gpu with {edit}: {log}");
+    for mode in ["unlit", "lit"] {
+        let l = images(name, mode);
+        assert!(l.len() > 4 && l[l.len() - 1] != l[0], "raster-gpu {mode} with {edit}: nothing drawn changes");
+    }
+}

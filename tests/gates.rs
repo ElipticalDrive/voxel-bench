@@ -19,9 +19,16 @@ fn launch(dir: &Path, name: &str, graph: &str, edits: &str) -> (bool, String) {
 
 /// [`launch`], saving every `every`-th frame (0: the last).
 fn launch_saving(dir: &Path, name: &str, graph: &str, edits: &str, every: u32) -> (bool, String) {
-    launch_scene(dir, name, graph, edits, every, "unlit", r#"generator = { type = "terrain", seed = 3 }
-camera = { type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }"#)
+    launch_scene(dir, name, graph, edits, every, "unlit", ORBIT)
 }
+
+/// Terrain seen from a camera orbiting.
+const ORBIT: &str = r#"generator = { type = "terrain", seed = 3 }
+camera = { type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 600 }"#;
+
+/// [`ORBIT`] ten times as fast: the camera crosses a block every frame.
+const FAST_ORBIT: &str = r#"generator = { type = "terrain", seed = 3 }
+camera = { type = "orbit", center = [0, 30, 0], radius = 40, height = 20, period = 60 }"#;
 
 /// [`launch_saving`] in `scene` (the plan's scene table's lines), in pass mode `mode`.
 fn launch_scene(dir: &Path, name: &str, graph: &str, edits: &str, every: u32, mode: &str, scene: &str) -> (bool, String) {
@@ -576,17 +583,23 @@ fn gpu_edges_between_passes_through_lossy_gates() {
 #[test]
 #[ignore]
 fn gpu_late_records_between_passes_with_their_own_camera() {
-    let (graph, before, from, reader, port) = between_passes()[0];
-    let (plain, gated) = (format!("{graph}-moving-plain"), format!("{graph}-moving-late"));
-    let (ok, log) = launch_saving(&dir(), &plain, graph, &format!("[{before}]"), 1);
-    assert!(ok, "{log}");
-    let (ok, log) = launch_saving(&dir(), &gated, graph, &format!("[{before} {}]", gate_on(from, reader, port, "{ latency_ms = 40 }")), 1);
-    assert!(ok, "{log}");
-    let (plain, gated) = (images(&dir(), &plain), images(&dir(), &gated));
-    let last = gated.last().expect("saved frames");
-    assert!(plain.len() > 4 && plain.last() != plain.get(plain.len() - 4), "the camera does not move visibly");
-    assert!(last != plain.last().unwrap(), "the late records show the current frame");
-    assert!(plain[plain.len() - 5..].contains(last), "the late records do not show an earlier frame as it was");
+    // Lit too, the camera crossing blocks every frame: the shading's lights and shadow rays
+    // need the block the records were cast from, not this frame's.
+    let records = [between_passes()[0], ("slices-gpu", "", "visibility", "shading", "hits")];
+    for (graph, before, from, reader, port) in records {
+        for (mode, scene) in [("unlit", ORBIT), ("lit", FAST_ORBIT)] {
+            let (plain, gated) = (format!("{graph}-{mode}-moving-plain"), format!("{graph}-{mode}-moving-late"));
+            let (ok, log) = launch_scene(&dir(), &plain, graph, &format!("[{before}]"), 1, mode, scene);
+            assert!(ok, "{log}");
+            let (ok, log) = launch_scene(&dir(), &gated, graph, &format!("[{before} {}]", gate_on(from, reader, port, "{ latency_ms = 40 }")), 1, mode, scene);
+            assert!(ok, "{log}");
+            let (plain, gated) = (images(&dir(), &plain), images(&dir(), &gated));
+            let last = gated.last().expect("saved frames");
+            assert!(plain.len() > 4 && plain.last() != plain.get(plain.len() - 4), "{graph} {mode}: the camera does not move visibly");
+            assert!(last != plain.last().unwrap(), "{graph} {mode}: the late records show the current frame");
+            assert!(plain[plain.len() - 5..].contains(last), "{graph} {mode}: the late records do not show an earlier frame as it was");
+        }
+    }
 }
 
 /// A lossless gate with no delay between two passes on a GPU changes no pixel under a moving

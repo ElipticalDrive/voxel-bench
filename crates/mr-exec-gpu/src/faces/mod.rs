@@ -36,11 +36,11 @@ pub(crate) mod gpu;
 pub(crate) mod mesh;
 
 /// The region for graph `g`: meshing when the drawer's faces are every meshed face (the `faces`
-/// visibility), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
+/// visibility, or the geometry's straight), else discovery on the visibility node's device (on the CPU in `cpu_world`'s
 /// storage when a compiled pipeline names one).
 pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, cpu_world: Option<fn() -> mr_components::visibility::discover::grid::CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let faces = g.input(Role::Draw, "faces").ok_or_else(|| anyhow::anyhow!("the drawer's faces are not bound"))?;
-    if g.node(faces).component == "faces" {
+    if g.node(faces).component == "faces" || g.node(faces).role == Role::Geometry {
         return mesh::create(p, devices, waker, g);
     }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;

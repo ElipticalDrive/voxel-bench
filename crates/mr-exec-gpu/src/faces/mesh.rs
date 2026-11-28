@@ -37,7 +37,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec3, Vec4};
 use mr_components::draw::drawer::{DrawFrame, DrawMode, DrawNodes};
 use mr_components::geometry::{GpuGeometry, Knobs, Merge};
-use mr_components::graph::{Checked, Role};
+use mr_components::graph::{Checked, Role, When};
 use mr_components::storage::gpu_data::Bound;
 use mr_components::shaders::Walks;
 use mr_components::shading::state as shade_state;
@@ -360,6 +360,13 @@ pub(crate) struct Meshing {
     /// drawer's are the core's).
     geometry_nodes: Vec<String>,
     cull_nodes: Vec<String>,
+    /// A culling node: chunks out of view and face directions turned away are not drawn (none:
+    /// every face, the drawer reading the geometry straight).
+    culling: bool,
+    /// The geometry's faces timed `prev`: the chunks sent last frame, uploaded this frame.
+    late_faces: Option<Vec<ChunkFaces>>,
+    /// The drawer's culled faces timed `prev`: last frame's draws, drawn this frame.
+    late_draws: Option<DrawList>,
     /// The GPU's side: the meshed chunks as they arrived.
     meshes: HashMap<IVec3, ChunkMesh>,
     /// The geometry's side: the chunks meshed and their slots, the ones to remesh.
@@ -408,8 +415,16 @@ impl Meshing {
         let opts: Options = p.options()?;
         let node = |role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {role:?} node"));
         let (geometry_id, draw_id) = (node(Role::Geometry)?, node(Role::Draw)?);
-        let gate = g.gates_on(node(Role::Visibility)?, "faces").map(|e| FacesGate { chain: GateChain::new(&e.edge(), &e.gates), ms: 0.0 });
-        let draws_gate = g.gates_on(node(Role::Draw)?, "faces").map(|e| DrawsGate { chain: GateChain::new(&e.edge(), &e.gates), last: DrawList::default(), ms: 0.0 });
+        // The culling, or none: the drawer reads the geometry's faces straight, all drawn.
+        // Two cullings: the one reading the geometry's faces culls (the other's set is the same).
+        let visibility = g.graph.nodes.iter().find(|(_, n)| n.role == Role::Visibility && n.inputs.get("faces").is_some_and(|f| g.node(f).role == Role::Geometry)).map(|(id, _)| id.as_str());
+        let faces_reader = visibility.unwrap_or(draw_id);
+        let gate = g.gates_on(faces_reader, "faces").map(|e| FacesGate { chain: GateChain::new(&e.edge(), &e.gates), ms: 0.0 });
+        let draws_gate = visibility.and(g.gates_on(draw_id, "faces")).map(|e| DrawsGate { chain: GateChain::new(&e.edge(), &e.gates), last: DrawList::default(), ms: 0.0 });
+        // Edges timed `prev`: the geometry's chunks uploaded a frame late (what the meshing
+        // sent last frame), the drawer drawing last frame's culled draws.
+        let late_faces = g.node(faces_reader).when("faces") == When::Prev;
+        let late_draws = visibility.is_some() && g.node(draw_id).when("faces") == When::Prev;
         let geometry = g.node(geometry_id).component.clone();
         let draw = g.node(draw_id).component.clone();
         let shading = g.node(g.shading()).component.clone();
@@ -421,17 +436,17 @@ impl Meshing {
         // The faces cross from the CPU (meshing) to the GPU (the drawer): the schedule's
         // transfer; its adapter is the per-chunk upload.
         let schedule = g.schedule().map_err(|e| anyhow::anyhow!(e))?;
-        if !schedule.transfers.iter().any(|e| e.port == "faces" && g.node(&e.to).role == Role::Visibility) {
+        if !schedule.transfers.iter().any(|e| e.port == "faces" && e.to == faces_reader) {
             anyhow::bail!("the faces do not cross from the CPU to the GPU");
         }
         let (mut walks, shadow, bounce, mesh_shadow) = walks(g)?;
         // Faces merged across block types look their blocks up in the face source's storage.
-        let lookup = g.input(Role::Visibility, "storage").map(|st| walks.storage(g, st, STORAGE_GROUPS));
+        let lookup = visibility.and_then(|v| g.node(v).inputs.get("storage")).map(|st| walks.storage(g, st, STORAGE_GROUPS));
         if knobs.merge == Merge::Exposure && lookup.is_none() {
             anyhow::bail!("merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)");
         }
         walks.set_max_steps(opts.max_steps);
-        tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages[0].component, walks.kernels[0].component, walks.kernels.len());
+        tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages.first().map_or("none", |s| s.component.as_str()), walks.kernels[0].component, walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let meshes = meshes_node != "none";
         let (core, drawing, far) = super::new(
@@ -478,6 +493,9 @@ impl Meshing {
             bind0: vec![],
             geometry_nodes: g.ids(&[Role::Geometry]),
             cull_nodes: g.ids(&[Role::Draw]),
+            culling: visibility.is_some(),
+            late_faces: late_faces.then(Vec::new),
+            late_draws: late_draws.then(DrawList::default),
             meshes: HashMap::new(),
             slots: HashMap::new(),
             gate,
@@ -514,6 +532,10 @@ impl Meshing {
                 got
             }
             None => sent,
+        };
+        let arrived = match &mut self.late_faces {
+            Some(held) => std::mem::replace(held, arrived),
+            None => arrived,
         };
         self.upload(core, arrived);
         n
@@ -621,7 +643,8 @@ fn aabb_visible(planes: &[Vec4; 5], min: Vec3, max: Vec3) -> bool {
 }
 
 impl Meshing {
-    /// Visibility `faces`: culls chunks and face directions on the CPU into the indirect draws.
+    /// Visibility `faces`: culls chunks and face directions on the CPU into the indirect draws
+    /// (no culling node: every chunk's faces, one draw each, from the drawer's pass).
     fn cull(&mut self, core: &Core) {
         if std::mem::replace(&mut self.frame.culled, true) {
             return;
@@ -641,10 +664,10 @@ impl Meshing {
             let draws = &mut pages[m.page];
             let min = (*pos * 32 - cam_block).as_vec3() - frac;
             let max = min + 32.0;
-            if !aabb_visible(&planes, min, max) {
+            if self.culling && !aabb_visible(&planes, min, max) {
                 continue;
             }
-            if !geo.per_face {
+            if !geo.per_face || !self.culling {
                 // The hardware back-face culls the hidden half of each instance.
                 draws.push(DrawArgs { vertex_count: geo.verts, instance_count: m.len(), first_vertex: 0, first_instance: m.offset });
                 drawn += m.len() as u64;
@@ -686,6 +709,15 @@ impl Meshing {
             batches = last.batches.iter().copied().filter(|b| b.0 < pages).collect();
             g.ms = start.elapsed().as_secs_f32() * 1e3;
             cull_ms = start.duration_since(cull_start).as_secs_f32() * 1e3;
+        }
+        // Timed `prev`: last frame's draws (their batches on pages the quads no longer have
+        // left out), this frame's kept for the next.
+        if let Some(held) = &mut self.late_draws {
+            let now = DrawList { frame_id: self.frame.frame_id, draws, batches, drawn, total };
+            let last = std::mem::replace(held, now);
+            let pages = self.quads.pages();
+            (draws, drawn, total) = (last.draws, last.drawn, last.total);
+            batches = last.batches.into_iter().filter(|b| b.0 < pages).collect();
         }
         let bytes = (draws.len() * 16) as u64;
         if bytes > self.indirect.size() {

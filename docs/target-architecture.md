@@ -319,6 +319,21 @@ is refused now, the rest of the table is the GPU's and cross-device graphs):
   the column-march region: one ray per pixel through `Heightmap::trace`, records column-major
   as the march writes them, shaded by the same deferred pass (inline: in the same pass).
 
+**Done: the GPU rasteriser's first unfused shapes** (129 -> 95 refused; `graph::GPU_MESHING`,
+`tests/unfused.rs`, `tests/late.rs`, all pixel-equal to the shipped graph):
+
+- the drawer reading the geometry's faces straight (no culling node): every chunk's faces in
+  one draw each, the hardware's back-face culling and the depth test leaving what the culling
+  would;
+- a culling over another's culled set (both for the frame's camera: the same set);
+- no storage at all, the shadow rays ray-queried into the drawn geometry's acceleration
+  structure (the same image as walked: both find the same blocks);
+- the faces `prev`: the geometry's chunks uploaded a frame late, or last frame's culled draws
+  drawn with this frame's camera;
+- a hits gate between GPU passes restores the block the records were cast from with their
+  camera (lights and shadow lookups were a block off on a crossing frame), slices-gpu's hits
+  through a late gate shaded deferred (the plane sweep has no `placement`).
+
 ## Migration
 
 Done, one lane at a time, the old path kept until its replacement matched (pixels identical,
