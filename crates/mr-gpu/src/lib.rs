@@ -1302,12 +1302,16 @@ mod tests {
         assert!(after + size <= during, "{during} -> {after}");
         assert!(gpu.peak_allocated_bytes() >= during, "peak {} under {during}", gpu.peak_allocated_bytes());
 
-        // A growth from 32 to 64 MiB holds 96 at once; the device then holds 64.
+        // A growth from 32 to 64 MiB holds 96 at once; the device then holds 64. The peak is
+        // checked against the test's own two buffers, not against `base`: wgpu's internal
+        // allocations come and go on their own (seen under load: wgpu's 208-byte internal
+        // staging buffer held at `base` and freed before the growth's sample, which then fell
+        // short of `base + 64 MiB` by exactly those bytes).
         let mut grow = GrowableBuffer::new(&gpu, "grown", 32 << 20, 64 << 20, wgpu::BufferUsages::STORAGE);
         let base = gpu.allocated_bytes();
         assert_eq!(grow.reserve(&gpu, 64 << 20, "test"), Some(true));
         assert!(gpu.allocated_bytes() < base + (64 << 20), "the old buffer still held: {base} -> {}", gpu.allocated_bytes());
-        assert!(gpu.alloc_peak().get() >= base + (64 << 20), "growth peak {} from {base}", gpu.alloc_peak().get());
+        assert!(gpu.alloc_peak().get() >= (32 + 64) << 20, "growth peak {} under old + new (96 MiB)", gpu.alloc_peak().get());
 
         // Budgeted: a sample defers the next by a hundred times its cost.
         // (Against the time before the call, not after it: the deferral is a hundred times a
