@@ -495,3 +495,21 @@ fn gpu_raster_meshes_read_a_frame_late() {
     }
     assert!(differs, "the meshes read late draw what the run reading them now draws (nothing late)");
 }
+
+/// GPU: the splats over any drawn geometry, as the blocks it exposes (one point each: the
+/// points `points` gives, the same image), with walked shadow rays, and with the shadow rays
+/// ray queries into that geometry's acceleration structure (no storage; the same image as
+/// walked, as on the rasteriser).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_splat_over_any_geometry() {
+    for c in ["greedy", "naive", "boxes", "cubes"] {
+        check("splat-gpu", "", &format!(r#"{{ node = "geometry", component = "{c}" }}"#), BOTH);
+    }
+    for c in ["greedy", "naive", "boxes"] {
+        let rq = format!(
+            r#"{{ node = "geometry", component = "{c}" }}, {{ node = "shading", input = "shadow", from = {{ role = "traversal", component = "rayquery" }} }}, {{ node = "traversal", input = "geometry", from = "geometry" }}, {{ remove = "kernel" }}, {{ remove = "storage" }}"#
+        );
+        check("splat-gpu", "", &rq, BOTH);
+    }
+}

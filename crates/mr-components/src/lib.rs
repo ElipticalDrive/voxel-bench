@@ -858,7 +858,8 @@ mod tests {
                             ["refloor", "incremental"].contains(&c)
                         }
                         (CpuRaycast, Role::Visibility) => c == "raycast",
-                        (GpuSplat, Role::Geometry) => c == "points",
+                        // Any drawn geometry as its exposed blocks (`geometry::splatted`).
+                        (GpuSplat, Role::Geometry) => geometry::splatted(c),
                         (GpuSplat, Role::Visibility) => c == "splat",
                         (GpuSplat, Role::Storage) => storage::gpu(c).is_some(),
                         (GpuSplat, Role::Traversal) => traversal::gpu_wgsl(c).is_some(),

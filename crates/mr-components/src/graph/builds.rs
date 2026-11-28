@@ -389,6 +389,9 @@ const DRAWN_GEOMETRY: Pick = Pick::Any(&[Pick::Providing(Cap::Quads), Pick::Prov
 /// What the rasterisers draw: quads, cubes as their six faces, boxes and points as the exposed
 /// block faces they stand for (`geometry::drawn`).
 const DRAWN: Pick = Pick::Any(&[DRAWN_GEOMETRY, Pick::Named(&["boxes", "points"])]);
+/// What the splats splat: points, and every geometry drawn as its exposed blocks, one point
+/// each (the blocks whose faces it draws: `geometry::splatted`).
+const SPLATTED: Pick = DRAWN;
 /// The CPU rasteriser's storages: the shadow rays' (voxels) and a face source's lookup (any
 /// storage it keeps as a pass of its own: voxels or heights).
 const LOOKUPS: Pick = Pick::Any(&[Pick::Providing(Cap::Voxels), Pick::Providing(Cap::Heights)]);
@@ -766,13 +769,14 @@ pub const CPU_SAMPLER: Builds = Builds {
     ..Builds::plain(RegionId::CpuSampler)
 };
 
-/// Point splatting (`splat-gpu`): the points (and a geometry for ray-queried bounce rays), the
-/// splat passes, the shading (its shadow rays walked).
+/// Point splatting (`splat-gpu`): the points (any drawn geometry as its exposed blocks; and a
+/// geometry for ray-queried bounce rays), the splat passes, the shading (its shadow rays walked
+/// or ray-queried).
 pub const GPU_SPLAT: Builds = Builds {
     nodes: &[
         Build::picking(
             Role::Geometry,
-            Pick::Any(&[Pick::Providing(Cap::Points), RT_GEOMETRY]),
+            Pick::Any(&[SPLATTED, RT_GEOMETRY]),
             impls::CPU_SCALAR,
         )
         .count(1, 2),
@@ -788,10 +792,11 @@ pub const GPU_SPLAT: Builds = Builds {
             role: Role::Visibility,
             of: &[],
             port: "points",
-            components: Pick::Providing(Cap::Points),
+            components: SPLATTED,
             bound: true,
         },
-        SHADOW_WALKED,
+        // Shadow rays walked or ray-queried (into a geometry's acceleration structure), or none.
+        SHADOW_ANY,
         RT,
     ],
     free: HITS_LATE,

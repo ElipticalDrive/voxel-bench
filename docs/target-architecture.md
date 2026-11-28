@@ -226,9 +226,9 @@ names (`multirenderer audit --refused` prints the table; the test
 | no region of that shape | the shape is the other executor's | 9 | the visibility on one device kind, the drawer on the other (cross-device graphs) |
 | node outside the declarations | role not built | 1 (5) | holes (GPU) beside CPU discovery |
 | node outside the declarations | role on the other device kind | 11 | a kernel, a culling or a shading on the other device than its region's |
-| node outside the declarations | component not built | 8 (19) | a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
+| node outside the declarations | component not built | 7 (19) | a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
 | node outside the declarations | number of nodes of a role | 1 (37) | a second heightmap for the GPU column march |
-| node outside the declarations | what a port reads | 7 (10) | faces splatted as points, ray queries into GPU discovery's set, ray-queried mesh shadows |
+| node outside the declarations | what a port reads | 3 (10) | ray queries into GPU discovery's set, ray-queried mesh shadows |
 | edge without a resource form | device boundary | 6 | a second GPU anywhere but at the split's hit records |
 
 **Edges timed `prev` on the GPU** (2026-11-27). An edge one GPU executor holds between two
@@ -369,6 +369,12 @@ splatting, the rasteriser and CPU discovery's GPU drawer compile `shaders::no_ra
 `occluded`, `strace`, `btrace`, `transmit`: the lighting's ray code compiles away) in place of
 a walk's services (`Walks::NO_RAYS`); their kernel and storage nodes may then be absent. Each
 frame is the shipped graph's with `shadows = "none"`, lit too (`tests/unfused.rs`).
+
+**Done: splats over any drawn geometry** (44 -> 39 refused). The splats splat any geometry a
+drawer draws (`geometry::splatted`: quads, cubes, boxes) as the blocks it exposes, one point
+each: the points `points` gives (`points::build` over the world; the geometry's knobs do not
+change which blocks show), so the frames are `splat-gpu`'s. Their shadow rays may be ray
+queries into a geometry's acceleration structure (no storage), the same image as walked.
 
 **Done: GPU edges timed `prev` on the host's streams** (50 -> 44 refused): a geometry's or
 meshes' value read a frame late (its copy of the world held) and a forward drawer's hits read
