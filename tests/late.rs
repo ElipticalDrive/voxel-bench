@@ -129,10 +129,13 @@ fn gpu_hits_a_frame_late_show_the_frame_before() {
     // so lit frames' shadow rays from last frame's records are off by the block the camera
     // crossed (a known gap): unlit frames only.
     behind_in("rayquery-gpu", deferred, hits, &["unlit"]);
-    // Drawers writing records (a forward drawer shades in its own pass: refused, named).
+    // Drawers writing records; a forward drawer runs unfused, drawing records as `gbuffer`
+    // does: each frame is the forward drawer's frame before.
     for graph in ["raster-gpu", "discover-gpu"] {
         behind(graph, r#"{ node = "draw", component = "gbuffer" }"#, hits);
+        behind(graph, "", hits);
     }
+    behind("discover-cpu", "", hits);
     for graph in ["splat-gpu", "slices-gpu"] {
         behind(graph, "", hits);
     }
@@ -254,5 +257,32 @@ fn gpu_raster_faces_a_frame_late() {
     for mode in ["unlit", "lit"] {
         let l = images(name, mode);
         assert!(l.len() > 4 && l[l.len() - 1] != l[0], "raster-gpu {mode} with {edit}: nothing drawn changes");
+    }
+}
+
+/// A geometry's value read a frame late on a GPU (into the ray queries' acceleration
+/// structure, the splats' points) is the geometry taking the world's changes a frame late
+/// (its value is the world's alone, the same from every camera): every frame pixel-equal to
+/// that graph's, and the first frames lack what the plain run had.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_geometry_read_a_frame_late() {
+    let changes = r#"{ node = "geometry", input = "changes", when = "prev" }"#;
+    for (graph, edit) in [
+        ("rayquery-gpu", r#"{ node = "kernel", input = "geometry", when = "prev" }"#),
+        ("splat-gpu", r#"{ node = "visibility", input = "points", when = "prev" }"#),
+    ] {
+        let (plain, same, l) = (format!("{graph}-geo-plain"), format!("{graph}-geo-changes"), format!("{graph}-geo-read"));
+        for (name, e) in [(&plain, ""), (&same, changes), (&l, edit)] {
+            let (ok, log) = launch(name, graph, &format!("[{e}]"));
+            assert!(ok, "{graph} with {e}: {log}");
+        }
+        let mut first_differs = false;
+        for mode in ["unlit", "lit"] {
+            let (p, c, q) = (images(&plain, mode), images(&same, mode), images(&l, mode));
+            assert!(p.len() > 4 && c == q, "{graph} {mode} with {edit}: not the frames of the geometry's changes a frame late");
+            first_differs |= p[0] != q[0];
+        }
+        assert!(first_differs, "{graph} with {edit}: the first frames are the plain run's (nothing late)");
     }
 }

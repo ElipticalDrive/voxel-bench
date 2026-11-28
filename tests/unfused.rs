@@ -469,3 +469,29 @@ fn gpu_shading_without_a_shadow_site() {
     // discovery's rays' walk): the shipped graph.
     check("discover-gpu", "", unbound, BOTH);
 }
+
+/// GPU: the rasteriser's meshes read a frame late are the meshes taking the world's changes
+/// (their moves) a frame late: their value is the world's alone, the same from every camera.
+/// Every frame pixel-equal to that graph's, and the animated meshes differ from the run
+/// reading them this frame.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_raster_meshes_read_a_frame_late() {
+    const MODES: &str = r#"["unlit+meshes", "lit+meshes"]"#;
+    let runs = [
+        ("raster-meshes-now", ""),
+        ("raster-meshes-changes-late", r#"{ node = "meshes", input = "changes", when = "prev" }"#),
+        ("raster-meshes-read-late", r#"{ node = "draw", input = "meshes", when = "prev" }"#),
+    ];
+    for (name, edits) in &runs {
+        let (ok, log) = launch_in(name, "raster-gpu", edits, MESH_ROOM, MODES);
+        assert!(ok, "raster-gpu with {edits}: {log}");
+    }
+    let mut differs = false;
+    for mode in ["unlit+meshes", "lit+meshes"] {
+        let [now, changes, read] = runs.each_ref().map(|(name, _)| images(name, mode));
+        assert!(now.len() >= 4 && changes == read, "{mode}: the meshes read late are not the meshes taking the changes late");
+        differs |= now != read;
+    }
+    assert!(differs, "the meshes read late draw what the run reading them now draws (nothing late)");
+}

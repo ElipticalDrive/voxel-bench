@@ -195,6 +195,14 @@ impl DrawParts<'_> {
     }
 }
 
+/// The drawer `draw` runs as in graph `g`: a forward drawer (`raster`) whose hits the
+/// shading reads a frame late runs unfused, drawing hit records as `gbuffer` does (its
+/// fragment shader cannot shade the last frame's hits), for the shading's pass to read.
+pub(crate) fn drawn_as<'a>(g: &mr_components::graph::Graph, draw: &'a str) -> &'a str {
+    let late = g.nodes.values().any(|n| n.role == Role::Shading && n.when("hits") == mr_components::graph::When::Prev);
+    if late && !DrawMode::parse(draw).is_some_and(DrawMode::deferred) { "gbuffer" } else { draw }
+}
+
 /// The form of the hits edge from drawer `draw` to the shading: a deferred drawer's target
 /// (forward drawing shades in its own pass: no edge resource); `draw_only` (the shading on
 /// another GPU), a visbuffer's records decoded from its ids.
@@ -495,7 +503,7 @@ impl Draw {
     /// The drawer replaced while running (drawing only: the face set is unaffected); `None`
     /// if `s` is not the drawer.
     fn switch(&mut self, core: &mut Core, s: &mr_components::graph::Switch) -> Option<anyhow::Result<()>> {
-        let draw = s.component.as_deref().filter(|_| s.role == Role::Draw)?;
+        let draw = drawn_as(&core.graph, s.component.as_deref().filter(|_| s.role == Role::Draw)?);
         // Split: the transfer and the second GPU keep the edge's form (refused live: the
         // session builds the pipeline anew).
         let form = hits_form(draw, self.draw_only);

@@ -94,7 +94,7 @@ impl Why {
             Why::NoRegion
         } else if m.contains("builds no pipeline of this shape") {
             Why::OtherExecutor
-        } else if m.contains("runs this edge") || m.contains("hits prev:") || m.contains("read the world's changes a frame late") {
+        } else if m.contains("runs this edge") || m.contains("hits prev:") || m.contains("read the world's changes a frame late") || m.contains("read a frame late through its copy") || m.contains("is held one frame, not two") {
             Why::Timing
         } else if m.contains("shades the hit records") || m.contains("GPU") && (m.contains("split") || m.contains("second GPU") || m.contains("one GPU")) {
             Why::Devices
@@ -250,8 +250,10 @@ mod tests {
             (Why::Count, 1),
             (Why::Port, 7),
             // The world's changes timed per copy of the world on the GPU executor (2026-11-27:
-            // the geometry its own copy, the CPU storages theirs): 12 -> 6.
-            (Why::Timing, 6),
+            // the geometry its own copy, the CPU storages theirs): 12 -> 6. A geometry's or
+            // meshes' value read a frame late = its copy of the world held (2026-11-28), a
+            // forward drawer with late hits drawing records: 6 -> 0.
+            (Why::Timing, 0),
             // One graph refused by its timing before (2026-11-27) now meets it and is
             // refused by its devices.
             (Why::Devices, 6),

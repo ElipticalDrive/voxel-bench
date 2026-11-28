@@ -229,7 +229,6 @@ names (`multirenderer audit --refused` prints the table; the test
 | node outside the declarations | component not built | 8 (19) | a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
 | node outside the declarations | number of nodes of a role | 1 (37) | a second heightmap for the GPU column march |
 | node outside the declarations | what a port reads | 7 (10) | faces splatted as points, ray queries into GPU discovery's set, ray-queried mesh shadows |
-| edge without a resource form | edge timing | 6 (41 before the CPU's `prev` edges) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, a drawer's meshes); hits late behind a forward drawer (no records) |
 | edge without a resource form | device boundary | 6 | a second GPU anywhere but at the split's hit records |
 
 **Edges timed `prev` on the GPU** (2026-11-27). An edge one GPU executor holds between two
@@ -247,6 +246,14 @@ geometry's, the CPU storages' (the CPU discoverer's world) and the meshes'. The 
 one copy read alike (else refused, naming them); a geometry timed apart from the GPU's
 storages gets a CPU-side copy of the chunks of its own (`Core::geometry`, the world's memory
 once more), so the storage and the geometry may each take the changes this frame or the last.
+A geometry's or meshes' value read a frame late on an edge the region does not hold itself
+(the ray queries' geometry, the splats' points, the rasteriser's meshes) is the node taking
+the world's changes a frame late (its value is the world's alone, the same from every
+camera): its copy of the world is held (`Checked::read_late`; its readers read it alike, and
+not late twice). A forward drawer (`raster`) whose hits the shading reads a frame late runs
+unfused, drawing hit records as `gbuffer` does (`faces::drawn_as`): each frame is the forward
+drawer's frame before, pixel for pixel (`tests/late.rs`, `tests/unfused.rs`); `order =
+painter` then fails at its first frame (it draws forward).
 
 **Design: unfused passes with edge resources.** The executor runs the graph's schedule
 (`Checked::schedule`) pass by pass; every non-fused edge is a resource the executor owns
@@ -362,6 +369,10 @@ splatting, the rasteriser and CPU discovery's GPU drawer compile `shaders::no_ra
 `occluded`, `strace`, `btrace`, `transmit`: the lighting's ray code compiles away) in place of
 a walk's services (`Walks::NO_RAYS`); their kernel and storage nodes may then be absent. Each
 frame is the shipped graph's with `shadows = "none"`, lit too (`tests/unfused.rs`).
+
+**Done: GPU edges timed `prev` on the host's streams** (50 -> 44 refused): a geometry's or
+meshes' value read a frame late (its copy of the world held) and a forward drawer's hits read
+a frame late (drawn as records); see "Edges timed `prev` on the GPU" above.
 
 ## Migration
 

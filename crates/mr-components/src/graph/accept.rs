@@ -54,8 +54,14 @@ impl Graph {
                 .unwrap_or_else(|| "no region builds this shape".into())
         })?;
         let who = region.who();
-        // Timings a region lets the graph choose; every other edge runs now.
-        let free = |n: &Node, p: &str| region.free_at(n.role, p);
+        // Timings a region lets the graph choose (and on the GPU, a world-side value read a
+        // frame late: [`Checked::read_late`]); every other edge runs now.
+        let gpu = region.executor() == "gpu";
+        let free = |n: &Node, p: &str| {
+            region
+                .free_at(n.role, p)
+                .or_else(|| (gpu && ck.world_side(n, p)).then_some(&[When::Now, When::Prev][..]))
+        };
         for (id, n) in &ck.graph.nodes {
             for p in n.inputs.keys() {
                 let w = &n.when(p);
@@ -105,20 +111,25 @@ impl Checked {
                 _ => WorldCopy::Pool,
             }
         };
-        let readers = |copy: WorldCopy| -> Vec<(&str, When)> {
-            self.graph
-                .nodes
-                .iter()
-                .filter(|(id, n)| group(id, n) == copy && !is_host_role(n.role))
-                .filter_map(|(id, n)| {
-                    let src = n.inputs.get("changes")?;
-                    self.graph.nodes.get(src).filter(|s| matches!(s.role, Role::World | Role::Client))?;
-                    Some((id.as_str(), n.when("changes")))
-                })
-                .collect()
+        let readers = |copy: WorldCopy| -> Result<Vec<(&str, When)>, String> {
+            let mut v = Vec::new();
+            for (id, n) in self.graph.nodes.iter().filter(|(id, n)| group(id, n) == copy && !is_host_role(n.role)) {
+                let Some(src) = n.inputs.get("changes") else { continue };
+                if !self.graph.nodes.get(src).is_some_and(|s| matches!(s.role, Role::World | Role::Client)) {
+                    continue;
+                }
+                let late = self.read_late(id)?;
+                if late && n.when("changes") == When::Prev {
+                    return Err(format!(
+                        "`{id}` takes the world's changes a frame late and is read a frame late: its copy of the world is held one frame, not two (time one of them now)"
+                    ));
+                }
+                v.push((id.as_str(), if late { When::Prev } else { n.when("changes") }));
+            }
+            Ok(v)
         };
         let late = |copy: WorldCopy| -> Result<Option<bool>, String> {
-            let r = readers(copy);
+            let r = readers(copy)?;
             let (l, now): (Vec<_>, Vec<_>) = r.iter().partition(|(_, w)| *w == When::Prev);
             if !l.is_empty() && !now.is_empty() {
                 let names = |v: &[&(&str, When)]| v.iter().map(|(id, _)| format!("`{id}`")).collect::<Vec<_>>().join(", ");
@@ -135,6 +146,46 @@ impl Checked {
         // The GPU's world (its lights too) goes with its storages, else with whoever reads.
         let world = pool.or(geometry).or(sampler).unwrap_or(false);
         Ok(WorldTiming { pool: world, geometry: geometry.filter(|&g| g != world), sampler: sampler.unwrap_or(world), meshes: meshes.unwrap_or(false) })
+    }
+
+    /// Whether edge `p` of `n` reads a world-side value: a geometry's or meshes' (a function
+    /// of the world alone, the same from every camera).
+    pub(super) fn world_side(&self, n: &Node, p: &str) -> bool {
+        n.inputs
+            .get(p)
+            .and_then(|s| self.graph.nodes.get(s))
+            .is_some_and(|s| matches!(s.role, Role::Geometry | Role::Meshes))
+    }
+
+    /// Whether world-side node `id` is read a frame late on edges its region does not hold
+    /// itself: the same as the node taking the world's changes a frame late (its value is
+    /// the world's alone), which the GPU executor runs by holding its copy of the world. Its
+    /// readers read it alike (some late, others this frame, or late by the region's own
+    /// means, is refused naming them: one copy serves them all).
+    pub(super) fn read_late(&self, id: &str) -> Result<bool, String> {
+        let declared = |n: &Node, p: &str| self.region.is_some_and(|b| b.free_at(n.role, p).is_some());
+        let edges: Vec<(String, bool, bool)> = self
+            .graph
+            .nodes
+            .iter()
+            .flat_map(|(rid, n)| {
+                n.inputs
+                    .iter()
+                    .filter(|(_, s)| s.as_str() == id)
+                    .map(move |(p, _)| (format!("`{rid}`.{p}"), n.when(p) == When::Prev, declared(n, p)))
+            })
+            .collect();
+        if !edges.iter().any(|(_, late, declared)| *late && !declared) {
+            return Ok(false);
+        }
+        let other: Vec<&str> = edges.iter().filter(|(_, late, declared)| !late || *declared).map(|(e, ..)| e.as_str()).collect();
+        if !other.is_empty() {
+            return Err(format!(
+                "`{id}` is read a frame late through its copy of the world, which serves {} too (time its readers alike)",
+                other.join(", ")
+            ));
+        }
+        Ok(true)
     }
 }
 
@@ -204,19 +255,9 @@ fn device_blocker(ck: &Checked) -> Option<String> {
             return None;
         }
         // Hit records a frame late on one GPU: kept on the device between the pass that
-        // writes them and the shading's (rays write them whatever the placement); a forward
-        // drawer shades in its fragment shader and writes none.
-        let late = g
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role == Role::Shading && n.when("hits") == When::Prev);
-        return late.and_then(|(id, n)| {
-            let hid = n.inputs.get("hits")?;
-            let hn = g.nodes.get(hid)?;
-            (hn.role == Role::Draw && !crate::caps::declares(Role::Draw, &hn.component, crate::Cap::Records)).then(|| {
-                format!("`{id}`.hits prev: `{hid}` shades in its own pass and keeps no hit records to read a frame late: draw = {}", records_drawers())
-            })
-        });
+        // writes them and the shading's (rays write them whatever the placement; a forward
+        // drawer runs unfused, drawing records as `gbuffer`: the executor's choice).
+        return None;
     }
     let on = |d: Device| {
         let mut v: Vec<&str> = g

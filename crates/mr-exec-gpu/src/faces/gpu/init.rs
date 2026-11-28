@@ -29,7 +29,7 @@ impl GpuSampler {
         let node = |role: Role| g.find(role).ok_or_else(|| anyhow::anyhow!("no {} node", role.name()));
         let vis: VisibilityKnobs = g.knobs(node(Role::Visibility)?).map_err(anyhow::Error::msg)?;
         let draw_id = node(Role::Draw)?;
-        let draw = g.node(draw_id).component.clone();
+        let draw = crate::faces::drawn_as(&g.graph, &g.node(draw_id).component).to_string();
         let dk: DrawKnobs = g.knobs(draw_id).map_err(anyhow::Error::msg)?;
         let shading = g.node(g.shading()).component.clone();
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;

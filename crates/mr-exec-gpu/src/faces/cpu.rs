@@ -292,7 +292,7 @@ impl CpuSampler {
         let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
         let visibility = g.node(vis_id).component.clone();
         let vis: VisibilityKnobs = g.knobs(vis_id).map_err(anyhow::Error::msg)?;
-        let draw = g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("no draw node"))?).component.clone();
+        let draw = crate::faces::drawn_as(&g.graph, &g.node(g.find(Role::Draw).ok_or_else(|| anyhow::anyhow!("no draw node"))?).component).to_string();
         let shading = g.node(g.shading()).component.clone();
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         // The faces cross from the CPU to the GPU: the schedule's transfer, whose timing is

@@ -426,7 +426,7 @@ impl Meshing {
         let late_faces = g.node(faces_reader).when("faces") == When::Prev;
         let late_draws = visibility.is_some() && g.node(draw_id).when("faces") == When::Prev;
         let geometry = g.node(geometry_id).component.clone();
-        let draw = g.node(draw_id).component.clone();
+        let draw = crate::faces::drawn_as(&g.graph, &g.node(draw_id).component).to_string();
         let shading = g.node(g.shading()).component.clone();
         let meshes_node = g.find(Role::Meshes).map_or("none", |id| g.node(id).component.as_str()).to_string();
         let gk: GeometryKnobs = g.knobs(geometry_id).map_err(anyhow::Error::msg)?;
