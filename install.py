@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -86,7 +87,15 @@ def ask(question, default=True):
 
 def run(*cmd, cwd=None, env=None, check=True):
     print("   $", " ".join(str(c) for c in cmd), flush=True)
-    r = subprocess.run([str(c) for c in cmd], cwd=cwd, env=env)
+    for attempt in range(20):
+        try:
+            r = subprocess.run([str(c) for c in cmd], cwd=cwd, env=env)
+            break
+        except PermissionError as e:
+            # Windows: an executable still being replaced (a rustup update) is locked for a moment.
+            if getattr(e, "winerror", None) != 32 or attempt == 19:
+                raise
+            time.sleep(0.5)
     if check and r.returncode:
         sys.exit(f"failed (exit {r.returncode}): {cmd[0]}")
     return r.returncode
@@ -160,7 +169,9 @@ def pin_toolchain():
     targets); cargo run in that tree, by the installer or for the compiled pipelines, uses it."""
     rustup = tool("rustup")
     if rustup:
-        run(rustup, "toolchain", "install", cwd=SRC)
+        # No self-update here: on Windows it rewrites the cargo.exe proxy in the background, and
+        # the build started right after found it locked (WinError 32).
+        run(rustup, "toolchain", "install", "--no-self-update", cwd=SRC)
 
 
 # --- a C compiler --------------------------------------------------------------------------

@@ -182,6 +182,14 @@ covered pairwise, 351 passes, 320x180, 30 frames, against the reference; NVIDIA 
   and unlit). Pipelines compiled for an AVX2 CPU without AVX-512 (`MR_TARGET_CPU=x86-64-v3`)
   and for baseline x86-64 match the generic build pixel for pixel (`raycast-cpu`, packets of
   1 and 8, `raster-cpu`, `columns-cpu`, `discover-cpu`).
+- **X11 (2026-11-27):** the GUI and the view window (the presenters' window code) open, draw
+  and run under Xorg 21.1 (dummy driver) and Xvfb with openbox, on NVIDIA, RADV and lavapipe
+  (`scripts/x11.py smoke`, a container: no Xorg beside the host's Wayland). Mesa's Vulkan
+  drivers present only to an X server with DRI3 (Xorg with a GPU driver has it; the dummy
+  driver and Xvfb do not): RADV's view window was black there, while the GUI (eframe) fell
+  back to GL. The view window now does the same (Vulkan first for HDR, then any backend that
+  can present; it says which). NVIDIA presents through Vulkan on both servers. Xwayland, the
+  other X11 path, already ran the GUI in `gui_device_lost_hands_over`.
 
 ## Metrics
 

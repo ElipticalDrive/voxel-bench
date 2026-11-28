@@ -1,0 +1,10 @@
+# A real X11 server (Xorg with the dummy driver, or Xvfb) plus a window manager, in a container,
+# so X11 is tested without installing Xorg beside the host's Wayland session (scripts/x11.py).
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install --setopt=install_weak_deps=False \
+      xorg-x11-server-Xorg xorg-x11-drv-dummy xorg-x11-server-Xvfb openbox \
+      mesa-vulkan-drivers mesa-dri-drivers vulkan-loader vulkan-tools \
+      libX11 libXcursor libXrandr libXi libxkbcommon-x11 xdpyinfo xwininfo xdotool \
+      ImageMagick procps-ng \
+    && dnf clean all
+COPY xorg-dummy.conf /etc/X11/xorg-dummy.conf

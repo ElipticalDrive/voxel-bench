@@ -239,18 +239,35 @@ struct Gpu {
 
 impl Gpu {
     fn new(window: Arc<Window>) -> anyhow::Result<Self> {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-        if std::env::var_os("WGPU_BACKEND").is_none() {
-            desc.backends = wgpu::Backends::VULKAN;
-        }
-        desc.flags = wgpu::InstanceFlags::empty();
-        let instance = wgpu::Instance::new(desc);
+        // Vulkan first (its HDR surfaces), then whatever backend can present to this window: a
+        // Mesa Vulkan driver cannot present to an X server without DRI3 (Xorg on a display
+        // without GPU acceleration, Xvfb), where GL still can, as eframe does for the GUI.
         let size = window.inner_size();
-        let surface = instance.create_surface(window)?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))?;
+        let from_env = std::env::var_os("WGPU_BACKEND").is_some();
+        let tries: &[Option<wgpu::Backends>] = if from_env { &[None] } else { &[Some(wgpu::Backends::VULKAN), Some(wgpu::Backends::all())] };
+        let mut found = None;
+        let mut errors = vec![];
+        for backends in tries {
+            // GL presents only through an instance that knows the display (EGL on X11 / Wayland).
+            let mut desc = wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone()));
+            if let Some(b) = backends {
+                desc.backends = *b;
+            }
+            desc.flags = wgpu::InstanceFlags::empty();
+            let instance = wgpu::Instance::new(desc);
+            let surface = instance.create_surface(window.clone())?;
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() })) {
+                Ok(adapter) => {
+                    found = Some((surface, adapter));
+                    break;
+                }
+                Err(e) => errors.push(format!("{}: {e}", backends.map_or("WGPU_BACKEND".into(), |b| format!("{b:?}")))),
+            }
+        }
+        let Some((surface, adapter)) = found else { anyhow::bail!("{}", errors.join("; ")) };
+        if errors.len() == 1 {
+            tracing::warn!("view window: no Vulkan device can present here ({}); using {:?}", errors[0], adapter.get_info().backend);
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("view window"), ..Default::default() }))?;
         let info = surface.display_hdr_info(&adapter);
         tracing::info!("view window: {} ({:?}); display {info:?}", adapter.get_info().name, adapter.get_info().backend);
