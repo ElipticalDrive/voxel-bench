@@ -235,7 +235,9 @@ mod tests {
             (Why::Role, 5),
             (Why::Kind, 11),
             (Why::Component, 17),
-            (Why::Count, 23),
+            // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
+            // on the GPU drawer): 23 -> 6.
+            (Why::Count, 6),
             (Why::Port, 11),
             (Why::Timing, 12),
             // One graph refused by its timing before (2026-11-27) now meets it and is

@@ -697,19 +697,26 @@ mod tests {
         })
         .accept()
         .unwrap();
-        // discover-cpu: exposure is the discovery storage; GPU shadow rays their own.
+        // discover-cpu: exposure tests in the discovery storage or another CPU storage (not
+        // a GPU one: the tests run on the CPU); GPU shadow rays their own.
         let cd = file("discover-cpu");
-        let e = with(cd.clone(), &|g| {
-            g.nodes.insert("x".into(), Node::new(Role::Storage, "hier"));
-            g.nodes
-                .get_mut("visibility")
-                .unwrap()
-                .inputs
-                .insert("exposure".into(), "x".into());
-        })
-        .validate()
-        .unwrap_err();
-        assert!(e.contains("the gpu executor (for this shape) builds 1 storage node on cpu (here: `storage`, `x`)"), "{e}");
+        let on = |d: Option<Device>| {
+            with(cd.clone(), &|g| {
+                let mut x = Node::new(Role::Storage, "hier");
+                x.device = d;
+                g.nodes.insert("x".into(), x);
+                g.nodes
+                    .get_mut("visibility")
+                    .unwrap()
+                    .inputs
+                    .insert("exposure".into(), "x".into());
+            })
+            .validate()
+        };
+        on(None).unwrap();
+        on(Some(Device::Cpu)).unwrap();
+        let e = on(Some(Device::Gpu(0))).unwrap_err();
+        assert!(e.contains("`visibility`.exposure on cpu cannot read `x` on gpu"), "{e}");
         assert!(
             with(pathtrace(cd), &|g| own(
                 g,

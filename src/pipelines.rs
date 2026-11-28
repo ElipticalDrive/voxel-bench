@@ -140,13 +140,15 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
     let mut consts = vec![];
     if executor == Executor::Gpu {
         // The GPU executor's CPU work, built for this CPU; discovery on the CPU in the graph's
-        // storage alone (the storage its rays walk).
+        // storages alone (the one its rays walk, and the one its exposure tests read).
         let entry = "mr_exec_gpu::compiled_entry::<Baked>()".to_string();
         if ck.find(Role::Draw).is_some() && ck.find(Role::Visibility).is_some_and(|v| ck.devices[v] == Device::Cpu) {
             let kernel = ck.input(Role::Visibility, "rays").context("discovery casts no rays")?;
             let storage = ck.node(ck.node(kernel).inputs.get("storage").context("the discovery rays walk no storage")?).component.clone();
-            let ty = mr_exec_cpu::storage_type(&storage).with_context(|| format!("storage `{storage}` has no CPU implementation"))?;
-            consts.push(format!("const CPU_WORLD: Option<fn() -> mr_exec_gpu::CpuWorld> = Some(mr_exec_gpu::CpuWorld::of::<{ty}>);"));
+            let exposure = ck.node(ck.input(Role::Visibility, "exposure").context("exposure is not bound")?).component.clone();
+            let ty = |s: &str| mr_exec_cpu::storage_type(s).with_context(|| format!("storage `{s}` has no CPU implementation"));
+            let world = if exposure == storage { format!("of::<{}>", ty(&storage)?) } else { format!("of_pair::<{}, {}>", ty(&storage)?, ty(&exposure)?) };
+            consts.push(format!("const CPU_WORLD: Option<fn() -> mr_exec_gpu::CpuWorld> = Some(mr_exec_gpu::CpuWorld::{world});"));
             baked.insert(0, ("storage".into(), storage.as_str().into()));
         }
         let knobs = baked.iter().map(|(k, v)| Ok(format!("({k:?}, {})", rust(v)?))).collect::<anyhow::Result<Vec<_>>>()?;
@@ -786,7 +788,8 @@ mod tests {
     }
 
     /// Every GPU-executor graph has a generated worker, built for this CPU; discovery on the
-    /// CPU walks the graph's storage alone, baked (refused otherwise).
+    /// CPU walks the graph's storage alone (and tests exposure in its other one), baked
+    /// (refused otherwise).
     #[test]
     fn every_gpu_graph_has_a_source() {
         let gpu = mr_components::graph::SHIPPED.iter().map(|(name, _)| *name).filter(|b| mr_components::graph::shipped(b).unwrap().runs_on() == "gpu");
@@ -802,6 +805,25 @@ mod tests {
         let prefix = spec("discover-cpu,storage=prefix", &[]);
         let s = source(&bake(&prefix).unwrap().unwrap()).unwrap();
         assert!(s.contains("CpuWorld::of::<mr_components::storage::prefix::cpu::Prefix>") && s.contains("(\"storage\", \"\\\"prefix\\\"\")"), "{s}");
+        // Exposure tests in another storage than the rays walk: both compiled in.
+        let mut paired = spec("discover-cpu", &[]);
+        let edits: Vec<mr_components::graph::Change> = [
+            r#"node = "visibility"
+input = "exposure"
+from = { role = "storage", component = "hashed" }"#,
+            r#"node = "storage-2"
+device = "cpu""#,
+            r#"node = "storage-2"
+input = "changes"
+from = "world""#,
+        ]
+        .iter()
+        .map(|t| toml::from_str(t).unwrap())
+        .collect();
+        paired.graph = Some(paired.graph.as_ref().unwrap().with_edits(&edits).unwrap());
+        paired.resolve().unwrap();
+        let s = source(&bake(&paired).unwrap().unwrap()).unwrap();
+        assert!(s.contains("CpuWorld::of_pair::<mr_components::storage::bricks::cpu::U16, mr_components::storage::hashed::cpu::Hashed>"), "{s}");
         let m = manifest(repo(), Executor::Gpu);
         assert!(m.contains("mr-exec-gpu") && m.contains("mr-gpu") && !m.contains("mr-exec-cpu"), "{m}");
         let key = |r: &str, o: &[(&str, toml::Value)]| self::key(&bake(&spec(r, o)).unwrap().unwrap(), Compile::Native).unwrap();

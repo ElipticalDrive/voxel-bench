@@ -92,11 +92,54 @@ impl<R: Repr> World for StorageGrid<R> {
     }
 }
 
-/// The chunk map of one storage representation.
+/// The blocks exposure tests read (which faces are exposed, their blocks).
+pub trait Blocks: Send + Sync {
+    fn block(&self, abs: IVec3) -> u16;
+}
+
+impl<R: Repr> Blocks for StorageGrid<R> {
+    #[inline]
+    fn block(&self, abs: IVec3) -> u16 {
+        self.block_at(abs)
+    }
+}
+
+/// Discovery over two storages: its rays walk `rays`, its exposure tests read `exposure`
+/// (the graph's `rays` and `exposure` ports bound to different storages).
+pub struct Paired<A, B: ?Sized> {
+    rays: Arc<A>,
+    exposure: Arc<B>,
+}
+
+impl<A: World, B: Blocks + ?Sized> World for Paired<A, B> {
+    #[inline]
+    fn trace(&self, cam: IVec3, o: Vec3, d: Vec3, bmin: IVec3, bmax: IVec3) -> Option<Hit> {
+        self.rays.trace(cam, o, d, bmin, bmax)
+    }
+
+    #[inline]
+    fn block(&self, abs: IVec3) -> u16 {
+        self.exposure.block(abs)
+    }
+
+    fn bounds_rel(&self, cam: IVec3) -> (IVec3, IVec3) {
+        self.rays.bounds_rel(cam)
+    }
+}
+
+/// The chunk map(s) a world keeps in sync with the update stream.
 trait Store: Send {
     fn apply(&mut self, updates: &[WorldUpdate]);
     fn snapshot(&mut self) -> Arc<dyn Snapshot>;
     fn memory(&self) -> u64;
+}
+
+/// The chunk map of one storage representation, which can also pair with another's blocks.
+trait Single: Store {
+    /// This storage as exposure tests read it.
+    fn blocks(&mut self) -> Arc<dyn Blocks>;
+    /// A snapshot whose rays walk this storage and whose exposure tests read `exposure`.
+    fn paired(&mut self, exposure: Arc<dyn Blocks>) -> Arc<dyn Snapshot>;
 }
 
 struct Chunks<R: Repr> {
@@ -166,6 +209,30 @@ impl<R: Repr> Store for Chunks<R> {
     }
 
     fn snapshot(&mut self) -> Arc<dyn Snapshot> {
+        self.grid()
+    }
+
+    fn memory(&self) -> u64 {
+        self.memory_of()
+    }
+}
+
+impl<R: Repr> Single for Chunks<R> {
+    fn blocks(&mut self) -> Arc<dyn Blocks> {
+        self.grid()
+    }
+
+    fn paired(&mut self, exposure: Arc<dyn Blocks>) -> Arc<dyn Snapshot> {
+        Arc::new(Paired {
+            rays: self.grid(),
+            exposure,
+        })
+    }
+}
+
+impl<R: Repr> Chunks<R> {
+    /// The current grid (rebuilt if the world changed since the last call).
+    fn grid(&mut self) -> Arc<StorageGrid<R>> {
         if self.dirty {
             self.dirty = false;
             let mut it = self.chunks.keys();
@@ -194,7 +261,7 @@ impl<R: Repr> Store for Chunks<R> {
         self.grid.clone()
     }
 
-    fn memory(&self) -> u64 {
+    fn memory_of(&self) -> u64 {
         let dense: u64 = self
             .chunks
             .values()
@@ -210,42 +277,107 @@ impl<R: Repr> Store for Chunks<R> {
     }
 }
 
-/// Chunk map mirrored from the update stream, in the chosen CPU storage.
+/// Two storages compiled together: rays walk `R`'s, exposure tests read `E`'s.
+struct Pair<R: Repr, E: Repr> {
+    rays: Chunks<R>,
+    exposure: Chunks<E>,
+}
+
+impl<R: Repr, E: Repr> Store for Pair<R, E> {
+    fn apply(&mut self, updates: &[WorldUpdate]) {
+        self.rays.apply(updates);
+        self.exposure.apply(updates);
+    }
+
+    fn snapshot(&mut self) -> Arc<dyn Snapshot> {
+        Arc::new(Paired {
+            rays: self.rays.grid(),
+            exposure: self.exposure.grid(),
+        })
+    }
+
+    fn memory(&self) -> u64 {
+        self.rays.memory_of() + self.exposure.memory_of()
+    }
+}
+
+/// Two storages chosen at run time: the rays' walk monomorphised, the exposure tests' block
+/// reads one dynamic call each (a pipeline compiled for the graph pairs them as [`Pair`]).
+struct Dyn {
+    rays: Box<dyn Single>,
+    exposure: Box<dyn Single>,
+}
+
+impl Store for Dyn {
+    fn apply(&mut self, updates: &[WorldUpdate]) {
+        self.rays.apply(updates);
+        self.exposure.apply(updates);
+    }
+
+    fn snapshot(&mut self) -> Arc<dyn Snapshot> {
+        let exposure = self.exposure.blocks();
+        self.rays.paired(exposure)
+    }
+
+    fn memory(&self) -> u64 {
+        self.rays.memory() + self.exposure.memory()
+    }
+}
+
+/// Chunk map mirrored from the update stream, in the chosen CPU storage (or two: the rays'
+/// and the exposure tests').
 pub struct CpuWorld {
     store: Box<dyn Store>,
 }
 
-fn store<R: Repr>() -> Box<dyn Store> {
-    Box::new(Chunks::<R> {
+fn chunks<R: Repr>() -> Chunks<R> {
+    Chunks::<R> {
         chunks: HashMap::new(),
         grid: Arc::new(StorageGrid::default()),
         dirty: false,
-    })
+    }
+}
+
+fn store<R: Repr>() -> Box<dyn Single> {
+    Box::new(chunks::<R>())
 }
 
 impl CpuWorld {
     /// `storage`: a CPU storage component (validated by the caller).
     pub fn new(storage: &str) -> anyhow::Result<Self> {
-        use crate::storage as s;
-        let store = match storage {
-            "bricks" => store::<s::bricks::cpu::U16>(),
-            "u8" => store::<s::u8::cpu::U8>(),
-            "bits" => store::<s::bits::cpu::Bits>(),
-            "hier" => store::<s::hier::cpu::Hier>(),
-            "prefix" => store::<s::prefix::cpu::Prefix>(),
-            "palette" => store::<s::palette::cpu::Palette>(),
-            "brickmajor" => store::<s::brickmajor::Cpu>(),
-            "morton" => store::<s::morton::Cpu>(),
-            "hashed" => store::<s::hashed::cpu::Hashed>(),
-            other => anyhow::bail!("storage `{other}` has no CPU implementation"),
-        };
-        Ok(Self { store })
+        Ok(Self {
+            store: single(storage)?,
+        })
+    }
+
+    /// Rays walking storage `rays`, exposure tests reading storage `exposure` (one storage
+    /// when they are the same component).
+    pub fn paired(rays: &str, exposure: &str) -> anyhow::Result<Self> {
+        if rays == exposure {
+            return Self::new(rays);
+        }
+        Ok(Self {
+            store: Box::new(Dyn {
+                rays: single(rays)?,
+                exposure: single(exposure)?,
+            }),
+        })
     }
 
     /// The world in storage `R` (a pipeline compiled for one storage names it).
     pub fn of<R: Repr>() -> Self {
         Self {
-            store: store::<R>(),
+            store: Box::new(chunks::<R>()),
+        }
+    }
+
+    /// Rays in storage `R`, exposure tests in storage `E` (a pipeline compiled for both).
+    pub fn of_pair<R: Repr, E: Repr>() -> Self {
+        Self {
+            store: Box::new(Pair {
+                rays: chunks::<R>(),
+                exposure: chunks::<E>(),
+            }),
         }
     }
 
@@ -261,4 +393,21 @@ impl CpuWorld {
     pub fn memory(&self) -> u64 {
         self.store.memory()
     }
+}
+
+/// The chunk map of CPU storage `storage` (a component name).
+fn single(storage: &str) -> anyhow::Result<Box<dyn Single>> {
+    use crate::storage as s;
+    Ok(match storage {
+        "bricks" => store::<s::bricks::cpu::U16>(),
+        "u8" => store::<s::u8::cpu::U8>(),
+        "bits" => store::<s::bits::cpu::Bits>(),
+        "hier" => store::<s::hier::cpu::Hier>(),
+        "prefix" => store::<s::prefix::cpu::Prefix>(),
+        "palette" => store::<s::palette::cpu::Palette>(),
+        "brickmajor" => store::<s::brickmajor::Cpu>(),
+        "morton" => store::<s::morton::Cpu>(),
+        "hashed" => store::<s::hashed::cpu::Hashed>(),
+        other => anyhow::bail!("storage `{other}` has no CPU implementation"),
+    })
 }

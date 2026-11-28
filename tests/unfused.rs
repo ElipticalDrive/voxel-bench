@@ -203,6 +203,18 @@ fn raster_draws_cpu_discovery() {
     }
 }
 
+/// CPU discovery whose exposure tests read another storage than its rays walk: storages hold
+/// the same blocks, so the frames are the one-storage graph's, pixel for pixel.
+#[test]
+fn raster_cpu_discovery_exposure_in_another_storage() {
+    let found = r#"{ add = "disc", role = "visibility", component = "quadtree" }, { node = "disc", input = "rays", from = "kernel" }, { node = "draw", input = "faces", from = "disc" }, { remove = "visibility" }, { remove = "geometry" }"#;
+    let one = format!(r#"{found}, {{ node = "disc", input = "exposure", from = "storage" }}"#);
+    for c in ["hashed", "bits"] {
+        let two = format!(r#"{found}, {{ node = "disc", input = "exposure", from = {{ role = "storage", component = "{c}" }} }}, {{ node = "storage-2", input = "changes", from = "world" }}"#);
+        check("raster-cpu", &one, &two, BOTH);
+    }
+}
+
 /// The ray caster over a heightmap's march (`heightfield` as its primary kernel), run by the
 /// columns region: one ray per pixel through the same heightmap. Against the reference it
 /// scores at least as columns-cpu's march does, within `CAST_DB` and `CAST_BAD` points
@@ -258,4 +270,15 @@ fn gpu_culling_over_a_culled_set() {
 fn gpu_raster_without_a_storage() {
     let rq = r#"{ remove = "meshes" }, { node = "shading", input = "shadow", from = { role = "traversal", component = "rayquery" } }, { node = "traversal", input = "geometry", from = "geometry" }, { remove = "kernel" }, { remove = "storage" }"#;
     check("raster-gpu", r#"{ remove = "meshes" }"#, rq, BOTH);
+}
+
+/// GPU-drawn CPU discovery (`discover-cpu`) whose exposure tests read another CPU storage than
+/// its rays walk: the same blocks, the same frames.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_drawn_discovery_exposure_in_another_storage() {
+    for c in ["hashed", "bits"] {
+        let two = format!(r#"{{ node = "visibility", input = "exposure", from = {{ role = "storage", component = "{c}" }} }}, {{ node = "storage-2", device = "cpu" }}, {{ node = "storage-2", input = "changes", from = "world" }}"#);
+        check("discover-cpu", "", &two, BOTH);
+    }
 }

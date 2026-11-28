@@ -700,11 +700,12 @@ pub const GPU_SAMPLER: Builds = Builds {
 };
 
 /// CPU discovery (`discover-cpu`): the sampler over a CPU storage (exposure tests over the one
-/// its rays walk), the face set drawn on the GPU, the shading there (any GPU rays, a ray-query
+/// its rays walk, or another CPU storage), the face set drawn on the GPU, the shading there (any GPU rays, a ray-query
 /// geometry on the CPU).
 pub const CPU_SAMPLER: Builds = Builds {
     nodes: &[
-        Build::providing(Role::Storage, Cap::Voxels, impls::CPU_SCALAR),
+        // The storage discovery rays walk, and the one its exposure tests read if another.
+        Build::providing(Role::Storage, Cap::Voxels, impls::CPU_SCALAR).count(1, 2),
         Build::one(Role::Traversal, &["refloor"], impls::CPU_SCALAR),
         Build::one(
             Role::Visibility,
@@ -717,16 +718,20 @@ pub const CPU_SAMPLER: Builds = Builds {
         Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
     ],
-    same: &[Same {
-        a: (Role::Visibility, &["exposure"]),
-        b: (Role::Visibility, &["rays", "storage"]),
-    }],
+    same: &[],
     only: &[
         Only {
             role: Role::Draw,
             of: &[],
             port: "faces",
             components: Pick::Named(&["quadtree", "cluster"]),
+            bound: true,
+        },
+        Only {
+            role: Role::Visibility,
+            of: &[],
+            port: "exposure",
+            components: Pick::Providing(Cap::Voxels),
             bound: true,
         },
         SHADOW_BOUND,

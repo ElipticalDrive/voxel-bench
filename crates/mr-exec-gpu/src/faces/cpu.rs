@@ -169,7 +169,8 @@ const REC_BYTES: u64 = 8;
 const STORAGE_GROUPS: &[u32] = &[2, 4];
 
 pub(crate) struct CpuSampler {
-    /// The CPU world discovery rays walk (the storage monomorphised).
+    /// The CPU world discovery rays walk and its exposure tests read (the storages
+    /// monomorphised).
     cpu: grid::CpuWorld,
     opts: Options,
     /// The visibility component (`quadtree` or `cluster`) and its node's knobs.
@@ -286,6 +287,8 @@ impl CpuSampler {
         let mut opts: Options = p.options()?;
         let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("discovery rays are not bound"))?;
         let storage = g.node(site.storage).component.clone();
+        let exposure = g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("exposure is not bound"))?;
+        let exposure = g.node(exposure).component.clone();
         let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
         let visibility = g.node(vis_id).component.clone();
         let vis: VisibilityKnobs = g.knobs(vis_id).map_err(anyhow::Error::msg)?;
@@ -329,7 +332,7 @@ impl CpuSampler {
         let s = Self {
             cpu: match world {
                 Some(world) => world(),
-                None => grid::CpuWorld::new(&storage)?,
+                None => grid::CpuWorld::paired(&storage, &exposure)?,
             },
             opts,
             visibility,

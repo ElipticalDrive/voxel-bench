@@ -430,8 +430,8 @@ impl Faces {
 
 /// CPU discovery (visibility `quadtree` or `cluster`): the face set its rays found from this
 /// frame's camera, as each chunk's unit quads ([`Meshes`], drawn as a geometry's: transformed
-/// and culled where they are read). Its rays walk its own copy of the world, in the storage
-/// it tests exposure in (`grid::CpuWorld`, as discover-cpu's); the face set persists across
+/// and culled where they are read). Its rays walk its own copy of the world in their storage,
+/// its exposure tests the exposure port's (`grid::CpuWorld`, as discover-cpu's); the face set persists across
 /// frames as there (faces not re-confirmed for `KEEP_FRAMES` passes expire).
 struct Discover {
     cpu: grid::CpuWorld,
@@ -733,12 +733,14 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
                 let k: GeometryKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: k.cull, ..Default::default() }, nodes: vec![id.to_string()] })
             }
-            // Discovery: its rays walk (refloor) its own copy of the world in their storage.
+            // Discovery: its rays walk (refloor) its own copy of the world in their storage,
+            // its exposure tests read the exposure port's (one copy when the same component).
             Role::Visibility if discovers(g, id) => {
                 let rays = g.node(id).inputs.get("rays").ok_or_else(|| anyhow::anyhow!("`{id}`: discovery rays are not bound"))?;
                 let storage = g.node(rays).inputs.get("storage").ok_or_else(|| anyhow::anyhow!("`{rays}`: walks no storage"))?;
+                let exposure = g.node(id).inputs.get("exposure").ok_or_else(|| anyhow::anyhow!("`{id}`: exposure is not bound"))?;
                 Box::new(Discover {
-                    cpu: grid::CpuWorld::new(&g.node(storage).component)?,
+                    cpu: grid::CpuWorld::paired(&g.node(storage).component, &g.node(exposure).component)?,
                     visibility: g.node(id).component.clone(),
                     knobs: g.knobs(id).map_err(anyhow::Error::msg)?,
                     state: None,
