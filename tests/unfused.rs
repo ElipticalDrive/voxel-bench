@@ -388,3 +388,52 @@ fn gpu_meshes_aliases_draw_the_same() {
         }
     }
 }
+
+/// GPU discovery with meshes in its drawer's depth (`depth`, and its alias `composite`):
+/// forward, gbuffer, and with hole detection (whose face raster is its own: only its sky mask
+/// sees the meshes). Against the reference it scores at least as raster-gpu's meshed faces
+/// with the same meshes do, within `CAST_DB` and `CAST_BAD` points (measured 2026-11-28 at
+/// 48x32: raster-gpu 27.6 dB, its faces losing 4 pixels here with or without meshes;
+/// discovery 36.9 dB forward and with hole detection, whose lit mesh fragments' rays see
+/// voxels only, 84.8 dB gbuffer = the walk's); the meshes show (the frames differ from
+/// discovery's without them), and `composite` draws pixel-equal to `depth`.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_discovery_with_meshes() {
+    const MODES: &str = r#"["unlit+meshes", "lit+meshes"]"#;
+    const MESHES: &str = r#"{ add = "meshes", role = "meshes", component = "depth" }, { node = "meshes", input = "changes", from = "world" }, { node = "meshes", input = "shadow", from = "kernel" }, { node = "draw", input = "meshes", from = "meshes" }"#;
+    const HOLES: &str = r#"{ add = "holes", role = "holes", component = "coverage" }, { node = "draw", input = "faces", when = { iterate = 2 } }, { node = "holes", input = "covered", from = "draw" }, { node = "holes", input = "sky", from = "draw" }, { node = "holes", input = "sky", when = "prev" }, { node = "visibility", input = "where", from = "holes" }"#;
+    const GBUFFER: &str = r#"{ node = "draw", component = "gbuffer" }"#;
+    let (ok, log) = launch_in("disc-meshes-raster", "raster-gpu", "", MESH_ROOM, MODES);
+    assert!(ok, "{log}");
+    let (raster, raster_bad) = score("disc-meshes-raster");
+    let (ok, log) = launch_in("meshes-walk-disc", "raycast-gpu", "", MESH_ROOM, MODES);
+    assert!(ok, "{log}");
+    let walk = score("meshes-walk-disc");
+    let (ok, log) = launch_in("disc-meshes-none", "discover-gpu", "", MESH_ROOM, MODES);
+    assert!(ok, "{log}");
+    for (how, edits) in [("forward", MESHES.to_string()), ("gbuffer", format!("{MESHES}, {GBUFFER}")), ("holes", format!("{MESHES}, {HOLES}"))] {
+        let name = format!("disc-meshes-{how}");
+        let (ok, log) = launch_in(&name, "discover-gpu", &edits, MESH_ROOM, MODES);
+        assert!(ok, "{how}: {log}");
+        let (p, bad) = score(&name);
+        println!("discover-gpu + meshes {how}: {p:.1} dB, {bad:.2} % bad (raster-gpu {raster:.1} dB, {raster_bad:.2} %)");
+        assert!(p > raster - CAST_DB && bad < raster_bad + CAST_BAD, "{how}: {p:.1} dB, {bad:.2} % bad; raster-gpu {raster:.1} dB, {raster_bad:.2} %");
+        if how == "gbuffer" {
+            // Deferred, its rays meet the triangles: as the walk.
+            assert!(p > walk.0 - CAST_DB && bad < walk.1 + CAST_BAD, "{how}: {p:.1} dB, {bad:.2} % bad; walk {:.1} dB, {:.2} %", walk.0, walk.1);
+        }
+        if how != "holes" {
+            // Hole detection's first frame differs by design; the drawn ones are compared.
+            for mode in ["unlit+meshes", "lit+meshes"] {
+                assert!(images(&name, mode) != images("disc-meshes-none", mode), "{how} {mode}: the frames are discovery's without meshes");
+            }
+        }
+    }
+    let (ok, log) = launch_in("disc-meshes-composite", "discover-gpu", &MESHES.replace("\"depth\"", "\"composite\""), MESH_ROOM, MODES);
+    assert!(ok, "composite: {log}");
+    for mode in ["unlit+meshes", "lit+meshes"] {
+        let (p, q) = (images("disc-meshes-forward", mode), images("disc-meshes-composite", mode));
+        assert!(!p.is_empty() && p == q, "composite {mode}: the frames differ from depth's");
+    }
+}

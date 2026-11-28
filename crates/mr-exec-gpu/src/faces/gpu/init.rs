@@ -44,6 +44,9 @@ impl GpuSampler {
         let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("exposure is not bound"))?, STORAGE_GROUPS);
         let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
+        // Meshes drawn into the drawer's depth, lit through their shadow site's walk.
+        let meshes = g.find(Role::Meshes).is_some();
+        let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let (mut core, drawing, far) = crate::faces::new(p, devices, waker, g, &o, opts.depth_prepass, SourceSpec {
@@ -54,12 +57,15 @@ impl GpuSampler {
             sites: [shadow, bounce],
             varyings: true,
             strip: true,
-            meshes: None,
-            draw_meshes: false,
+            meshes: meshes.then_some(mesh_shadow),
+            draw_meshes: meshes,
             features: wgpu::Features::empty(),
             depth_read: true,
-            nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: Vec::new() },
+            nodes: DrawNodes { draw: g.ids(&[Role::Draw]), shade: g.ids(&[Role::Shading]), extra: g.ids(&[Role::Meshes]) },
         })?;
+        // Forward drawers shade the meshes through the region's shading component.
+        let mesh_module = drawing.mesh_module(&core);
+        let mesh = mr_gpu::meshes::GpuMeshes::new(&core.gpu, mesh_module.as_ref().map(|module| mr_gpu::meshes::ForwardSpec { module, layout: &drawing.pl_draw, format: core.output_format() }));
         // The post's view (the drawing's group 0 never binds its quantity buffer).
         let (view, view_max) = mr_components::post::view_chosen(g, "image", 256);
         core.set_view(&view, super::report::QUANTITIES)?;
@@ -315,6 +321,7 @@ impl GpuSampler {
             frame: 0,
             rng: 0x9e3779b97f4a7c15,
             drawing,
+            mesh,
             now: Frame::default(),
         };
         Ok((core, s, far))

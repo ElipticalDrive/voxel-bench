@@ -232,8 +232,9 @@ mod tests {
             // discover-cpu with its drawer moved to the CPU, and CPU graphs whose drawer moved
             // to a GPU: the other executor's shape (cross-device graphs).
             (Why::OtherExecutor, 9),
-            // Meshes (`composite`) in the ray-query caster (2026-11-28): 5 -> 3.
-            (Why::Role, 3),
+            // Meshes (`composite`) in the ray-query caster (2026-11-28): 5 -> 3; meshes in
+            // GPU discovery's drawer (2026-11-28): 3 -> 1.
+            (Why::Role, 1),
             (Why::Kind, 11),
             // Boxes and points drawn by the GPU rasteriser as their exposed faces (2026-11-27):
             // component 17 -> 11, port 11 -> 7. The ray-query caster with `depth` meshes

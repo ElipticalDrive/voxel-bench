@@ -81,7 +81,7 @@ pub(crate) fn info() -> RendererInfo {
         name: "gpu".into(),
         description: "GPU discovery + raster (the user's idea): a GPU adaptive quadtree of corner rays discovers the visible block faces (coherent tiles add a whole plane footprint), kept in a GPU hash set across frames and rasterised as one quad per face; no read-back. Rays, exposure tests and shadow rays read the composed storage".into(),
         tags: vec!["gpu".into(), "raster".into(), "raytrace".into(), "hybrid".into(), "modular".into(), "wgpu".into()],
-        features: Features::of(&[Feature::Lit, Feature::Volume]),
+        features: Features::of(&[Feature::Lit, Feature::Volume, Feature::Meshes, Feature::MeshRays]),
         params: REGION.lighting_knobs(knobs::params()),
     }
 }
@@ -218,6 +218,8 @@ pub(crate) struct GpuSampler {
     frame: u32,
     rng: u64,
     drawing: Draw,
+    /// The meshes, drawn into the drawer's depth (a meshes node; else never prepared).
+    mesh: mr_gpu::meshes::GpuMeshes,
     /// This frame's state: its discovery settings, what its nodes did so far and its groups.
     now: Frame,
 }
@@ -245,6 +247,8 @@ struct Frame {
     out: Option<wgpu::TextureView>,
     /// This frame's counter/timestamp staging buffer.
     stage: Option<usize>,
+    /// Meshes drawn this frame (asked for, and the graph has a meshes node).
+    meshes: bool,
 }
 
 /// The storages discovery's and the shadow rays walk (after the acceleration structures).

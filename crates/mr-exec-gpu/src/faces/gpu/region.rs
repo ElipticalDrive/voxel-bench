@@ -64,6 +64,24 @@ impl GpuSampler {
     }
 }
 
+impl GpuSampler {
+    /// The frame's meshes (when asked for and the graph has them), drawn into the faces'
+    /// depth at this frame's camera.
+    fn prepare_meshes(&mut self, core: &Core, req: &FrameRequest) {
+        self.now.meshes = req.meshes && self.drawing.draw_meshes;
+        if self.now.meshes {
+            let c = &req.camera;
+            let view_proj = c.projection(core.width as f32 / core.height as f32) * c.view_rotation();
+            self.mesh.prepare(&core.gpu, c, view_proj, req.mode);
+        }
+    }
+
+    /// Meshes go into the faces' forward passes, and into their ids or records when deferred.
+    pub(super) fn draws_meshes(&self) -> bool {
+        self.now.meshes && (!self.drawing.drawer.mode().deferred() || self.mesh.triangles() > 0)
+    }
+}
+
 impl exec::State for GpuSampler {
     fn updating(&mut self, updates: &[WorldUpdate]) {
         if self.incremental {
@@ -81,6 +99,10 @@ impl exec::State for GpuSampler {
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
         self.update_slots(core, changed);
         Ok(())
+    }
+
+    fn update_meshes(&mut self, update: MeshUpdate) {
+        self.mesh.apply(update);
     }
 
     fn set_param(&mut self, core: &mut Core, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
@@ -114,9 +136,12 @@ impl exec::State for GpuSampler {
 }
 
 impl Region for GpuSampler {
-    fn compile(&mut self, _: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
+    fn compile(&mut self, core: &mut Core, req: &FrameRequest) -> anyhow::Result<()> {
         if self.drawing.drawer.mode().deferred() && self.order == "painter" {
             anyhow::bail!("order = painter needs draw = raster (it draws forward)");
+        }
+        if req.meshes && self.drawing.draw_meshes {
+            self.drawing.mesh_shade(core, req.mode == RenderMode::Lit)?;
         }
         self.drawing.check_state(req.mode, Some(self.order == "painter"))
     }
@@ -141,6 +166,7 @@ impl Region for GpuSampler {
             let tile = self.vis.tile;
             let world = Some(core.world.prepare(&core.gpu, c).clone());
             self.now = Frame { redraw: true, parity: (self.frame & 1) as usize, cols: core.width.div_ceil(tile), rows: core.height.div_ceil(tile), world, out: Some(core.output.create_view(&Default::default())), ..Frame::default() };
+            self.prepare_meshes(core, req);
             return;
         }
         self.frame = self.frame.wrapping_add(1).max(1);
@@ -287,6 +313,7 @@ impl Region for GpuSampler {
             stage,
             ..Frame::default()
         };
+        self.prepare_meshes(core, req);
     }
 
     fn stats(&self, core: &Core, req: &FrameRequest) -> (Vec<(String, f64)>, Option<Legend>, Vec<StageTime>) {

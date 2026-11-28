@@ -250,7 +250,8 @@ impl GpuSampler {
             keep_depth: self.incremental,
             binds: &[bind_draw, f.world.as_ref().expect("set up"), st.expect("discovery rays walk a storage")],
             more: &more,
-            mesh_verts: None,
+            // Bound where the images group has them (not drawing only: no mesh capability).
+            mesh_verts: self.drawing.meshed.as_ref().map(|_| self.mesh.vertices()),
             ring: &core.ring,
             ticket,
             ts: (f.redraw, true),
@@ -298,8 +299,10 @@ impl GpuSampler {
             pass.set_pipeline(&self.pipe_sort_scatter);
             pass.dispatch_workgroups_indirect(&self.args, aofs);
         }
+        let mesh_draw = |pass: &mut wgpu::RenderPass<'_>, mp: mr_gpu::meshes::MeshPass| self.mesh.draw(pass, mp);
+        let meshes = self.draws_meshes().then_some(&mesh_draw as &dyn Fn(&mut wgpu::RenderPass<'_>, mr_gpu::meshes::MeshPass));
         self.encode(core, ticket, req, |f, draw, main| {
-            self.drawing.drawer.encode_draw(enc, f, draw, None, main);
+            self.drawing.drawer.encode_draw(enc, f, draw, meshes, main);
             self.drawing.drawer.encode_decode(&core.gpu, enc, f);
         });
     }
@@ -307,7 +310,8 @@ impl GpuSampler {
     /// The shading node: the deferred drawers' pass over the ids or records.
     pub(super) fn shade(&mut self, core: &mut Core, enc: &mut wgpu::CommandEncoder, ticket: mr_gpu::Ticket, req: &FrameRequest) {
         self.draw(core, enc, ticket, req);
-        self.encode(core, ticket, req, |f, _, _| self.drawing.drawer.encode_shade(&core.gpu, enc, f, false, false));
+        let (meshes, lit) = (self.draws_meshes(), req.mode == RenderMode::Lit);
+        self.encode(core, ticket, req, |f, _, _| self.drawing.drawer.encode_shade(&core.gpu, enc, f, meshes, lit));
         if !self.now.redraw {
             self.mark(enc, 3 + 2 * MAX_LEVELS as u32);
         }

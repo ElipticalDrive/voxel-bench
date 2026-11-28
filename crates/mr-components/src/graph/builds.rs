@@ -655,8 +655,8 @@ pub const GPU_MESHING: Builds = Builds {
 };
 
 /// GPU discovery (`discover-gpu`): the sampler (its rays and exposure tests over any GPU
-/// storage), its hole detection, the drawer of the face set, the shading (any rays, a
-/// ray-query geometry on the CPU).
+/// storage), its hole detection, the drawer of the face set (and meshes into its depth), the
+/// shading (any rays, a ray-query geometry on the CPU).
 pub const GPU_SAMPLER: Builds = Builds {
     nodes: &[
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(1, 4),
@@ -665,6 +665,10 @@ pub const GPU_SAMPLER: Builds = Builds {
         Build::one(Role::Visibility, &["quadtree"], impls::GPU_COMPUTE),
         Build::picking(Role::Holes, Pick::Every, impls::GPU_COMPUTE).count(0, 1),
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
+        // Meshes in the drawer's depth (discovery's rays see voxels only; hole detection's
+        // face raster is its own, so only its sky mask sees them: a mesh over the sky is
+        // not sky, its tiles discovered again).
+        Build::providing(Role::Meshes, Cap::FaceDepth, impls::GPU_RASTER).count(0, 1),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
     ],
     same: &[],
@@ -675,6 +679,13 @@ pub const GPU_SAMPLER: Builds = Builds {
             port: "faces",
             components: Pick::Named(&["quadtree"]),
             bound: true,
+        },
+        Only {
+            role: Role::Meshes,
+            of: &[],
+            port: "shadow",
+            components: WALKS,
+            bound: false,
         },
         Only {
             role: Role::Visibility,
