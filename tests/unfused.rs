@@ -34,6 +34,7 @@ edits = [{edits}]
 [output]
 dir = {:?}
 save = {{ every = 1 }}
+compare = {{ every = 1 }}
 "#,
         d.join("out").to_str().unwrap(),
     );
@@ -137,3 +138,92 @@ fn columns_shadow_rays_over_a_heightmap_of_their_own() {
     check("columns-cpu", "", own, BOTH);
     check("columns-cpu", DEFERRED, &format!("{own}, {DEFERRED}"), BOTH);
 }
+
+#[test]
+fn raster_draws_boxes_and_points_as_their_faces() {
+    // The exposed block faces each stands for: naive's quads (culled), the same image.
+    let plain = r#"{ node = "geometry", component = "naive" }"#;
+    let straight = r#"{ node = "draw", input = "faces", from = "geometry" }, { remove = "visibility" }"#;
+    for c in ["boxes", "points"] {
+        check("raster-cpu", plain, &format!(r#"{{ node = "geometry", component = "{c}" }}"#), BOTH);
+        check("raster-cpu", &format!("{plain}, {straight}"), &format!(r#"{{ node = "geometry", component = "{c}" }}, {straight}"#), BOTH);
+    }
+}
+
+/// Run `name`'s score against the reference, over its passes (unlit, lit): the lowest median
+/// PSNR and the highest median share of bad pixels (%), over the frames (the median: a run
+/// with an edge timed `prev` draws a blank first frame, the hold's value before any).
+fn score(name: &str) -> (f64, f64) {
+    fn find(dir: &Path) -> Option<PathBuf> {
+        std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find_map(|p| if p.is_dir() { find(&p) } else { (p.file_name()? == "report.json").then_some(p) })
+    }
+    let p = find(&dir().join(name).join("out")).expect("a report");
+    let passes = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap();
+    let (mut psnr, mut bad) = (f64::MAX, 0.0f64);
+    for r in passes.as_array().unwrap().iter().filter(|r| !r["label"].as_str().unwrap_or("").ends_with("(ref)")) {
+        assert!(r["error"].is_null(), "{name}: {}", r["error"]);
+        let q = &r["quality"];
+        psnr = psnr.min(q["psnr"]["p50"].as_f64().unwrap_or_else(|| panic!("{name}: no quality score in {r}")));
+        bad = bad.max(q["bad_pct"]["p50"].as_f64().unwrap_or_else(|| panic!("{name}: no bad pixels in {q}")));
+    }
+    (psnr, bad)
+}
+
+/// CPU discovery (`quadtree`, `cluster`) drawn by the CPU rasteriser: in the drawer's frame
+/// (faces `now`), a frame late (`prev`), through a culling node, deferred. Against the
+/// reference, in the drawer's frame it scores as raster-cpu's meshed faces do (measured
+/// 2026-11-27: both 99 dB, 0 % bad on this world: discovery found every visible face); a frame
+/// late it draws the faces found from the last frame's camera from this one's, so what came
+/// into view since is missing (measured: 19-21 dB, 3-5 % bad at the orbit's 0.4 blocks a frame).
+#[test]
+fn raster_draws_cpu_discovery() {
+    let (ok, log) = launch("discovery-meshed", "raster-cpu", "");
+    assert!(ok, "{log}");
+    let (meshed, meshed_bad) = score("discovery-meshed");
+    for c in ["quadtree", "cluster"] {
+        let found = format!(r#"{{ add = "disc", role = "visibility", component = "{c}" }}, {{ node = "disc", input = "exposure", from = "storage" }}, {{ node = "disc", input = "rays", from = "kernel" }}"#);
+        let drawn = r#"{ remove = "visibility" }, { remove = "geometry" }"#;
+        // Each case's allowance against the meshed score: dB below it, points of bad pixels
+        // above it.
+        let cases = [
+            ("now", format!(r#"{found}, {{ node = "draw", input = "faces", from = "disc" }}, {drawn}"#), (1.0, 0.5)),
+            ("prev", format!(r#"{found}, {{ node = "draw", input = "faces", from = "disc" }}, {{ node = "draw", input = "faces", when = "prev" }}, {drawn}"#), (90.0, 8.0)),
+            ("culled", format!(r#"{found}, {{ node = "visibility", input = "faces", from = "disc" }}, {{ remove = "geometry" }}"#), (1.0, 0.5)),
+            ("deferred", format!(r#"{found}, {{ node = "draw", input = "faces", from = "disc" }}, {drawn}, {DEFERRED}"#), (1.0, 0.5)),
+        ];
+        for (how, edits, (db, pts)) in cases {
+            let name = format!("discovery-{c}-{how}");
+            let (ok, log) = launch(&name, "raster-cpu", &edits);
+            assert!(ok, "{c} {how}: {log}");
+            let (p, bad) = score(&name);
+            println!("{c} {how}: {p:.1} dB, {bad:.2} % bad (meshed {meshed:.1} dB, {meshed_bad:.2} %)");
+            assert!(p > meshed - db && bad < meshed_bad + pts, "{c} {how}: {p:.1} dB, {bad:.2} % bad; meshed {meshed:.1} dB, {meshed_bad:.2} %");
+            assert!(images(&name, "unlit")[0] != images(&name, "lit")[0], "{c} {how}: no surface drawn");
+        }
+    }
+}
+
+/// The ray caster over a heightmap's march (`heightfield` as its primary kernel), run by the
+/// columns region: one ray per pixel through the same heightmap. Against the reference it
+/// scores at least as columns-cpu's march does, within `CAST_DB` and `CAST_BAD` points
+/// (measured 2026-11-27, the worse of unlit and lit at 48x32: the caster 26.2 dB, 5.6 % bad;
+/// the column march 17.4 dB, 34.6 %; why the march scores so low here is not looked into).
+#[test]
+fn raycast_over_a_heightfield() {
+    let (ok, log) = launch("heightfield-columns", "columns-cpu", "");
+    assert!(ok, "{log}");
+    let (columns, columns_bad) = score("heightfield-columns");
+    let cast = r#"{ add = "caster", role = "visibility", component = "raycast" }, { node = "caster", input = "primary", from = "kernel" }, { node = "shading", input = "hits", from = "caster" }, { remove = "visibility" }"#;
+    for (how, edits) in [("inline", cast.to_string()), ("deferred", format!("{cast}, {DEFERRED}"))] {
+        let name = format!("heightfield-{how}");
+        let (ok, log) = launch(&name, "columns-cpu", &edits);
+        assert!(ok, "{how}: {log}");
+        let (p, bad) = score(&name);
+        println!("raycast {how}: {p:.1} dB, {bad:.2} % bad (columns {columns:.1} dB, {columns_bad:.2} %)");
+        assert!(p > columns - CAST_DB && bad < columns_bad + CAST_BAD, "{how}: {p:.1} dB, {bad:.2} % bad; columns {columns:.1} dB, {columns_bad:.2} %");
+        assert!(images(&name, "unlit")[0] != images(&name, "lit")[0], "{how}: no surface drawn");
+    }
+}
+
+const CAST_DB: f64 = 1.0;
+const CAST_BAD: f64 = 1.0;

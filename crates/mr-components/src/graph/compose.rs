@@ -29,6 +29,8 @@ impl Graph {
                 (Role::Visibility, "quadtree" | "cluster") if gpu(hits) => {
                     Some(if gpu(src) { &GPU_SAMPLER } else { &CPU_SAMPLER })
                 }
+                // CPU discovery drawn by the CPU rasteriser.
+                (Role::Visibility, "quadtree" | "cluster") if !gpu(src) => Some(&CPU_RASTER),
                 (Role::Visibility, "faces") => {
                     Some(if gpu(hits) { &GPU_MESHING } else { &CPU_RASTER })
                 }
@@ -44,7 +46,15 @@ impl Graph {
             ("columns", g) => Some(if g { &GPU_COLUMNS } else { &CPU_COLUMNS }),
             ("splat", true) => Some(&GPU_SPLAT),
             ("slices", true) => Some(&GPU_SLICES),
-            ("raycast", false) => Some(&CPU_RAYCAST),
+            // Over a heightmap's march: the columns region casts the rays.
+            ("raycast", false) => {
+                let marched = hits
+                    .inputs
+                    .get("primary")
+                    .and_then(|k| self.nodes.get(k))
+                    .is_some_and(|k| MARCHES.takes(Role::Traversal, Kind::Cpu, &k.component));
+                Some(if marched { &CPU_COLUMNS } else { &CPU_RAYCAST })
+            }
             ("raycast", true) => {
                 let rq = hits
                     .inputs

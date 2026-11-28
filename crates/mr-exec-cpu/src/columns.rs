@@ -133,9 +133,13 @@ impl Node for Storage {
 }
 
 /// The march; `fused`: shading inline, its output the image (marched column-major into
-/// `cols`, transposed), else the column-major hit records.
+/// `cols`, transposed), else the column-major hit records. `cast`: the ray caster over the
+/// heightmap's march instead of the column march (one ray per pixel through
+/// `Heightmap::trace`, the `heightfield` kernel; fused, its records shaded in the same pass).
 struct Visibility<S, P> {
     fused: bool,
+    cast: bool,
+    recs: Vec<Record>,
     /// Fused: the input the shadow rays walk (its own storage `0`, another `1`; none: no
     /// shadow rays).
     shadow_in: Option<usize>,
@@ -153,6 +157,37 @@ impl<S: Spec, P: Pixel> Node for Visibility<S, P> {
         let f = field(ins[0]);
         let (w, h) = (cx.width as usize, cx.height as usize);
         let m = f.march(cx.req, cx.width, cx.height);
+        if self.cast {
+            // One ray per pixel, column-major records as the march writes them.
+            let cam = cx.req.camera.split_position().0;
+            let cast = |recs: &mut [Record]| {
+                recs.par_chunks_mut(h).enumerate().for_each(|(gx, col)| {
+                    for (gy, r) in col.iter_mut().enumerate() {
+                        let d = m.pixel_ray(gx as f32 + 0.5, gy as f32 + 0.5);
+                        *r = match f.hm.trace(cam, m.o, d, f32::MAX) {
+                            Some((t, cell, axis, block)) => Record::hit(t, block, Face::entered(axis, if d[axis] > 0.0 { 1 } else { -1 }), cell),
+                            None => Record::SKY,
+                        };
+                    }
+                });
+            };
+            if !self.fused {
+                cast(out.downcast_mut::<Vec<Record>>().expect("hit records"));
+                let t = start.elapsed().as_secs_f32() * 1e3;
+                report.stages.push(StageTime::cpu("raycast", &self.nodes, t));
+                report.counters.push(("cast_ms".into(), t as f64));
+                return;
+            }
+            self.recs.resize(w * h, Record::SKY);
+            cast(&mut self.recs);
+            let shade_s = shader::<S, P>(self.shadow_in.map(|i| field(ins[i])), cx.world, cx.req);
+            let deferred = Deferred { recs: &self.recs, m: &m, shade: &shade_s, lit: cx.req.mode == RenderMode::Lit, sky: cx.world.sky() };
+            mr_components::shading::deferred::shade(&deferred, cx.width, out.downcast_mut::<Vec<P>>().expect("an image"));
+            let t = start.elapsed().as_secs_f32() * 1e3;
+            report.stages.push(StageTime::cpu("raycast+shade", &self.nodes, t));
+            report.counters.push(("cast_ms".into(), t as f64));
+            return;
+        }
         if !self.fused {
             // One contiguous column per task; the deferred pass reads them across and writes
             // rows, so no transpose remains.
@@ -183,7 +218,7 @@ impl<S: Spec, P: Pixel> Node for Visibility<S, P> {
         *out = self.output(w, h);
     }
     fn memory(&self, out: &Res) -> u64 {
-        (std::mem::size_of_val(&self.cols[..]) + out.downcast_ref::<Vec<Record>>().map_or(0, |r| std::mem::size_of_val(&r[..]))) as u64
+        (std::mem::size_of_val(&self.cols[..]) + std::mem::size_of_val(&self.recs[..]) + out.downcast_ref::<Vec<Record>>().map_or(0, |r| std::mem::size_of_val(&r[..]))) as u64
     }
     fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
         (!self.fused).then(|| exec::GatePass::<Vec<Record>>::boxed(chain, late, w, h))
@@ -232,7 +267,11 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     // The march's heightmap and the one the shading's shadow rays walk (none bound: no
     // shadow rays); one pass per storage node, the same one when both are.
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("columns: no visibility node"))?;
-    let marched = g.node(vis).inputs.get("storage").cloned().ok_or_else(|| anyhow::anyhow!("columns: `{vis}` marches no storage"))?;
+    // The ray caster reads the heightmap through its primary rays' march.
+    let cast = g.node(vis).component == "raycast";
+    let read = |id: &str, port: &str| g.node(id).inputs.get(port).cloned();
+    let marched = if cast { read(vis, "primary").and_then(|k| read(&k, "storage")) } else { read(vis, "storage") };
+    let marched = marched.ok_or_else(|| anyhow::anyhow!("columns: `{vis}` marches no storage"))?;
     let shadowed = g.site(Role::Shading, "shadow").map(|s| s.storage.to_string());
     // Storages first: an inline march shades with the shadow rays' heightmap.
     let storage_first = |p: &&mr_components::graph::Pass| g.node(&p.node).role == Role::Storage;
@@ -255,7 +294,13 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
                 let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Visibility, Role::Shading]) };
                 // Inline, the fused shading's shadow rays' heightmap too.
                 let shadow_in = shadowed.as_deref().filter(|_| !deferred).map(|s| at(&mut ins, s));
-                Box::new(Visibility::<S, P> { fused: !deferred, shadow_in, cols: vec![], nodes, spec: std::marker::PhantomData })
+                // The march's heightmap first (the ray caster reads it through its kernel).
+                let field_in = at(&mut ins, &marched);
+                if field_in != 0 {
+                    ins.swap(0, field_in);
+                }
+                let shadow_in = shadow_in.map(|i| if i == 0 { field_in } else if i == field_in { 0 } else { i });
+                Box::new(Visibility::<S, P> { fused: !deferred, cast, recs: vec![], shadow_in, cols: vec![], nodes, spec: std::marker::PhantomData })
             }
             // Fused into the visibility pass.
             Role::Shading if !deferred => continue,
