@@ -7,7 +7,9 @@
 //! march writes hit records, the common pass `shading/deferred.wgsl` shades them). The
 //! heightmap is kept on the CPU, patched from the change log, its changed rows uploaded (the
 //! change log's transfer to the GPU). The march and the deferred shading are nodes sharing
-//! the [`Columns`] region.
+//! the [`Columns`] region. In the column march's place the region runs the ray caster over the
+//! heightmap's march (visibility `raycast`, its primary rays the `heightfield` kernel): one
+//! ray per pixel through `hm_trace` (`columns_cast.wgsl`, entry `cast_rays`).
 
 use mr_gpu::Pipelines as _;
 use glam::IVec3;
@@ -80,9 +82,11 @@ pub(crate) struct Columns {
     /// for its mode; `mode` = this frame's.
     variants: [Option<Variant>; 2],
     mode: usize,
-    /// What the programs are made of: the shading component, `placement = deferred`, the tone.
+    /// What the programs are made of: the shading component, `placement = deferred`, the tone;
+    /// `cast`: the ray caster over the heightmap's march instead of the column march.
     shading: String,
     deferred: bool,
+    cast: bool,
     tone: mr_components::post::Tone,
     pl: wgpu::PipelineLayout,
     layout0: wgpu::BindGroupLayout,
@@ -101,11 +105,11 @@ struct Variant {
 impl Columns {
     fn variant(&self, core: &Core, lit: bool) -> Variant {
         let gpu = &core.gpu;
-        let (mut program, root, deps) = program(&self.shading, self.deferred, lit, self.tone);
+        let (mut program, root, deps) = program(&self.shading, self.deferred, self.cast, lit, self.tone);
         core.bind_program(&mut program, "0u");
         let module = mr_gpu::program::compile(&gpu.device, if lit { "voxelspace lit" } else { "voxelspace" }, &program, &root, &deps);
         let pipe = |e: &str| gpu.device.compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(e), layout: Some(&self.pl), module: &module, entry_point: Some(e), compilation_options: Default::default(), cache: gpu.cache() });
-        Variant { march: pipe("main"), shade: self.deferred.then(|| pipe("shade")) }
+        Variant { march: pipe(if self.cast { "cast_rays" } else { "main" }), shade: self.deferred.then(|| pipe("shade")) }
     }
 }
 
@@ -115,6 +119,7 @@ impl Columns {
         let shading = &g.node(g.shading()).component;
         let k: ShadingKnobs = g.knobs(g.shading()).map_err(anyhow::Error::msg)?;
         let deferred = mr_components::shading_deferred(g, &k.placement)?;
+        let cast = g.find(Role::Visibility).is_some_and(|v| g.node(v).component == "raycast");
         // The voxel world holds the chunks, the texture atlas and the lighting parameters only.
         let core = Core::new(
             p,
@@ -152,7 +157,7 @@ impl Columns {
         let layout0 = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxelspace"), entries: &entries });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxelspace"), bind_group_layouts: &[Some(&layout0), Some(core.world.layout())], immediate_size: 0 });
         let bind0 = bind0(&core, &layout0, &hm_buf, &hm_info);
-        Ok((core, Self { hm, hm_buf, hm_info, variants: [None, None], mode: 0, shading: shading.clone(), deferred, tone: g.tone(), pl, layout0, bind0, world: None }))
+        Ok((core, Self { hm, hm_buf, hm_info, variants: [None, None], mode: 0, shading: shading.clone(), deferred, cast, tone: g.tone(), pl, layout0, bind0, world: None }))
     }
 }
 
@@ -225,16 +230,22 @@ impl Node<Columns> for Visibility {
     fn run(&mut self, cx: &mut Cx<Columns>) {
         let (core, r, enc, ticket) = (&mut *cx.core, &*cx.region, &mut *cx.enc, cx.ticket);
         let deferred = r.deferred;
-        if deferred {
-            core.ring.stage(enc, ticket, "columns", &core.stage_nodes[1]);
-        } else {
-            core.ring.stage(enc, ticket, "columns+shade", &core.stage_nodes[0]);
-        }
+        let stage = match (r.cast, deferred) {
+            (false, true) => "columns",
+            (false, false) => "columns+shade",
+            (true, true) => "raycast",
+            (true, false) => "raycast+shade",
+        };
+        core.ring.stage(enc, ticket, stage, &core.stage_nodes[if deferred { 1 } else { 0 }]);
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxelspace"), timestamp_writes: core.ring.compute_timestamps(ticket, true, !deferred) });
         pass.set_pipeline(&r.variants[r.mode].as_ref().expect("compiled").march);
         pass.set_bind_group(0, &r.bind0, &[]);
         pass.set_bind_group(1, r.world.as_ref().expect("set up"), &[]);
-        pass.dispatch_workgroups(core.width.div_ceil(64), 1, 1);
+        if r.cast {
+            pass.dispatch_workgroups(core.width.div_ceil(8), core.height.div_ceil(8), 1);
+        } else {
+            pass.dispatch_workgroups(core.width.div_ceil(64), 1, 1);
+        }
     }
 }
 
@@ -265,11 +276,15 @@ pub(crate) fn create(p: &InitParams, devices: &Devices, waker: Waker, g: &graph:
     exec::run(core, region, passes)
 }
 
+/// The ray caster over the heightmap's march (entry `cast_rays`).
+const CAST_WGSL: &str = include_str!("columns_cast.wgsl");
+
 /// The shader: the heightmap storage (group 2) is its own kernel (`ctrace`; storage and walk
 /// in one), the ray services through it, the column march and the
 /// shading component as the root, the post's `tone` in its output; with `deferred`, the march writes records and
-/// the common deferred pass shades them; `lit` (shader def `LIT`) the lit frames' program.
-fn program(shading: &str, deferred: bool, lit: bool, tone: mr_components::post::Tone) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
+/// the common deferred pass shades them; `cast`: the ray caster's entry `cast_rays` beside the
+/// march (its camera and helpers); `lit` (shader def `LIT`) the lit frames' program.
+fn program(shading: &str, deferred: bool, cast: bool, lit: bool, tone: mr_components::post::Tone) -> (mr_gpu::program::Program, String, [&'static str; 5]) {
     use mr_gpu::program::{COMMON, LIGHTING, Program, VOXELS};
     let mut p = Program::world(Some("heightmap::rays"));
     mr_components::post::add_to(tone, &mut p);
@@ -283,24 +298,25 @@ fn program(shading: &str, deferred: bool, lit: bool, tone: mr_components::post::
     if lit {
         p.define("LIT");
     }
-    let root = format!("{}\n{}\n{shade}\n{place}", ShadeState::wgsl(0, crate::STATE_BINDING), columns::GPU_WGSL);
+    let cast = if cast { CAST_WGSL } else { "" };
+    let root = format!("{}\n{}\n{shade}\n{place}\n{cast}", ShadeState::wgsl(0, crate::STATE_BINDING), columns::GPU_WGSL);
     (p, root, ["heightmap", "heightmap::rays", LIGHTING, VOXELS, COMMON])
 }
 
 #[cfg(test)]
 mod tests {
-    /// The shader composes from its modules and validates for every shading, placement and mode
-    /// (no GPU needed).
+    /// The shader composes from its modules and validates for every shading, placement, mode
+    /// and visibility (the column march, the ray caster) (no GPU needed).
     #[test]
     fn programs_compose() {
         use mr_gpu::wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
         let shadings = mr_components::graph::shipped("columns-gpu").unwrap().choices("shading");
         assert!(shadings.len() > 1, "{shadings:?}");
         for shading in shadings {
-            for (deferred, lit) in [(false, false), (false, true), (true, false), (true, true)] {
-                let (p, root, deps) = super::program(shading, deferred, lit, mr_components::post::Tone::Aces);
-                let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading} {deferred} {lit}: {e}"));
-                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{shading} {deferred} {lit}: {e:?}"));
+            for (deferred, lit, cast) in (0..8).map(|i| (i & 1 != 0, i & 2 != 0, i & 4 != 0)) {
+                let (p, root, deps) = super::program(shading, deferred, cast, lit, mr_components::post::Tone::Aces);
+                let m = p.naga(&root, &deps).unwrap_or_else(|e| panic!("{shading} {deferred} {cast} {lit}: {e}"));
+                Validator::new(ValidationFlags::all(), Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{shading} {deferred} {cast} {lit}: {e:?}"));
             }
         }
     }

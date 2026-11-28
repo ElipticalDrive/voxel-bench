@@ -225,8 +225,7 @@ fn raycast_over_a_heightfield() {
     let (ok, log) = launch("heightfield-columns", "columns-cpu", "");
     assert!(ok, "{log}");
     let (columns, columns_bad) = score("heightfield-columns");
-    let cast = r#"{ add = "caster", role = "visibility", component = "raycast" }, { node = "caster", input = "primary", from = "kernel" }, { node = "shading", input = "hits", from = "caster" }, { remove = "visibility" }"#;
-    for (how, edits) in [("inline", cast.to_string()), ("deferred", format!("{cast}, {DEFERRED}"))] {
+    for (how, edits) in [("inline", CAST.to_string()), ("deferred", format!("{CAST}, {DEFERRED}"))] {
         let name = format!("heightfield-{how}");
         let (ok, log) = launch(&name, "columns-cpu", &edits);
         assert!(ok, "{how}: {log}");
@@ -239,6 +238,29 @@ fn raycast_over_a_heightfield() {
 
 const CAST_DB: f64 = 1.0;
 const CAST_BAD: f64 = 1.0;
+/// The column march's graph with the ray caster in the march's place, its primary rays the
+/// heightmap's march (`kernel`, `heightfield`).
+const CAST: &str = r#"{ add = "caster", role = "visibility", component = "raycast" }, { node = "caster", input = "primary", from = "kernel" }, { node = "shading", input = "hits", from = "caster" }, { remove = "visibility" }"#;
+
+/// GPU: the ray caster over a heightmap's march, run by the GPU columns region (one ray per
+/// pixel through the heightmap's `hm_trace`), inline and deferred. Against the reference it
+/// scores as the CPU's caster over the same graph does (the same walk; the GPU's float
+/// arithmetic differs), within `CAST_DB` and `CAST_BAD` points. Needs a GPU (`--ignored`).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_raycast_over_a_heightfield() {
+    for (how, edits) in [("inline", CAST.to_string()), ("deferred", format!("{CAST}, {DEFERRED}"))] {
+        let (cpu, gpu) = (format!("gpu-heightfield-{how}-cpu"), format!("gpu-heightfield-{how}"));
+        let (ok, log) = launch(&cpu, "columns-cpu", &edits);
+        assert!(ok, "cpu {how}: {log}");
+        let (ok, log) = launch(&gpu, "columns-gpu", &edits);
+        assert!(ok, "gpu {how}: {log}");
+        let ((c, c_bad), (g, g_bad)) = (score(&cpu), score(&gpu));
+        println!("gpu raycast {how}: {g:.1} dB, {g_bad:.2} % bad (cpu {c:.1} dB, {c_bad:.2} %)");
+        assert!(g > c - CAST_DB && g_bad < c_bad + CAST_BAD, "{how}: {g:.1} dB, {g_bad:.2} % bad; cpu {c:.1} dB, {c_bad:.2} %");
+        assert!(images(&gpu, "unlit")[0] != images(&gpu, "lit")[0], "{how}: no surface drawn");
+    }
+}
 
 /// GPU: the drawer reads the geometry's faces straight (no culling node): every chunk's faces
 /// drawn, the same image as culled (the culling only leaves out what the depth test and the

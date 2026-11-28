@@ -235,8 +235,9 @@ mod tests {
             (Why::Role, 5),
             (Why::Kind, 11),
             // Boxes and points drawn by the GPU rasteriser as their exposed faces (2026-11-27):
-            // component 17 -> 11, port 11 -> 7.
-            (Why::Component, 11),
+            // component 17 -> 11, port 11 -> 7; the GPU ray caster over a heightmap's march
+            // (the columns region's): 11 -> 10.
+            (Why::Component, 10),
             // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
             // on the GPU drawer): 23 -> 6.
             (Why::Count, 6),

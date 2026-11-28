@@ -226,7 +226,7 @@ names (`multirenderer audit --refused` prints the table; the test
 | no region of that shape | the shape is the other executor's | 9 | the visibility on one device kind, the drawer on the other (cross-device graphs) |
 | node outside the declarations | role not built | 5 | mesh records beside ray queries or GPU discovery, holes beside CPU discovery |
 | node outside the declarations | role on the other device kind | 11 | a kernel, a culling or a shading on the other device than its region's |
-| node outside the declarations | component not built | 11 (19) | the heightfield march in the GPU ray caster, a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
+| node outside the declarations | component not built | 10 (19) | a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
 | node outside the declarations | number of nodes of a role | 6 (37) | no kernel or no storage in the GPU regions, a second heightmap for the GPU column march |
 | node outside the declarations | what a port reads | 7 (10) | an unbound shadow site in the GPU regions, faces splatted as points, ray queries into GPU discovery's set |
 | edge without a resource form | edge timing | 6 (41 before the CPU's `prev` edges) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, a drawer's meshes); hits late behind a forward drawer (no records) |
@@ -344,6 +344,14 @@ may differ from the one its rays walk (`grid::Paired`: a runtime pair reads the 
 storage dynamically, a compiled pipeline pairs both statically). Boxes and points are drawn by
 the GPU rasteriser as the exposed block faces each stands for, as the CPU rasteriser draws them
 (`geometry::drawn`: naive's culled quads, the same image).
+
+**Done: the GPU ray caster over a heightmap's march** (62 -> 61 refused). As on the CPU, a
+GPU ray caster whose primary rays are the `heightfield` kernel is the column-march region's
+(`graph::GPU_COLUMNS`): its program is the march's with a second entry
+(`crates/mr-exec-gpu/src/columns_cast.wgsl`, `cast_rays`) casting one ray per pixel through
+the heightmap's `hm_trace`, the surface the march gives the same column, shaded inline or
+written as records for the common deferred pass. Its frames score as the CPU caster's against
+the reference (`tests/unfused.rs`).
 
 ## Migration
 
