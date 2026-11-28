@@ -13,12 +13,15 @@ renderer = [
     { graph = "rayquery-gpu", vary = [{ node = "geometry", component = "*" }, { node = "shading", component = "*" }] },
     { graph = "raster-gpu", vary = [
         { node = "storage", component = "*" },
-        { node = "geometry", component = "*" },
+        { node = "geometry", component = "*", except = ["boxes", "points"] },
         { node = "draw", component = "*" },
         { node = "kernel", component = "*" },
         { node = "shading", component = "*" },
         { any = [[], [{ remove = "meshes" }]] },
     ] },
+    # Boxes and points drawn as their exposed faces (naive's quads: the same meshes as naive in
+    # every other combination above).
+    { graph = "raster-gpu", vary = [{ node = "geometry", component = ["boxes", "points"] }, { node = "draw", component = "*" }] },
     { graph = "raster-cpu", vary = [
         { node = "storage", component = "*" },
         { node = "geometry", component = "*" },

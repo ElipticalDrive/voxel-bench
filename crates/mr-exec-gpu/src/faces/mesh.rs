@@ -177,7 +177,7 @@ fn walks(g: &Checked) -> anyhow::Result<(Walks, usize, usize, usize)> {
 }
 
 fn geometry(name: &str) -> GpuGeometry {
-    mr_components::geometry::gpu(name).expect("validated")
+    mr_components::geometry::drawn(name).expect("validated")
 }
 
 /// The face source's WGSL: the geometry component's vertex placement and the chunks' faces.

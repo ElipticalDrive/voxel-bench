@@ -550,7 +550,7 @@ fn varied_sweeps() {
     // The full sweep the scripts run, per region.
     let full = include_str!("../../scripts/full-sweep.toml").split_once("renderer = ").unwrap().1;
     let all = Plan::parse(base, &[format!("renderer={full}")]).unwrap();
-    each_once(&all, 3512, "the full sweep");
+    each_once(&all, 3518, "the full sweep");
     let n = |b: RegionId| all.renderers.iter().filter(|r| region(r) == Some(b)).count();
     // raycast-gpu: storages x 2 (prepass or not) x kernels x shadings x 2 (meshes or not); the
     // rasteriser's shadow rays: storages x kernels x geometries x draws x shadings x 2 (meshes);
@@ -561,7 +561,8 @@ fn varied_sweeps() {
         (
             walk("storage") * 2 * walk("kernel") * walk("shading") * 2,
             rq("geometry") * rq("shading") + walk("storage") * walk("kernel"),
-            raster("storage") * raster("kernel") * raster("geometry") * raster("draw") * raster("shading") * 2,
+            // Boxes and points (naive's quads) only x draws.
+            raster("storage") * raster("kernel") * (raster("geometry") - 2) * raster("draw") * raster("shading") * 2 + 2 * raster("draw"),
             // The column march's shadings, and raycast-cpu's sweep's heightmap under the
             // heightfield march (a ray caster over a march is the column march region's).
             takes("columns-cpu", "shading") + 1,
@@ -696,7 +697,7 @@ fn pair_covering_sweeps() {
         assert_eq!(union, together(&full), "{e}: the parts together have every pair");
         (full_n, pairs_n) = (full_n + full.renderers.len(), pairs_n + pairs.renderers.len());
     }
-    assert_eq!(full_n, 3512, "the full sweep");
+    assert_eq!(full_n, 3518, "the full sweep");
     eprintln!("the full sweep: {full_n} renderers, pairs: {pairs_n}, in 15 parts: {parts_n:?}");
     assert!(pairs_n * 4 < full_n, "{pairs_n} of {full_n}");
     assert!(parts_n.iter().all(|&n| n * 2 < pairs_n), "{parts_n:?} of {pairs_n}");

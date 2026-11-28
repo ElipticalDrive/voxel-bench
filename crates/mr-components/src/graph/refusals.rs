@@ -234,11 +234,13 @@ mod tests {
             (Why::OtherExecutor, 9),
             (Why::Role, 5),
             (Why::Kind, 11),
-            (Why::Component, 17),
+            // Boxes and points drawn by the GPU rasteriser as their exposed faces (2026-11-27):
+            // component 17 -> 11, port 11 -> 7.
+            (Why::Component, 11),
             // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
             // on the GPU drawer): 23 -> 6.
             (Why::Count, 6),
-            (Why::Port, 11),
+            (Why::Port, 7),
             (Why::Timing, 12),
             // One graph refused by its timing before (2026-11-27) now meets it and is
             // refused by its devices.

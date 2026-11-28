@@ -386,6 +386,9 @@ const RT_GEOMETRY: Pick = Pick::Providing(Cap::Accel);
 /// The column storages' ray marches (a traversal reading a storage's heights).
 pub(crate) const MARCHES: Pick = Pick::Needing(Role::Storage, Cap::Heights);
 const DRAWN_GEOMETRY: Pick = Pick::Any(&[Pick::Providing(Cap::Quads), Pick::Providing(Cap::Cubes)]);
+/// What the rasterisers draw: quads, cubes as their six faces, boxes and points as the exposed
+/// block faces they stand for (`geometry::drawn`).
+const DRAWN: Pick = Pick::Any(&[DRAWN_GEOMETRY, Pick::Named(&["boxes", "points"])]);
 /// The CPU rasteriser's storages: the shadow rays' (voxels) and a face source's lookup (any
 /// storage it keeps as a pass of its own: voxels or heights).
 const LOOKUPS: Pick = Pick::Any(&[Pick::Providing(Cap::Voxels), Pick::Providing(Cap::Heights)]);
@@ -453,7 +456,7 @@ pub const CPU_RAYCAST: Builds = Builds {
 pub const CPU_RASTER: Builds = Builds {
     nodes: &[
         // Quads, or cubes drawn as their six faces, or boxes' and points' exposed faces.
-        Build::picking(Role::Geometry, Pick::Any(&[DRAWN_GEOMETRY, Pick::Named(&["boxes", "points"])]), impls::CPU_SCALAR).count(0, 1),
+        Build::picking(Role::Geometry, DRAWN, impls::CPU_SCALAR).count(0, 1),
         Build::one(Role::Visibility, &["faces", "quadtree", "cluster"], impls::CPU_SCALAR).count(0, 2),
         Build::picking(Role::Draw, Pick::Every, impls::CPU_SCALAR),
         Build::picking(Role::Storage, LOOKUPS, impls::CPU_SCALAR).count(0, 2),
@@ -583,7 +586,7 @@ pub const GPU_MESHING: Builds = Builds {
     nodes: &[
         Build::picking(
             Role::Geometry,
-            Pick::Any(&[DRAWN_GEOMETRY, RT_GEOMETRY]),
+            Pick::Any(&[DRAWN, RT_GEOMETRY]),
             impls::CPU_SCALAR,
         )
         .count(1, 2),
@@ -603,14 +606,14 @@ pub const GPU_MESHING: Builds = Builds {
             role: Role::Visibility,
             of: &[],
             port: "faces",
-            components: Pick::Any(&[Pick::Named(&["faces"]), DRAWN_GEOMETRY]),
+            components: Pick::Any(&[Pick::Named(&["faces"]), DRAWN]),
             bound: true,
         },
         Only {
             role: Role::Draw,
             of: &[],
             port: "faces",
-            components: Pick::Any(&[Pick::Named(&["faces"]), DRAWN_GEOMETRY]),
+            components: Pick::Any(&[Pick::Named(&["faces"]), DRAWN]),
             bound: true,
         },
         Only {

@@ -791,11 +791,8 @@ fn mesh_fn(name: &str) -> MeshFn {
     match name {
         // Cube instances drawn as their six faces.
         "cubes" => |c, n, slot, k| cube_faces(&mr_components::geometry::cubes::mesh(c, n, slot, k.cull)),
-        // A box (an occupied 4^3 brick) or a point (a block with an exposed face) drawn as
-        // the exposed block faces it stands for: those the ray queries' search inside a box
-        // finds, a point's own; one quad each, as `naive` with culling meshes them.
-        "boxes" | "points" => |c, n, slot, _| mr_components::geometry::naive::mesh(c, n, slot, true),
-        _ => mr_components::geometry::gpu(name).expect("validated").mesh,
+        // Boxes and points as the exposed block faces they stand for.
+        _ => mr_components::geometry::drawn(name).expect("validated").mesh,
     }
 }
 

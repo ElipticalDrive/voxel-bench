@@ -825,7 +825,8 @@ mod tests {
                         (GpuWalk, Role::Meshes) => c == "composite",
                         (GpuMeshing, Role::Meshes) => c == "depth",
                         (GpuMeshing | GpuSampler, Role::Storage) => storage::gpu(c).is_some(),
-                        (GpuMeshing, Role::Geometry) => geometry::gpu(c).is_some(),
+                        // Boxes and points as their exposed faces (`geometry::drawn`).
+                        (GpuMeshing, Role::Geometry) => geometry::drawn(c).is_some(),
                         (GpuMeshing, Role::Visibility) => c == "faces",
                         // Culling, or CPU discovery (`raster::Discover`).
                         (CpuRaster, Role::Visibility) => ["faces", "quadtree", "cluster"].contains(&c),
@@ -841,8 +842,8 @@ mod tests {
                         }
                         (CpuSampler, Role::Visibility) => ["quadtree", "cluster"].contains(&c),
                         (CpuSampler, Role::Traversal) => c == "refloor",
-                        // Boxes and points as their exposed faces (`raster::mesh_fn`).
-                        (CpuRaster, Role::Geometry) => geometry::gpu(c).is_some() || ["boxes", "points"].contains(&c),
+                        // Boxes and points as their exposed faces (`geometry::drawn`).
+                        (CpuRaster, Role::Geometry) => geometry::drawn(c).is_some(),
                         (CpuRaster, Role::Draw) => c == "raster",
                         (CpuRaster | CpuRaycast | CpuColumns, Role::Shading) => c == "direct",
                         (GpuRayQuery, Role::Geometry) => geometry::rt(c).is_some(),

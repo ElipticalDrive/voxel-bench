@@ -222,15 +222,15 @@ names (`multirenderer audit --refused` prints the table; the test
 
 | gap | reason | graphs (2026-11-27) | what is missing |
 |---|---|---|---|
-| no region of that shape | no region has the shape | 25 (33 before the CPU's unfused passes) | a GPU drawer fed straight by the geometry (no culling node), raycast over a face set |
-| no region of that shape | the shape is the other executor's | 7 | the visibility on one device kind, the drawer on the other (one more: discover-cpu with its drawer on the CPU, a CPU rasteriser's shape with a GPU shading, no region before) |
-| node outside the declarations | role not built | 5 | e.g. mesh records in the meshing region |
-| node outside the declarations | role on the other device kind | 10 | a kernel, a culling or a shading on the other device than its region's |
-| node outside the declarations | component not built | 12 (19) | e.g. the heightfield march in the GPU regions |
-| node outside the declarations | number of nodes of a role | 24 (37) | a second storage or no kernel in the GPU regions |
-| node outside the declarations | what a port reads | 9 (10) | an unbound shadow site in the GPU regions |
-| edge without a resource form | edge timing | 15 (41 before the CPU's `prev` edges, 32 before the GPU's held edges and late world changes) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, the meshing region's faces and draw list, a drawer's meshes); world changes late for some of a GPU executor's nodes and not others (one copy of the world); hits late behind a forward drawer (no records) |
-| edge without a resource form | device boundary | 6 (one graph moved here from timing) | a second GPU anywhere but at the split's hit records |
+| no region of that shape | no region has the shape | 1 (33 before the unfused passes) | GPU discovery drawn by the CPU rasteriser |
+| no region of that shape | the shape is the other executor's | 9 | the visibility on one device kind, the drawer on the other (cross-device graphs) |
+| node outside the declarations | role not built | 5 | mesh records beside ray queries or GPU discovery, holes beside CPU discovery |
+| node outside the declarations | role on the other device kind | 11 | a kernel, a culling or a shading on the other device than its region's |
+| node outside the declarations | component not built | 11 (19) | the heightfield march in the GPU ray caster, a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
+| node outside the declarations | number of nodes of a role | 6 (37) | no kernel or no storage in the GPU regions, a second heightmap for the GPU column march |
+| node outside the declarations | what a port reads | 7 (10) | an unbound shadow site in the GPU regions, faces splatted as points, ray queries into GPU discovery's set |
+| edge without a resource form | edge timing | 12 (41 before the CPU's `prev` edges) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, a drawer's meshes); world changes late for some of a GPU executor's nodes and not others (one copy of the world); hits late behind a forward drawer (no records) |
+| edge without a resource form | device boundary | 6 | a second GPU anywhere but at the split's hit records |
 
 **Edges timed `prev` on the GPU** (2026-11-27). An edge one GPU executor holds between two
 passes (its region's `Builds::crossings`, and on one GPU the shading's hits) may be timed
@@ -333,6 +333,13 @@ is refused now, the rest of the table is the GPU's and cross-device graphs):
 - a hits gate between GPU passes restores the block the records were cast from with their
   camera (lights and shadow lookups were a block off on a crossing frame), slices-gpu's hits
   through a late gate shaded deferred (the plane sweep has no `placement`).
+
+**Done: CPU discovery's exposure storage; boxes and points on the GPU rasteriser** (95 -> 68
+refused). CPU discovery's exposure tests read the storage bound to its `exposure` port, which
+may differ from the one its rays walk (`grid::Paired`: a runtime pair reads the exposure
+storage dynamically, a compiled pipeline pairs both statically). Boxes and points are drawn by
+the GPU rasteriser as the exposed block faces each stands for, as the CPU rasteriser draws them
+(`geometry::drawn`: naive's culled quads, the same image).
 
 ## Migration
 

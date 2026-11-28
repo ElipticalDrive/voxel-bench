@@ -282,3 +282,16 @@ fn gpu_drawn_discovery_exposure_in_another_storage() {
         check("discover-cpu", "", &two, BOTH);
     }
 }
+
+/// GPU: boxes and points drawn by the GPU rasteriser as the exposed block faces each stands
+/// for (naive's culled quads, the same image), through the culling and straight.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_raster_draws_boxes_and_points_as_their_faces() {
+    let plain = r#"{ node = "geometry", component = "naive" }"#;
+    let straight = r#"{ node = "draw", input = "faces", from = "geometry" }, { remove = "visibility" }"#;
+    for c in ["boxes", "points"] {
+        check("raster-gpu", plain, &format!(r#"{{ node = "geometry", component = "{c}" }}"#), BOTH);
+        check("raster-gpu", &format!("{plain}, {straight}"), &format!(r#"{{ node = "geometry", component = "{c}" }}, {straight}"#), BOTH);
+    }
+}

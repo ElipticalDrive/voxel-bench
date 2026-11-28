@@ -67,6 +67,16 @@ pub fn rt(name: &str) -> Option<(&'static str, RtKind)> {
     })
 }
 
+/// The geometry a drawer draws for `name`: its own ([`gpu`]), or for boxes and points the
+/// exposed block faces each stands for (a box's: those the ray queries' search inside the
+/// box finds; a point's own), one quad each, as `naive` with culling meshes them.
+pub fn drawn(name: &str) -> Option<GpuGeometry> {
+    match name {
+        "boxes" | "points" => Some(GpuGeometry { mesh: |c, n, slot, _| naive::mesh(c, n, slot, true), ..gpu("naive")? }),
+        _ => gpu(name),
+    }
+}
+
 /// Implementation details a raster back end needs for a geometry.
 pub struct GpuGeometry {
     pub wgsl: &'static str,
