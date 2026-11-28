@@ -599,8 +599,9 @@ pub const GPU_MESHING: Builds = Builds {
         Build::one(Role::Visibility, &["faces"], impls::GPU_RASTER).count(0, 2),
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
         Build::providing(Role::Meshes, Cap::FaceDepth, impls::GPU_RASTER).count(0, 1),
-        // The walks' storages, or none (every ray a ray query).
-        Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(0, 3),
+        // The walks' storages, or none (every ray a ray query), and the face source's lookup
+        // (a voxel storage, or a heightmap: a pass of its own, read by nothing).
+        Build::picking(Role::Storage, LOOKUPS, impls::GPU_DRAWN).count(0, 3),
         // The walks or ray queries, or none (no shadow rays: the shading's `shadow` unbound).
         Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(0, 3),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
@@ -621,18 +622,19 @@ pub const GPU_MESHING: Builds = Builds {
             components: Pick::Any(&[Pick::Named(&["faces"]), DRAWN]),
             bound: true,
         },
+        // The meshes' shadow rays walked or ray-queried (the shading's services).
         Only {
             role: Role::Meshes,
             of: &[],
             port: "shadow",
-            components: WALKS,
+            components: GPU_KERNELS,
             bound: false,
         },
         Only {
             role: Role::Visibility,
             of: &[],
             port: "storage",
-            components: Pick::Providing(Cap::Voxels),
+            components: LOOKUPS,
             bound: false,
         },
         // Shadow rays walked or ray-queried (into the drawn geometry's acceleration structure),
@@ -827,12 +829,15 @@ pub const GPU_SLICES: Builds = Builds {
 };
 
 /// Voxel Space on the GPU (`columns-gpu`): the heightmap, its own ray march (the shadow and
-/// bounce rays), the column march, the shading. Or, in the column march's place, the ray
+/// bounce rays; over another heightmap node, a GPU copy of its own), the column march, the
+/// shading. Or, in the column march's place, the ray
 /// caster over the heightmap's march (one ray per pixel through the `heightfield` kernel bound
 /// to its `primary` port).
 pub const GPU_COLUMNS: Builds = Builds {
     nodes: &[
-        Build::providing(Role::Storage, Cap::Heights, impls::GPU_COMPUTE),
+        // The march's heightmap and the one the shadow rays walk (the same or another: a GPU
+        // copy each).
+        Build::providing(Role::Storage, Cap::Heights, impls::GPU_COMPUTE).count(1, 2),
         // The heightmap's march (shadow and bounce rays, a ray caster's primary rays), or none
         // (the column march with no shadow rays: the shading's `shadow` unbound).
         Build::picking(Role::Traversal, MARCHES, impls::GPU_COMPUTE).count(0, 1),
