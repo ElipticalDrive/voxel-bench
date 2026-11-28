@@ -402,20 +402,21 @@ const RT: Only = Only {
     components: RT_GEOMETRY,
     bound: false,
 };
-/// The shading's shadow rays, walked (`bound`: the executor casts no rays of its own there).
+/// The shading's shadow rays, walked, or none (unbound: no shadow rays).
 const SHADOW_WALKED: Only = Only {
     role: Role::Shading,
     of: &[],
     port: "shadow",
     components: WALKS,
-    bound: true,
+    bound: false,
 };
-const SHADOW_BOUND: Only = Only {
+/// The shading's shadow rays, walked or ray-queried, or none (unbound: no shadow rays).
+const SHADOW_ANY: Only = Only {
     role: Role::Shading,
     of: &[],
     port: "shadow",
     components: GPU_KERNELS,
-    bound: true,
+    bound: false,
 };
 
 /// `raycast-cpu`: one storage (one monomorphised instance; the shadow rays walk it too),
@@ -600,7 +601,8 @@ pub const GPU_MESHING: Builds = Builds {
         Build::providing(Role::Meshes, Cap::FaceDepth, impls::GPU_RASTER).count(0, 1),
         // The walks' storages, or none (every ray a ray query).
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(0, 3),
-        Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 3),
+        // The walks or ray queries, or none (no shadow rays: the shading's `shadow` unbound).
+        Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(0, 3),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
     ],
     same: &[],
@@ -633,8 +635,9 @@ pub const GPU_MESHING: Builds = Builds {
             components: Pick::Providing(Cap::Voxels),
             bound: false,
         },
-        // Shadow rays walked or ray-queried (into the drawn geometry's acceleration structure).
-        SHADOW_BOUND,
+        // Shadow rays walked or ray-queried (into the drawn geometry's acceleration structure),
+        // or none.
+        SHADOW_ANY,
         RT,
     ],
     // Hits a frame late, and the faces a frame late: the geometry's chunks (uploaded a frame
@@ -694,7 +697,7 @@ pub const GPU_SAMPLER: Builds = Builds {
             components: WALKS,
             bound: true,
         },
-        SHADOW_BOUND,
+        SHADOW_ANY,
         RT,
     ],
     // Hole detection closes a cycle through the drawer, which draws twice a frame, and reads
@@ -731,7 +734,8 @@ pub const CPU_SAMPLER: Builds = Builds {
         ),
         Build::picking(Role::Draw, Pick::Every, impls::GPU_RASTER),
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(0, 2),
-        Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(1, 2),
+        // The shading's walks or ray queries, or none (no shadow rays: `shadow` unbound).
+        Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_DRAWN).count(0, 2),
         Build::picking(Role::Geometry, RT_GEOMETRY, impls::CPU_SCALAR).count(0, 1),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_DRAWN),
     ],
@@ -751,7 +755,7 @@ pub const CPU_SAMPLER: Builds = Builds {
             components: Pick::Providing(Cap::Voxels),
             bound: true,
         },
-        SHADOW_BOUND,
+        SHADOW_ANY,
         RT,
     ],
     // Discovery a frame ahead of the drawer, or within its frame.
@@ -773,8 +777,9 @@ pub const GPU_SPLAT: Builds = Builds {
         )
         .count(1, 2),
         Build::one(Role::Visibility, &["splat"], impls::GPU_COMPUTE),
-        Build::providing(Role::Storage, Cap::Voxels, impls::GPU_COMPUTE).count(1, 2),
-        Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_COMPUTE).count(1, 2),
+        // The shadow rays' walk (and the bounces'), or none (no shadow rays).
+        Build::providing(Role::Storage, Cap::Voxels, impls::GPU_COMPUTE).count(0, 2),
+        Build::picking(Role::Traversal, GPU_KERNELS, impls::GPU_COMPUTE).count(0, 2),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_COMPUTE),
     ],
     same: &[],
@@ -801,7 +806,8 @@ pub const GPU_SLICES: Builds = Builds {
     nodes: &[
         Build::providing(Role::Storage, Cap::Voxels, impls::GPU_DRAWN).count(1, 2),
         Build::one(Role::Visibility, &["slices"], impls::GPU_RASTER),
-        Build::picking(Role::Traversal, WALKS, impls::GPU_DRAWN).count(1, 2),
+        // The shadow rays' walk (and the bounces'), or none (no shadow rays).
+        Build::picking(Role::Traversal, WALKS, impls::GPU_DRAWN).count(0, 2),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_COMPUTE),
     ],
     same: &[],
@@ -827,7 +833,9 @@ pub const GPU_SLICES: Builds = Builds {
 pub const GPU_COLUMNS: Builds = Builds {
     nodes: &[
         Build::providing(Role::Storage, Cap::Heights, impls::GPU_COMPUTE),
-        Build::picking(Role::Traversal, MARCHES, impls::GPU_COMPUTE),
+        // The heightmap's march (shadow and bounce rays, a ray caster's primary rays), or none
+        // (the column march with no shadow rays: the shading's `shadow` unbound).
+        Build::picking(Role::Traversal, MARCHES, impls::GPU_COMPUTE).count(0, 1),
         Build::one(Role::Visibility, &["columns", "raycast"], impls::GPU_COMPUTE),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_COMPUTE),
     ],

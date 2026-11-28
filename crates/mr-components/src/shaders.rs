@@ -98,6 +98,22 @@ pub fn rays(p: &mut Program, path: &str, kernel: &str) {
     );
 }
 
+/// The ray services `path` of a shading without a shadow site (its `shadow` port unbound): no
+/// shadow rays (nothing occludes, all light passes) and no bounces (every bounce escapes), as
+/// on the CPU. Constants, so the lighting's ray code compiles away.
+pub fn no_rays(p: &mut Program, path: &str, occluded: bool, strace: bool) {
+    let mut src = String::new();
+    if occluded {
+        src += "fn occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool { return false; }\n\
+                #ifdef LAYERS\nfn transmit(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> f32 { return 1.0; }\n#endif\n";
+    }
+    if strace {
+        src += "fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit { var h: Hit; return h; }\n\
+                fn btrace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Bounced { var b: Bounced; return b; }\n";
+    }
+    p.add(path, src, &[VOXELS]);
+}
+
 /// A walk kernel's `vox_transmit` (the shadow rays' light through see-through blocks, the
 /// reference's `transmittance`; compiled only with `LAYERS`): the layer walk from `p`, each
 /// see-through surface (entry and exit faces) letting `1 - coverage` through, an opaque
@@ -193,6 +209,10 @@ fn node_path(kind: &str, id: &str) -> String {
 }
 
 impl Walks {
+    /// The "kernel" of a site that casts no rays (a shading's unbound `shadow` port):
+    /// [`Self::services`] gives it [`no_rays`].
+    pub const NO_RAYS: usize = usize::MAX;
+
     /// No walks yet, for graph `ck` (its post node's tone mapper).
     pub fn of(ck: &Checked) -> Self {
         Self {
@@ -302,6 +322,9 @@ impl Walks {
     ) {
         const OCCLUDED: &str = "fn vox_occluded(p: vec3<f32>, d: vec3<f32>, max_t: f32) -> bool";
         const STRACE: &str = "fn strace(o: vec3<f32>, d: vec3<f32>, max_t: f32) -> Hit";
+        if k == Self::NO_RAYS {
+            return no_rays(p, path, occluded, strace);
+        }
         let mut src = String::new();
         let kernel = self.kernel_path(k);
         let mut deps = vec![VOXELS];

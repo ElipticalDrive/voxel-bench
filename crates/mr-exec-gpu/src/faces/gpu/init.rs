@@ -42,7 +42,8 @@ impl GpuSampler {
         let bound = |role, port: &str| g.site(role, port).ok_or_else(|| anyhow::anyhow!("`{port}` rays are not bound"));
         let rays = walks.site(g, bound(Role::Visibility, "rays")?, STORAGE_GROUPS, false);
         let exposure = walks.storage(g, g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("exposure is not bound"))?, STORAGE_GROUPS);
-        let shadow = walks.site(g, bound(Role::Shading, "shadow")?, STORAGE_GROUPS, false);
+        // No shadow site: no shadow rays.
+        let shadow = g.site(Role::Shading, "shadow").map_or(Walks::NO_RAYS, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         // Meshes drawn into the drawer's depth, lit through their shadow site's walk.
         let meshes = g.find(Role::Meshes).is_some();

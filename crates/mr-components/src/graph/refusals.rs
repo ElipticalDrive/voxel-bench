@@ -244,8 +244,10 @@ mod tests {
             // (user, 2026-11-28): 11 -> 8.
             (Why::Component, 8),
             // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
-            // on the GPU drawer): 23 -> 6.
-            (Why::Count, 6),
+            // on the GPU drawer): 23 -> 6. GPU shadings without a shadow site (no shadow rays,
+            // as on the CPU; 2026-11-28): 6 -> 1 (the splat without a storage then refused by
+            // its port, as the walk-shadowed one: port stays 7).
+            (Why::Count, 1),
             (Why::Port, 7),
             // The world's changes timed per copy of the world on the GPU executor (2026-11-27:
             // the geometry its own copy, the CPU storages theirs): 12 -> 6.

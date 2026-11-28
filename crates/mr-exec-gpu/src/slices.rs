@@ -185,7 +185,8 @@ fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::
     let mut walks = Walks::of(g);
     let looked_up = g.input(Role::Visibility, "storage").ok_or_else(|| anyhow::anyhow!("slices-gpu: the visibility node's storage is not bound"))?;
     let st = walks.storage(g, looked_up, &[2, 3]);
-    let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("slices-gpu: shadow rays are not bound"))?, &[2, 3], false);
+    // No shadow site: no shadow rays.
+    let shadow = g.site(Role::Shading, "shadow").map_or(Walks::NO_RAYS, |s| walks.site(g, s, &[2, 3], false));
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3], false));
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
     let root = format!("{}\n{}\n{shade}\n{}", slices::GPU_WGSL, ShadeState::wgsl(0, crate::STATE_BINDING), mr_components::shading::DEFERRED_PACKED_WGSL);

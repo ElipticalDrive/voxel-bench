@@ -390,11 +390,12 @@ fn bind0(core: &Core, layout: &wgpu::BindGroupLayout, pts: &PointPages, z: &wgpu
 /// shading component and the common deferred pass (the resolve) as the root.
 fn program(g: &graph::Checked, shading: &str) -> anyhow::Result<(Walks, mr_gpu::program::Program, String, Vec<String>)> {
     let mut walks = Walks::of(g);
-    let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("splat-gpu: shadow rays are not bound"))?, &[2, 3, 4], false);
+    // No shadow site: no shadow rays.
+    let shadow = g.site(Role::Shading, "shadow").map_or(Walks::NO_RAYS, |s| walks.site(g, s, &[2, 3, 4], false));
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, &[2, 3, 4], false));
     let shade = mr_components::shading::gpu_wgsl(shading).expect("validated");
     let own = format!("{}\n{}\n{shade}\n{}", splat::gpu_wgsl(), ShadeState::wgsl(0, crate::STATE_BINDING), mr_components::shading::DEFERRED_WGSL);
-    let (program, deps) = mr_components::shaders::sites_program(&walks, None, 0, bounce);
+    let (program, deps) = mr_components::shaders::sites_program(&walks, None, shadow, bounce);
     Ok((walks, program, own, deps))
 }
 

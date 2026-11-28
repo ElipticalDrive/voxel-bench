@@ -302,7 +302,8 @@ impl CpuSampler {
         opts.pipelined = faces.when == mr_components::graph::When::Prev;
         // The GPU sites' walks: shadow rays (the shadow stages), bounces their own or the same.
         let mut walks = Walks::of(g);
-        let shadow = walks.site(g, g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("GPU shadow rays are not bound"))?, STORAGE_GROUPS, false);
+        // No shadow site: no shadow rays.
+        let shadow = g.site(Role::Shading, "shadow").map_or(Walks::NO_RAYS, |s| walks.site(g, s, STORAGE_GROUPS, false));
         let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
         walks.set_max_steps(opts.max_steps);
         let o = CoreOpts { shading: &shading, draw: &draw, shadows: k.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };

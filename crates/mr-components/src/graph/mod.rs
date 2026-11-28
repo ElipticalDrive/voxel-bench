@@ -1269,16 +1269,14 @@ mod tests {
     }
 
     #[test]
-    fn cpu_discover_needs_shadow_rays() {
-        // discover-cpu without GPU shadow rays cannot shade lit.
+    fn cpu_discover_without_shadow_rays() {
+        // discover-cpu without GPU shadow rays shades lit without them (as the CPU does);
+        // the CPU discovery rays' kernel is no shadow site for the GPU shading.
         let mut g = file("discover-cpu");
         g.nodes.get_mut("shading").unwrap().inputs.remove("shadow");
         g.nodes.retain(|k, _| !k.starts_with("shadow."));
-        let e = g.validate().unwrap_err();
-        assert!(
-            e.contains("builds at least 1 traversal node on gpu (here: none)"),
-            "{e}"
-        );
+        g.validate().unwrap();
+        assert!(g.check().unwrap().site(Role::Shading, "shadow").is_none());
     }
 
     /// Edge timings. Hole detection is a loop through the drawer (it draws last

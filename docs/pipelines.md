@@ -33,7 +33,10 @@ only: gaps not filled yet, and those refused on a kind by their nature (`REFUSED
 Every place where rays are cast picks its own traversal and storage: primary rays,
 discovery rays, shadow rays, bounce rays and mesh shadows. These sites can share a node or
 use different ones. For example, shadow rays can walk a `distance` storage with `sphere`
-while primary rays walk `prefix` with `incremental`.
+while primary rays walk `prefix` with `incremental`. An unbound shadow site follows the
+strategy's own rays where it casts any (the primary or discovery rays' kernel); where it casts
+none (columns, rasterisation, splatting, plane sweeping, CPU discovery's drawer) the shading
+lights without shadow rays and bounces.
 
 Each node also has:
 - a **device**: a slot of the run's device configuration (`cpu`, `gpu`, `gpu1`, ...);

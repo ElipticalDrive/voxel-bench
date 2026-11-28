@@ -220,15 +220,15 @@ an edge timed `prev`) and keeps those `accept` refuses, grouped by the reason it
 names (`multirenderer audit --refused` prints the table; the test
 `valid_graphs_refused_only_go_down` pins each count, which may only fall).
 
-| gap | reason | graphs (2026-11-27) | what is missing |
+| gap | reason | graphs (2026-11-28) | what is missing |
 |---|---|---|---|
 | no region of that shape | no region has the shape | 1 (33 before the unfused passes) | GPU discovery drawn by the CPU rasteriser |
 | no region of that shape | the shape is the other executor's | 9 | the visibility on one device kind, the drawer on the other (cross-device graphs) |
-| node outside the declarations | role not built | 3 (5) | meshes beside GPU discovery, holes beside CPU discovery |
+| node outside the declarations | role not built | 1 (5) | holes (GPU) beside CPU discovery |
 | node outside the declarations | role on the other device kind | 11 | a kernel, a culling or a shading on the other device than its region's |
 | node outside the declarations | component not built | 8 (19) | a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
-| node outside the declarations | number of nodes of a role | 6 (37) | no kernel or no storage in the GPU regions, a second heightmap for the GPU column march |
-| node outside the declarations | what a port reads | 7 (10) | an unbound shadow site in the GPU regions, faces splatted as points, ray queries into GPU discovery's set |
+| node outside the declarations | number of nodes of a role | 1 (37) | a second heightmap for the GPU column march |
+| node outside the declarations | what a port reads | 7 (10) | faces splatted as points, ray queries into GPU discovery's set, ray-queried mesh shadows |
 | edge without a resource form | edge timing | 6 (41 before the CPU's `prev` edges) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, a drawer's meshes); hits late behind a forward drawer (no records) |
 | edge without a resource form | device boundary | 6 | a second GPU anywhere but at the split's hit records |
 
@@ -297,7 +297,8 @@ shipped graph where the image is the same):
   storage bound there is the one pass);
 - cubes (`Cap::Cubes`) are drawn as their six unit faces (the depth test leaves the exposed
   ones: pixel-equal to greedy's quads);
-- a shading without a shadow site lights without shadow rays (raster and columns);
+- a shading without a shadow site lights without shadow rays (raster and columns; on the GPU
+  too since 2026-11-28);
 - the column march's shadow rays walk a heightmap of their own (the march's storage and
   the shadow site's are a pass each; the deferred shading decodes its records against the
   march's).
@@ -352,6 +353,15 @@ GPU ray caster whose primary rays are the `heightfield` kernel is the column-mar
 the heightmap's `hm_trace`, the surface the march gives the same column, shaded inline or
 written as records for the common deferred pass. Its frames score as the CPU caster's against
 the reference (`tests/unfused.rs`).
+
+**Done: GPU shadings without a shadow site** (55 -> 50 refused). Where the strategy casts no
+rays of its own for the shading to follow (`check`'s rule: an unbound `shadow` port takes the
+strategy's lead kernel where there is one), a shading whose `shadow` port is unbound lights
+without shadow rays and bounces, as on the CPU: the column march, the plane sweep, point
+splatting, the rasteriser and CPU discovery's GPU drawer compile `shaders::no_rays` (constant
+`occluded`, `strace`, `btrace`, `transmit`: the lighting's ray code compiles away) in place of
+a walk's services (`Walks::NO_RAYS`); their kernel and storage nodes may then be absent. Each
+frame is the shipped graph's with `shadows = "none"`, lit too (`tests/unfused.rs`).
 
 ## Migration
 

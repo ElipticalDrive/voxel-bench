@@ -169,8 +169,8 @@ const STORAGE_GROUPS: &[u32] = &[2, 4, 5];
 /// the indices of (shadow, bounce, mesh shadow).
 fn walks(g: &Checked) -> anyhow::Result<(Walks, usize, usize, usize)> {
     let mut walks = Walks::of(g);
-    let shadow = g.site(Role::Shading, "shadow").ok_or_else(|| anyhow::anyhow!("shadow rays are not bound"))?;
-    let shadow = walks.site(g, shadow, STORAGE_GROUPS, false);
+    // No shadow site: no shadow rays (the meshes' own site, if bound, still shadows them).
+    let shadow = g.site(Role::Shading, "shadow").map_or(Walks::NO_RAYS, |s| walks.site(g, s, STORAGE_GROUPS, false));
     let bounce = g.site(Role::Shading, "bounce").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
     let mesh_shadow = g.site(Role::Meshes, "shadow").map_or(shadow, |s| walks.site(g, s, STORAGE_GROUPS, false));
     Ok((walks, shadow, bounce, mesh_shadow))
@@ -446,7 +446,7 @@ impl Meshing {
             anyhow::bail!("merge = exposure: the visibility node's storage is not bound (the merged faces' blocks are looked up there)");
         }
         walks.set_max_steps(opts.max_steps);
-        tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages.first().map_or("none", |s| s.component.as_str()), walks.kernels[0].component, walks.kernels.len());
+        tracing::info!("raster-gpu: storage {}, geometry {geometry}, draw {draw}, traversal {}, shading {shading}, {} walks", walks.storages.first().map_or("none", |s| s.component.as_str()), walks.kernels.first().map_or("none", |k| k.component.as_str()), walks.kernels.len());
         let o = CoreOpts { shading: &shading, draw: &draw, shadows: sk.shadows, max_steps: opts.max_steps, pool_mb: opts.pool_mb, frames_in_flight: opts.frames_in_flight };
         let meshes = meshes_node != "none";
         let (core, drawing, far) = super::new(

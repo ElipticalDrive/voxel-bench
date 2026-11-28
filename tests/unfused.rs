@@ -437,3 +437,35 @@ fn gpu_discovery_with_meshes() {
         assert!(!p.is_empty() && p == q, "composite {mode}: the frames differ from depth's");
     }
 }
+
+/// GPU: shadings without a shadow site (the `shadow` port unbound: no shadow rays, as on the
+/// CPU) in the column march, the plane sweep, point splatting, the rasteriser (its meshes'
+/// own shadow site kept, then none at all) and CPU discovery's GPU drawer: each frame the
+/// shipped graph's with shadow rays switched off (`shadows = "none"`), lit too. Needs a GPU
+/// (`--ignored`).
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_shading_without_a_shadow_site() {
+    const NONE: &str = r#"{ node = "shading", knobs = { shadows = "none" } }"#;
+    let unbound = r#"{ node = "shading", unbind = "shadow" }"#;
+    let walk = format!("{unbound}, {{ remove = \"kernel\" }}, {{ remove = \"storage\" }}");
+    for (graph, edits) in [
+        ("columns-gpu", format!("{unbound}, {{ remove = \"kernel\" }}")),
+        ("slices-gpu", format!("{unbound}, {{ remove = \"kernel\" }}")),
+        ("splat-gpu", walk.clone()),
+        ("raster-gpu", unbound.to_string()),
+        ("raster-gpu", format!("{{ remove = \"meshes\" }}, {walk}")),
+        ("discover-cpu", format!("{unbound}, {{ remove = \"shadow.kernel\" }}, {{ remove = \"shadow.storage\" }}")),
+    ] {
+        let plain = if edits.contains("meshes") { format!("{{ remove = \"meshes\" }}, {NONE}") } else { NONE.to_string() };
+        check(graph, &plain, &edits, BOTH);
+        if graph == "columns-gpu" {
+            // One knobs table (an edit's `knobs` replaces the node's).
+            let both = r#"{ node = "shading", knobs = { shadows = "none", placement = "deferred" } }"#;
+            check(graph, both, &format!("{edits}, {DEFERRED}"), BOTH);
+        }
+    }
+    // Where the strategy casts rays of its own, an unbound `shadow` follows them (GPU
+    // discovery's rays' walk): the shipped graph.
+    check("discover-gpu", "", unbound, BOTH);
+}
