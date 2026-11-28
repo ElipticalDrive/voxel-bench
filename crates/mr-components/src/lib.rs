@@ -680,22 +680,24 @@ pub const COMPONENTS: &[ComponentInfo] = &[
     ComponentInfo {
         role: Role::Meshes,
         name: "composite",
-        description: "Meshes as a surface source: their hit records (the record's mesh capability) rasterised first into a record and depth target; each primary ray is cast only up to the mesh hit's distance at its pixel (the record's), and where no voxel is nearer the pixel's surface is the mesh's, shaded where the walk shades (inline, or the deferred pass; voxel shadows in lit mode). Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshRecords).",
+        description: "Meshes as a surface source: their hit records (the record's mesh capability) rasterised first into a record and depth target; each primary ray is cast only up to the mesh hit's distance at its pixel (the record's), and where no voxel is nearer the pixel's surface is the mesh's, shaded where the walk shades (inline, or the deferred pass; voxel shadows in lit mode). Exact for primary visibility; capped rays trace less (mr_gpu::meshes::MeshRecords). In a rasteriser it is `depth` (the same image: there the faces' depth buffer is the mesh depth rays would stop at).",
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: &[Api::Raster],
-            provides: &[Cap::RayLimit],
+            // An alias of `depth` where a drawer draws it (the same image; user, 2026-11-28).
+            provides: &[Cap::RayLimit, Cap::FaceDepth],
         }],
         needs: &[],
     },
     ComponentInfo {
         role: Role::Meshes,
         name: "depth",
-        description: "Meshes drawn into the same depth buffer as the voxel faces: shaded forward with `raster`, written into the ids or records with `visibility` / `gbuffer` and shaded by the deferred pass (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes).",
+        description: "Meshes drawn into the same depth buffer as the voxel faces: shaded forward with `raster`, written into the ids or records with `visibility` / `gbuffer` and shaded by the deferred pass (voxels shadow meshes). Exact (mr_gpu::meshes::GpuMeshes). In a ray caster it is `composite` (the same image: a ray caster has no face depth buffer, so the meshes' own depth stops its rays).",
         impls: &[Impl {
             kind: Kind::Gpu,
             apis: &[Api::Raster],
-            provides: &[Cap::FaceDepth],
+            // An alias of `composite` where a ray caster draws it (the same image; user, 2026-11-28).
+            provides: &[Cap::FaceDepth, Cap::RayLimit],
         }],
         needs: &[],
     },
@@ -822,8 +824,8 @@ mod tests {
                             traversal::gpu_wgsl(c).is_some()
                         }
                         (GpuWalk, Role::Prepass) => prepass::gpu_wgsl(c).is_some(),
-                        (GpuWalk | GpuRayQuery, Role::Meshes) => c == "composite",
-                        (GpuMeshing, Role::Meshes) => c == "depth",
+                        // Each an alias of the other where the region draws it (the same image).
+                        (GpuWalk | GpuRayQuery | GpuMeshing, Role::Meshes) => ["composite", "depth"].contains(&c),
                         (GpuMeshing | GpuSampler, Role::Storage) => storage::gpu(c).is_some(),
                         // Boxes and points as their exposed faces (`geometry::drawn`).
                         (GpuMeshing, Role::Geometry) => geometry::drawn(c).is_some(),

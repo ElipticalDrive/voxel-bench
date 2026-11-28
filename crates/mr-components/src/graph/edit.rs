@@ -968,10 +968,13 @@ mod tests {
             replaced,
             [
                 "raycast-gpu.kernel",
+                // `composite` <-> `depth`, one another's alias (the same image).
+                "raycast-gpu.meshes",
                 "raycast-gpu.shading",
                 "rayquery-gpu.shading",
                 "raster-gpu.draw",
                 "raster-gpu.geometry",
+                "raster-gpu.meshes",
                 "raster-gpu.shading",
                 "raster-cpu.geometry",
                 "discover-gpu.draw",

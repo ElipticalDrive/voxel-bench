@@ -361,3 +361,30 @@ fn gpu_rayquery_with_meshes() {
         }
     }
 }
+
+/// GPU: `composite` and `depth` are one another's alias where a region draws the other (user,
+/// 2026-11-28: the same image, so accepted): a ray caster's meshes named `depth`, a drawer's
+/// named `composite`, each pixel-equal to the name the region draws by.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_meshes_aliases_draw_the_same() {
+    const MODES: &str = r#"["unlit+meshes", "lit+meshes"]"#;
+    let rq = r#"{ add = "meshes", role = "meshes", component = "composite" }, { node = "visibility", input = "meshes", from = "meshes" }"#;
+    let cases = [
+        ("raycast-gpu", String::new(), r#"{ node = "meshes", component = "depth" }"#.to_string()),
+        ("rayquery-gpu", rq.to_string(), rq.replace("composite", "depth")),
+        ("raster-gpu", String::new(), r#"{ node = "meshes", component = "composite" }"#.to_string()),
+        ("raster-gpu", r#"{ node = "draw", component = "gbuffer" }"#.to_string(), r#"{ node = "draw", component = "gbuffer" }, { node = "meshes", component = "composite" }"#.to_string()),
+    ];
+    for (i, (graph, plain, alias)) in cases.iter().enumerate() {
+        let (a, b) = (format!("alias-{i}-plain"), format!("alias-{i}"));
+        let (ok, log) = launch_in(&a, graph, plain, MESH_ROOM, MODES);
+        assert!(ok, "{graph} [{plain}]: {log}");
+        let (ok, log) = launch_in(&b, graph, alias, MESH_ROOM, MODES);
+        assert!(ok, "{graph} [{alias}] does not run: {log}");
+        for mode in ["unlit+meshes", "lit+meshes"] {
+            let (p, q) = (images(&a, mode), images(&b, mode));
+            assert!(!p.is_empty() && p == q, "{graph} [{alias}] {mode}: the frames differ from [{plain}]'s ({} and {} saved)", p.len(), q.len());
+        }
+    }
+}

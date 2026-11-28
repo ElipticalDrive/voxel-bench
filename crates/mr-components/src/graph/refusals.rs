@@ -239,7 +239,9 @@ mod tests {
             // component 17 -> 11, port 11 -> 7. The ray-query caster with `depth` meshes
             // (2026-11-28) is refused by its component as the walk's is (+1); the GPU ray
             // caster over a heightmap's march (the columns region's, 2026-11-28: -1): 11.
-            (Why::Component, 11),
+            // `composite` and `depth` one another's alias where a region draws the other
+            // (user, 2026-11-28): 11 -> 8.
+            (Why::Component, 8),
             // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
             // on the GPU drawer): 23 -> 6.
             (Why::Count, 6),

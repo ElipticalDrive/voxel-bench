@@ -350,7 +350,9 @@ the triangles bound (raycast-gpu, rayquery-gpu, raster-gpu with a deferred drawe
 `gbuffer`; the triangles' BVH is rebuilt on the CPU when meshes move). raster-gpu's forward
 drawer (`raster`) does not yet; a pipeline is scored against the full model. Pipelines with a `meshes` node draw them: `depth` on the
 rasterisers (the same depth buffer) and `composite` on the GPU ray casters, walked or
-ray-queried (meshes are rasterised first, and primary rays stop at them). Pipelines without one are skipped in `+meshes` benchmark
+ray-queried (meshes are rasterised first, and primary rays stop at them). Each name is accepted
+where the other is drawn, as its alias (the same image): `depth` on a ray caster draws as
+`composite`, `composite` on a rasteriser as `depth`. Pipelines without one are skipped in `+meshes` benchmark
 passes, and the GUI labels them "(no meshes)".
 
 ## Devices
