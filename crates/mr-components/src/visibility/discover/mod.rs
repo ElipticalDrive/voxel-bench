@@ -131,6 +131,96 @@ pub struct Settings {
     pub tags: bool,
 }
 
+/// The discovery node's knobs (quadtree's and cluster's), read from the graph by every
+/// executor that runs discovery on the CPU.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(default)]
+pub struct Knobs {
+    pub seed_step: u32,
+    pub sky: String,
+    pub tile: u32,
+    pub criterion: String,
+    pub max_footprint: u32,
+    pub strict: bool,
+    pub occluders: u32,
+    pub jitter: bool,
+    pub dilate: u32,
+    pub dilate_below: u32,
+}
+
+impl Default for Knobs {
+    fn default() -> Self {
+        Self { seed_step: 16, sky: "corners".into(), tile: 32, criterion: "plane".into(), max_footprint: 4096, strict: true, occluders: 4, jitter: true, dilate: 2, dilate_below: 2 }
+    }
+}
+
+impl Knobs {
+    /// Sets knob `name`; `None` if it is not one.
+    pub fn set(&mut self, name: &str, value: &mr_core::ParamValue) -> Option<()> {
+        let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
+        match name {
+            "tile" => self.tile = int(32),
+            "seed_step" => self.seed_step = int(16),
+            "sky" => self.sky = value.as_str().unwrap_or("corners").to_string(),
+            "criterion" => self.criterion = value.as_str().unwrap_or("plane").to_string(),
+            "max_footprint" => self.max_footprint = int(4096),
+            "strict" => self.strict = value.as_bool().unwrap_or(true),
+            "occluders" => self.occluders = int(4),
+            "jitter" => self.jitter = value.as_bool().unwrap_or(true),
+            "dilate" => self.dilate = int(2),
+            "dilate_below" => self.dilate_below = int(2),
+            _ => return None,
+        }
+        Some(())
+    }
+
+    /// Discovery's settings for component `visibility` (`quadtree` or `cluster`) with the
+    /// executor's own choices.
+    pub fn settings(&self, visibility: &str, sky_tile: u32, keep_frames: u32, margin: f32, tags: bool) -> Settings {
+        Settings {
+            tile: self.tile.max(1),
+            face_criterion: self.criterion == "face",
+            sky_tile,
+            keep_frames,
+            max_footprint: self.max_footprint,
+            strict: self.strict,
+            jitter: self.jitter,
+            margin,
+            dilate: self.dilate,
+            dilate_below: self.dilate_below,
+            cluster: visibility == "cluster",
+            seed_step: self.seed_step,
+            sky_sparse: self.sky == "sparse",
+            occluders: self.occluders,
+            tags,
+        }
+    }
+}
+
+/// The discovery node's knobs as parameters (each scoped to the components that read it).
+pub fn params() -> Vec<mr_core::ParamSpec> {
+    use mr_core::ParamSpec;
+    vec![
+        ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
+        ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true).of("visibility", &["cluster"]),
+        ParamSpec::int("tile", "Initial quadtree tile size (px)", 2, 256, 32, true).of("visibility", &["quadtree"]),
+        ParamSpec::choice("criterion", "Tile coherence test: all corners on one face plane (then enumerate the plane's faces in the footprint) or on one face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
+        ParamSpec::int("max_footprint", "Max cells enumerated for one coherent tile (else split)", 1, 1 << 20, 4096, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("strict", "Plane criterion: every footprint cell must be an exposed face of that plane, else split (off: a window or a ledge inside a coherent tile is missed)", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("occluders", "Plane criterion: a footprint cell's face also needs this many cells toward the eye free of blocks, else split (0 off: a block floating just above a floor, between the corners' rays, is missed)", 0, 64, 4, true).of("visibility", &["quadtree"]),
+        ParamSpec::bool("jitter", "Shift the tile grid randomly every frame (temporal coverage: a block small enough to slip between one frame's corner rays is hit on another)", true, true).of("visibility", &["quadtree"]),
+        ParamSpec::int("dilate", "Fine-level samples add camera-facing exposed faces around the hit: 0 off, 1 the hit block's (closes edge cracks), 2 + its 6 neighbours, 3 3x3x3", 0, 3, 2, true).of("visibility", &["quadtree", "cluster"]),
+        ParamSpec::int("dilate_below", "Dilate samples traced at tile sizes (quadtree) or seed spacings (cluster) <= this (px)", 1, 256, 2, true).of("visibility", &["quadtree", "cluster"]),
+    ]
+}
+
+/// A drawn record's face: (absolute cell, face index, block), for records relative to
+/// `anchor` (the inverse of `record`).
+pub fn unpack_record(r: [u32; 2], anchor: IVec3) -> (IVec3, u32, u16) {
+    let rel = IVec3::new((r[0] & 0x7fff) as i32, ((r[1] >> 16) & 0x7fff) as i32, ((r[0] >> 15) & 0x7fff) as i32) - REC_BIAS;
+    (anchor + rel, (r[0] >> 30) & 3 | (r[1] >> 31) << 2, (r[1] & 0xffff) as u16)
+}
+
 #[derive(Copy, Clone, Default)]
 pub(crate) struct Sample {
     pub(crate) key: u64,

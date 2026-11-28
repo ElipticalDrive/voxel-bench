@@ -70,20 +70,10 @@ pub(crate) fn info() -> RendererInfo {
 }
 
 fn params() -> Vec<ParamSpec> {
-    vec![
-        ParamSpec::int("seed_step", "Cluster: coarsest seed lattice spacing (px, rounded to a power of two)", 1, 256, 16, true).of("visibility", &["cluster"]),
-        ParamSpec::choice("sky", "Cluster: corners = a lattice cell at spacing <= sky_tile is sky when all four corner seeds miss; sparse = one missed seed covers its cell (cheaper; thin things may take a few frames to appear)", &["corners", "sparse"], "corners", true).of("visibility", &["cluster"]),
+    mr_components::visibility::discover::params().into_iter().chain([
         view_knob(),
-        ParamSpec::int("tile", "Initial quadtree tile size (px)", 2, 256, 32, true).of("visibility", &["quadtree"]),
-        ParamSpec::choice("criterion", "Tile coherence test: all corners on one face plane (then enumerate the plane's faces in the footprint) or on one face", &["plane", "face"], "plane", true).of("visibility", &["quadtree"]),
         ParamSpec::int("sky_tile", "All-miss tiles at most this size (px) are accepted as sky", 1, 256, 8, true),
         ParamSpec::int("keep_frames", "Discovery passes a face stays in S without being re-confirmed", 1, 1000, 8, true),
-        ParamSpec::int("max_footprint", "Max cells enumerated for one coherent tile (else split)", 1, 1 << 20, 4096, true).of("visibility", &["quadtree"]),
-        ParamSpec::bool("strict", "Plane criterion: every footprint cell must be an exposed face of that plane, else split (off: a window or a ledge inside a coherent tile is missed)", true, true).of("visibility", &["quadtree"]),
-        ParamSpec::int("occluders", "Plane criterion: a footprint cell's face also needs this many cells toward the eye free of blocks, else split (0 off: a block floating just above a floor, between the corners' rays, is missed)", 0, 64, 4, true).of("visibility", &["quadtree"]),
-        ParamSpec::bool("jitter", "Shift the tile grid randomly every frame (temporal coverage: a block small enough to slip between one frame's corner rays is hit on another)", true, true).of("visibility", &["quadtree"]),
-        ParamSpec::int("dilate", "Fine-level samples add camera-facing exposed faces around the hit: 0 off, 1 the hit block's (closes edge cracks), 2 + its 6 neighbours, 3 3x3x3", 0, 3, 2, true).of("visibility", &["quadtree", "cluster"]),
-        ParamSpec::int("dilate_below", "Dilate samples traced at tile sizes (quadtree) or seed spacings (cluster) <= this (px)", 1, 256, 2, true).of("visibility", &["quadtree", "cluster"]),
         ParamSpec::bool("predict", "Discover from the camera extrapolated one frame ahead", true, true),
         ParamSpec::float("margin", "Widen the discovery FOV by this fraction", 0.0, 0.5, false, 0.0, true),
         ParamSpec::bool("pipelined", "Discover frame N+1 while the GPU renders frame N (false = synchronous, zero latency)", true, true),
@@ -94,8 +84,7 @@ fn params() -> Vec<ParamSpec> {
         ParamSpec::bool("depth_prepass", "Lit mode, draw = raster: depth pre-pass so lighting runs once per pixel", true, true),
         ParamSpec::int("pool_mb", "Voxel pool limit for shadow rays (MiB)", 64, 6144, 1536, false),
         ParamSpec::int("frames_in_flight", "GPU frames queued", 1, 8, 3, false),
-    ]
-    .into_iter()
+    ])
     .chain(shade_state::params())
     .collect()
 }
@@ -158,26 +147,7 @@ impl Default for Options {
 }
 
 /// The visibility node's knobs (quadtree's and cluster's).
-#[derive(Deserialize)]
-#[serde(default)]
-struct VisibilityKnobs {
-    seed_step: u32,
-    sky: String,
-    tile: u32,
-    criterion: String,
-    max_footprint: u32,
-    strict: bool,
-    occluders: u32,
-    jitter: bool,
-    dilate: u32,
-    dilate_below: u32,
-}
-
-impl Default for VisibilityKnobs {
-    fn default() -> Self {
-        Self { seed_step: 16, sky: "corners".into(), tile: 32, criterion: "plane".into(), max_footprint: 4096, strict: true, occluders: 4, jitter: true, dilate: 2, dilate_below: 2 }
-    }
-}
+use mr_components::visibility::discover::Knobs as VisibilityKnobs;
 
 /// The shading node's knobs.
 #[derive(Deserialize)]
@@ -472,42 +442,19 @@ impl CpuSampler {
 impl CpuSampler {
     /// Discovery's settings (`tags`: for the post's view).
     fn settings(&self, tags: bool) -> Settings {
-        let (o, v) = (&self.opts, &self.vis);
-        Settings {
-            tile: v.tile.max(1),
-            face_criterion: v.criterion == "face",
-            sky_tile: o.sky_tile.unwrap_or(8),
-            keep_frames: o.keep_frames,
-            max_footprint: v.max_footprint,
-            strict: v.strict,
-            jitter: v.jitter,
-            margin: o.margin,
-            dilate: v.dilate,
-            dilate_below: v.dilate_below,
-            cluster: self.visibility == "cluster",
-            seed_step: v.seed_step,
-            sky_sparse: v.sky == "sparse",
-            occluders: v.occluders,
-            tags,
-        }
+        let o = &self.opts;
+        self.vis.settings(&self.visibility, o.sky_tile.unwrap_or(8), o.keep_frames, o.margin, tags)
     }
 
     /// Its own knobs; `None` if `name` is not one.
     fn set_knob(&mut self, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        if self.vis.set(name, value).is_some() {
+            return Some(Ok(()));
+        }
         let int = |d: i64| value.as_i64().unwrap_or(d) as u32;
         match name {
-            "tile" => self.vis.tile = int(32),
-            "seed_step" => self.vis.seed_step = int(16),
-            "sky" => self.vis.sky = value.as_str().unwrap_or("corners").to_string(),
-            "criterion" => self.vis.criterion = value.as_str().unwrap_or("plane").to_string(),
             "sky_tile" => self.opts.sky_tile = Some(int(8)),
             "keep_frames" => self.opts.keep_frames = int(8),
-            "max_footprint" => self.vis.max_footprint = int(4096),
-            "strict" => self.vis.strict = value.as_bool().unwrap_or(true),
-            "occluders" => self.vis.occluders = int(4),
-            "jitter" => self.vis.jitter = value.as_bool().unwrap_or(true),
-            "dilate" => self.vis.dilate = int(2),
-            "dilate_below" => self.vis.dilate_below = int(2),
             "predict" => self.opts.predict = value.as_bool().unwrap_or(true),
             "margin" => self.opts.margin = value.as_f64().unwrap_or(0.0) as f32,
             "pipelined" => {

@@ -225,11 +225,13 @@ mod tests {
             }
         }
         let most: &[(Why, usize)] = &[
-            (Why::NoRegion, 28),
-            (Why::OtherExecutor, 6),
+            (Why::NoRegion, 25),
+            // discover-cpu with its drawer moved to the CPU: no region before, now the CPU
+            // rasteriser's shape with a GPU shading (a cross-device graph).
+            (Why::OtherExecutor, 7),
             (Why::Role, 5),
             (Why::Kind, 10),
-            (Why::Component, 19),
+            (Why::Component, 12),
             (Why::Count, 24),
             (Why::Port, 9),
             (Why::Timing, 32),

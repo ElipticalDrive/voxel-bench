@@ -167,7 +167,8 @@ pub fn bake(spec: &RendererSpec) -> anyhow::Result<Option<Bake>> {
         // The raster region's shading is the reference model's (tone and shadows read at run time).
         consts.clear();
         format!("mr_exec_cpu::raster_entry::<Baked, {px}>()")
-    } else if ck.find(Role::Visibility).is_some_and(|v| ck.node(v).component == "columns") {
+    } else if ck.region.is_some_and(|r| r.id == mr_components::graph::RegionId::CpuColumns) {
+        // The column march, or the ray caster over a heightmap's march (the same region).
         format!("mr_exec_cpu::columns_entry::<Baked, {px}>()")
     } else {
         // Ray casting: the primary walk, the strategy's kernel and its storage.

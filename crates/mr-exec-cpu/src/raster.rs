@@ -32,6 +32,7 @@ use glam::{DVec3, IVec3, Mat4, Vec3, Vec4};
 use mr_core::*;
 use mr_components::geometry::{Knobs, MeshFn};
 use mr_components::graph::{Checked, Role};
+use mr_components::visibility::discover::{self, grid};
 use mr_mesh::{FACE_AXES, Mesh, Quad};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -112,6 +113,7 @@ fn params() -> Vec<ParamSpec> {
     p.push(ParamSpec::bool("cull", "naive: skip faces hidden by solid neighbours; cubes: skip blocks hidden on every side", true, true).of("geometry", &["naive", "cubes"]));
     p.push(ParamSpec::int("tile_width", "Raster tile width (pixels)", 8, 1024, 64, true).of("draw", &["raster"]));
     p.push(ParamSpec::int("band_height", "Raster band height (pixels); bands are the unit of parallelism", 1, 512, 16, true).of("draw", &["raster"]));
+    p.extend(mr_components::visibility::discover::params());
     // A compiled build of this region folds none of them (it shades with the reference model,
     // shadows and tone read at run time).
     p.into_iter().map(|q| q.baked(false)).collect()
@@ -426,6 +428,79 @@ impl Faces {
     }
 }
 
+/// CPU discovery (visibility `quadtree` or `cluster`): the face set its rays found from this
+/// frame's camera, as each chunk's unit quads ([`Meshes`], drawn as a geometry's: transformed
+/// and culled where they are read). Its rays walk its own copy of the world, in the storage
+/// it tests exposure in (`grid::CpuWorld`, as discover-cpu's); the face set persists across
+/// frames as there (faces not re-confirmed for `KEEP_FRAMES` passes expire).
+struct Discover {
+    cpu: grid::CpuWorld,
+    visibility: String,
+    knobs: discover::Knobs,
+    state: Option<discover::State>,
+    /// The drawn records as of the last pass.
+    records: Vec<[u32; 2]>,
+    nodes: Vec<String>,
+}
+
+/// Discovery's own choices where discover-cpu has region knobs: all-miss tiles up to this
+/// size are sky, a face lives this many passes unconfirmed, the discovery FOV unwidened.
+const SKY_TILE: u32 = 8;
+const KEEP_FRAMES: u32 = 8;
+
+impl Node for Discover {
+    /// World-space faces: a copy kept a frame late is drawn from this frame's camera.
+    fn viewed(&self) -> bool {
+        false
+    }
+    fn output(&mut self, _: u32, _: u32) -> Res {
+        Box::new(Meshes { chunks: Chunks::default(), meshes: HashMap::new() })
+    }
+    fn update(&mut self, _: &mut Res, updates: &[WorldUpdate]) -> anyhow::Result<()> {
+        self.cpu.apply(updates);
+        Ok(())
+    }
+    fn run(&mut self, cx: &Cx, _: &[&Res], out: &mut Res, report: &mut Report) {
+        let start = Instant::now();
+        let grid = self.cpu.snapshot();
+        let settings = self.knobs.settings(&self.visibility, SKY_TILE, KEEP_FRAMES, 0.0, false);
+        let o = grid.discover(self.state.take().unwrap_or_default(), &cx.req.camera, cx.width, cx.height, &settings);
+        o.records.apply(&mut self.records);
+        // The records as each chunk's unit quads, grouped per face.
+        let mut faces: HashMap<IVec3, [Vec<[u32; 2]>; 6]> = HashMap::new();
+        for &r in &self.records {
+            let (cell, face, block) = discover::unpack_record(r, o.records.anchor);
+            let (chunk, l) = (cell.div_euclid(IVec3::splat(32)), cell.rem_euclid(IVec3::splat(32)));
+            faces.entry(chunk).or_default()[face as usize].push([l.x as u32 | (l.y as u32) << 5 | (l.z as u32) << 10 | face << 25, block as u32]);
+        }
+        let m = out.downcast_mut::<Meshes>().expect("meshes");
+        m.meshes = faces.into_iter().map(|(p, f)| (p, Arc::new(Mesh { counts: f.each_ref().map(|v| v.len() as u32), quads: f.concat() }))).collect();
+        let faces_s = o.state.s.len();
+        self.state = Some(o.state);
+        let t = start.elapsed().as_secs_f64() * 1e3;
+        report.stages.push(StageTime::cpu("discover", &self.nodes, t as f32));
+        let pixels = cx.width as f64 * cx.height as f64;
+        report.counters.extend([
+            ("rays".into(), o.rays as f64),
+            ("rays_per_pixel".into(), o.rays as f64 / pixels),
+            ("faces_s".into(), faces_s as f64),
+            ("faces_drawn".into(), self.records.len() as f64),
+            ("discovery_ms".into(), t),
+        ]);
+        report.counters.extend(o.extra);
+    }
+    fn set_param(&mut self, _: &mut Res, name: &str, value: &ParamValue) -> Option<anyhow::Result<()>> {
+        self.knobs.set(name, value).map(|_| Ok(()))
+    }
+    fn memory(&self, out: &Res) -> u64 {
+        let quads: usize = meshes(out).meshes.values().map(|m| m.quads.len()).sum();
+        self.cpu.memory() + self.state.as_ref().map_or(0, |s| s.s.len() as u64 * 16) + (self.records.len() + quads) as u64 * 8
+    }
+    fn gate(&self, chain: mr_core::gate::GateChain, late: bool, w: u32, h: u32) -> Option<Box<dyn Node>> {
+        Some(exec::GatePass::<Meshes>::boxed(chain, late, w, h))
+    }
+}
+
 /// The drawer's hit records: the quad id per pixel (0 = sky) and the visible set the ids
 /// index (the quad behind an id), as the visibility numbered it this frame.
 #[derive(Clone)]
@@ -658,6 +733,19 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
                 let k: GeometryKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: k.cull, ..Default::default() }, nodes: vec![id.to_string()] })
             }
+            // Discovery: its rays walk (refloor) its own copy of the world in their storage.
+            Role::Visibility if discovers(g, id) => {
+                let rays = g.node(id).inputs.get("rays").ok_or_else(|| anyhow::anyhow!("`{id}`: discovery rays are not bound"))?;
+                let storage = g.node(rays).inputs.get("storage").ok_or_else(|| anyhow::anyhow!("`{rays}`: walks no storage"))?;
+                Box::new(Discover {
+                    cpu: grid::CpuWorld::new(&g.node(storage).component)?,
+                    visibility: g.node(id).component.clone(),
+                    knobs: g.knobs(id).map_err(anyhow::Error::msg)?,
+                    state: None,
+                    records: vec![],
+                    nodes: vec![id.to_string()],
+                })
+            }
             Role::Visibility => Box::new(Faces { nodes: vec![id.to_string()], stage: "transform" }),
             // Inline, the fused shading's inputs too: its shadow rays' storage.
             Role::Draw => {
@@ -667,8 +755,8 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
                 }
                 let k: DrawKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 let nodes = if deferred { vec![id.to_string()] } else { g.ids(&[Role::Draw, Role::Shading]) };
-                // Faces straight from the geometry: transformed in the draw's pass.
-                let straight = g.node(id).inputs.get("faces").is_some_and(|f| g.node(f).role == Role::Geometry);
+                // Faces straight from the geometry or discovery: transformed in the draw's pass.
+                let straight = g.node(id).inputs.get("faces").is_some_and(|f| g.node(f).role == Role::Geometry || discovers(g, f));
                 let transform = straight.then(|| {
                     let mut f = Faces { nodes: vec![id.to_string()], stage: "transform" };
                     let tris = f.output(p.width, p.height);
@@ -690,11 +778,21 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
     Ok(Box::new(exec::Executor::<P>::new(p, opts.threads, world, passes)?.baked(S::KNOBS, S::NATIVE)))
 }
 
+/// Whether node `id` is CPU discovery (its faces a face set, not a culled set).
+fn discovers(g: &Checked, id: &str) -> bool {
+    let n = g.node(id);
+    n.role == Role::Visibility && matches!(n.component.as_str(), "quadtree" | "cluster")
+}
+
 /// The CPU mesher of a geometry component (quads with per-face counts: greedy, naive).
 fn mesh_fn(name: &str) -> MeshFn {
     match name {
         // Cube instances drawn as their six faces.
         "cubes" => |c, n, slot, k| cube_faces(&mr_components::geometry::cubes::mesh(c, n, slot, k.cull)),
+        // A box (an occupied 4^3 brick) or a point (a block with an exposed face) drawn as
+        // the exposed block faces it stands for: those the ray queries' search inside a box
+        // finds, a point's own; one quad each, as `naive` with culling meshes them.
+        "boxes" | "points" => |c, n, slot, _| mr_components::geometry::naive::mesh(c, n, slot, true),
         _ => mr_components::geometry::gpu(name).expect("validated").mesh,
     }
 }

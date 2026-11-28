@@ -819,7 +819,9 @@ mod tests {
                         (GpuMeshing, Role::Meshes) => c == "depth",
                         (GpuMeshing | GpuSampler, Role::Storage) => storage::gpu(c).is_some(),
                         (GpuMeshing, Role::Geometry) => geometry::gpu(c).is_some(),
-                        (GpuMeshing | CpuRaster, Role::Visibility) => c == "faces",
+                        (GpuMeshing, Role::Visibility) => c == "faces",
+                        // Culling, or CPU discovery (`raster::Discover`).
+                        (CpuRaster, Role::Visibility) => ["faces", "quadtree", "cluster"].contains(&c),
                         (GpuMeshing | GpuSampler | CpuSampler, Role::Draw) => {
                             draw::gpu_wgsl(c).is_some()
                         }
@@ -832,7 +834,8 @@ mod tests {
                         }
                         (CpuSampler, Role::Visibility) => ["quadtree", "cluster"].contains(&c),
                         (CpuSampler, Role::Traversal) => c == "refloor",
-                        (CpuRaster, Role::Geometry) => geometry::gpu(c).is_some(),
+                        // Boxes and points as their exposed faces (`raster::mesh_fn`).
+                        (CpuRaster, Role::Geometry) => geometry::gpu(c).is_some() || ["boxes", "points"].contains(&c),
                         (CpuRaster, Role::Draw) => c == "raster",
                         (CpuRaster | CpuRaycast | CpuColumns, Role::Shading) => c == "direct",
                         (GpuRayQuery, Role::Geometry) => geometry::rt(c).is_some(),
@@ -854,7 +857,9 @@ mod tests {
                         (GpuSlices, Role::Traversal) => traversal::gpu_wgsl(c).is_some(),
                         (GpuColumns | CpuColumns, Role::Storage) => c == "heightmap",
                         (GpuColumns | CpuColumns, Role::Traversal) => c == "heightfield",
-                        (GpuColumns | CpuColumns, Role::Visibility) => c == "columns",
+                        (GpuColumns, Role::Visibility) => c == "columns",
+                        // The column march, or a ray caster over the march (`columns::Visibility`'s `cast`).
+                        (CpuColumns, Role::Visibility) => ["columns", "raycast"].contains(&c),
                         _ => false,
                     };
                     assert!(ok, "{file} `{id}` ({}) `{c}`", n.role.name());

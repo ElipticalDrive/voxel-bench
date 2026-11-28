@@ -378,7 +378,7 @@ const WALKS: Pick = Pick::Needing(Role::Storage, Cap::Voxels);
 const GPU_KERNELS: Pick = Pick::Any(&[WALKS, Pick::Needing(Role::Geometry, Cap::Accel)]);
 const RT_GEOMETRY: Pick = Pick::Providing(Cap::Accel);
 /// The column storages' ray marches (a traversal reading a storage's heights).
-const MARCHES: Pick = Pick::Needing(Role::Storage, Cap::Heights);
+pub(crate) const MARCHES: Pick = Pick::Needing(Role::Storage, Cap::Heights);
 const DRAWN_GEOMETRY: Pick = Pick::Any(&[Pick::Providing(Cap::Quads), Pick::Providing(Cap::Cubes)]);
 /// The CPU rasteriser's storages: the shadow rays' (voxels) and a face source's lookup (any
 /// storage it keeps as a pass of its own: voxels or heights).
@@ -439,19 +439,37 @@ pub const CPU_RAYCAST: Builds = Builds {
 /// own: a drawer reading the geometry's faces straight transforms them itself (unculled), a
 /// culling may read another's culled set, a shading without a shadow site lights without
 /// shadow rays, a face source's lookup storage is a pass of its own (its geometry merges
-/// only faces of one block: nothing is looked up in it).
+/// only faces of one block: nothing is looked up in it). The faces may come from CPU
+/// discovery instead (`quadtree`, `cluster`: the face set it found, drawn from this frame's
+/// camera; its rays walk with `refloor` over the storage it tests exposure in). Boxes and
+/// points are drawn as the exposed block faces they stand for (a box's: those the ray
+/// queries' search inside it finds; a point's: its exposed faces).
 pub const CPU_RASTER: Builds = Builds {
     nodes: &[
-        // Quads, or cubes drawn as their six faces.
-        Build::picking(Role::Geometry, DRAWN_GEOMETRY, impls::CPU_SCALAR),
-        Build::one(Role::Visibility, &["faces"], impls::CPU_SCALAR).count(0, 2),
+        // Quads, or cubes drawn as their six faces, or boxes' and points' exposed faces.
+        Build::picking(Role::Geometry, Pick::Any(&[DRAWN_GEOMETRY, Pick::Named(&["boxes", "points"])]), impls::CPU_SCALAR).count(0, 1),
+        Build::one(Role::Visibility, &["faces", "quadtree", "cluster"], impls::CPU_SCALAR).count(0, 2),
         Build::picking(Role::Draw, Pick::Every, impls::CPU_SCALAR),
         Build::picking(Role::Storage, LOOKUPS, impls::CPU_SCALAR).count(0, 2),
-        Build::picking(Role::Traversal, WALKS, impls::CPU_SCALAR).count(0, 1),
+        Build::picking(Role::Traversal, WALKS, impls::CPU_SCALAR).count(0, 2),
         Build::picking(Role::Shading, Pick::Every, impls::CPU_SCALAR),
     ],
     same: &[],
     only: &[
+        Only {
+            role: Role::Visibility,
+            of: &["quadtree", "cluster"],
+            port: "exposure",
+            components: Pick::Providing(Cap::Voxels),
+            bound: true,
+        },
+        Only {
+            role: Role::Visibility,
+            of: &["quadtree", "cluster"],
+            port: "rays",
+            components: Pick::Named(&["refloor"]),
+            bound: true,
+        },
         Only {
             role: Role::Shading,
             of: &[],
@@ -472,18 +490,26 @@ pub const CPU_RASTER: Builds = Builds {
     ..Builds::plain(RegionId::CpuRaster)
 };
 
-/// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the shading.
+/// `columns-cpu`: the heightmap, its own ray march (the shadow rays), the column march and the
+/// shading. Or, in the column march's place, the ray caster over a heightmap's march (one ray
+/// per pixel through the `heightfield` kernel bound to its `primary` port).
 pub const CPU_COLUMNS: Builds = Builds {
     nodes: &[
         // The march's heightmap and the one the shadow rays walk (the same or another: a
         // pass each), or no shadow rays (no march bound to the shading).
         Build::providing(Role::Storage, Cap::Heights, impls::CPU_SCALAR).count(1, 2),
-        Build::picking(Role::Traversal, MARCHES, impls::CPU_SCALAR).count(0, 1),
-        Build::one(Role::Visibility, &["columns"], impls::CPU_SCALAR),
+        Build::picking(Role::Traversal, MARCHES, impls::CPU_SCALAR).count(0, 2),
+        Build::one(Role::Visibility, &["columns", "raycast"], impls::CPU_SCALAR),
         Build::picking(Role::Shading, Pick::Every, impls::CPU_SCALAR),
     ],
     same: &[],
-    only: &[],
+    only: &[Only {
+        role: Role::Visibility,
+        of: &["raycast"],
+        port: "primary",
+        components: MARCHES,
+        bound: true,
+    }],
     late: true,
     ..Builds::plain(RegionId::CpuColumns)
 };

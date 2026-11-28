@@ -21,7 +21,7 @@
 //! ([`Half4`]) for the `hdr` post. The precompiled build holds both and picks by the post.
 
 use mr_reference::World;
-use mr_components::graph::{self, Role};
+use mr_components::graph;
 use mr_core::*;
 
 mod columns;
@@ -140,14 +140,13 @@ fn create(p: InitParams) -> anyhow::Result<Box<dyn Renderer>> {
     }
 }
 
-/// Rasterisation when a drawer draws faces, else by the visibility node's component.
+/// The region the graph's shape names (a ray caster over a heightmap's march is the column
+/// march region's).
 fn create_as<P: Pixel>(p: &InitParams, g: &graph::Checked) -> anyhow::Result<Box<dyn Renderer>> {
-    if g.find(Role::Draw).is_some() {
-        return raster::executor::<Generic, P>(p, g);
-    }
-    let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
-    match g.node(vis).component.as_str() {
-        "columns" => columns::executor::<Generic, P>(p, g),
+    use graph::RegionId::*;
+    match g.region.map(|r| r.id) {
+        Some(CpuRaster) => raster::executor::<Generic, P>(p, g),
+        Some(CpuColumns) => columns::executor::<Generic, P>(p, g),
         _ => raycast::create::<P>(p, g),
     }
 }
