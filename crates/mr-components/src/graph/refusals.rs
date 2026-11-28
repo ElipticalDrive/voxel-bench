@@ -241,7 +241,9 @@ mod tests {
             // on the GPU drawer): 23 -> 6.
             (Why::Count, 6),
             (Why::Port, 7),
-            (Why::Timing, 12),
+            // The world's changes timed per copy of the world on the GPU executor (2026-11-27:
+            // the geometry its own copy, the CPU storages theirs): 12 -> 6.
+            (Why::Timing, 6),
             // One graph refused by its timing before (2026-11-27) now meets it and is
             // refused by its devices.
             (Why::Devices, 6),

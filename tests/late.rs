@@ -159,8 +159,10 @@ fn gpu_held_edges_a_frame_late_run() {
     }
 }
 
-/// The world's changes a frame late on a GPU (every node reading them alike: one copy of the
-/// world serves them): once the world has stopped changing, the frames are the plain run's.
+/// The world's changes a frame late on a GPU (per copy of the world, its readers alike: the
+/// GPU's storages, the geometry, the CPU storages, the meshes; the geometry timed apart from
+/// the storages has a copy of its own): the first frame lacks what the late copies had not
+/// taken yet, and once the world has stopped changing the frames are the plain run's.
 #[test]
 #[ignore = "needs a GPU"]
 fn gpu_world_changes_a_frame_late_catch_up() {
@@ -174,6 +176,12 @@ fn gpu_world_changes_a_frame_late_catch_up() {
         ("splat-gpu", &["geometry", "storage"][..]),
         ("raster-gpu", &["geometry", "storage"][..]),
         ("discover-gpu", &["storage"][..]),
+        ("splat-gpu", &["storage"][..]),
+        ("splat-gpu", &["geometry"][..]),
+        ("raster-gpu", &["storage"][..]),
+        ("raster-gpu", &["geometry"][..]),
+        ("discover-cpu", &["storage"][..]),
+        ("discover-cpu", &["shadow.storage"][..]),
     ] {
         let edit = nodes.iter().map(|n| late(n)).collect::<Vec<_>>().join(", ");
         let (plain, l) = (format!("{graph}-plain-world"), format!("{graph}-world-{}", edit.len()));
@@ -181,10 +189,15 @@ fn gpu_world_changes_a_frame_late_catch_up() {
         assert!(ok, "{log}");
         let (ok, log) = launch(&l, graph, &format!("[{edit}]"));
         assert!(ok, "{graph} with {edit}: {log}");
+        let mut first_differs = false;
         for mode in ["unlit", "lit"] {
             let (p, q) = (images(&plain, mode), images(&l, mode));
             assert!(!p.is_empty() && p.last() == q.last(), "{graph} {mode} with {edit}: the last frame differs");
+            first_differs |= p[0] != q[0];
         }
+        // (Some copies are read in one mode only, a splat's storage by shadow rays; the plan's
+        // world has no meshes: nothing of theirs to be late.)
+        assert!(nodes == ["meshes"] || first_differs, "{graph} with {edit}: the first frames are the plain run's (nothing late)");
     }
 }
 

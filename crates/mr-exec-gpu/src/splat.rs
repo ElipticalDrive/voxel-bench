@@ -416,7 +416,7 @@ fn view_origin() -> vec3<f32> {{ return cam.origin; }}
 
 impl State for Splat {
     fn updated(&mut self, core: &Core, changed: &[IVec3]) -> anyhow::Result<()> {
-        let world = &core.world;
+        let world = core.geometry_world();
         match &mut self.gate {
             Some(g) => g.queue(points::rebuild(changed.iter().copied(), |c| world.chunk(c))),
             None => self.points.update(changed.iter().copied(), |c| world.chunk(c)),

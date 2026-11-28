@@ -76,7 +76,7 @@ impl Graph {
         }
         ck.built()?;
         if let Some(why) = device_blocker(&ck)
-            .or_else(|| (region.executor() == "gpu").then(|| ck.graph.late_world().err()).flatten())
+            .or_else(|| (region.executor() == "gpu").then(|| ck.late_world().err()).flatten())
             .or_else(|| api_blocker(&ck))
             .or_else(|| lookup_blocker(&ck))
         {
@@ -85,43 +85,97 @@ impl Graph {
         Ok(())
     }
 
-    /// Which of the world's changes the GPU executor holds back a frame: the voxels' (to
-    /// the storages, geometries and the CPU sampler's world) when every node reading them
-    /// reads them `prev`, the meshes' when every meshes node does. One copy of the world
-    /// serves all of its nodes, so some reading the voxels' changes late and others not
-    /// is refused, naming them.
-    pub fn late_world(&self) -> Result<(bool, bool), String> {
-        let readers = |meshes: bool| -> Vec<(&str, When)> {
-            self.nodes
-                .iter()
-                .filter(|(_, n)| (n.role == Role::Meshes) == meshes && !is_host_role(n.role))
-                .filter_map(|(id, n)| {
-                    let src = n.inputs.get("changes")?;
-                    self.nodes.get(src).filter(|s| matches!(s.role, Role::World | Role::Client))?;
-                    Some((id.as_str(), n.when("changes")))
-                })
-                .collect()
-        };
-        let late = |meshes: bool| -> Result<bool, String> {
-            let r = readers(meshes);
-            let (l, now): (Vec<_>, Vec<_>) = r.iter().partition(|(_, w)| *w == When::Prev);
-            if !l.is_empty() && !now.is_empty() {
-                let names = |v: &[&(&str, When)]| v.iter().map(|(id, _)| format!("`{id}`")).collect::<Vec<_>>().join(", ");
-                return Err(format!(
-                    "{} read the world's changes a frame late and {} this frame: one copy of the world on the GPU serves them all (time every `changes` edge alike)",
-                    names(&l),
-                    names(&now)
-                ));
-            }
-            Ok(!l.is_empty())
-        };
-        Ok((late(false)?, late(true)?))
-    }
-
     /// Checks the graph and that its executor runs it.
     pub fn validate(&self) -> Result<(), String> {
         self.accept()
     }
+}
+
+impl Checked {
+    /// When each of the GPU executor's copies of the world takes the world's changes
+    /// ([`WorldTiming`]): a copy's readers read them alike (some `prev`, others not, is
+    /// refused naming them); a geometry reading them otherwise than the GPU's storages gets a
+    /// copy of its own.
+    pub fn late_world(&self) -> Result<WorldTiming, String> {
+        let group = |id: &str, n: &Node| -> WorldCopy {
+            match n.role {
+                Role::Meshes => WorldCopy::Meshes,
+                Role::Geometry => WorldCopy::Geometry,
+                Role::Storage if self.devices.get(id) == Some(&Device::Cpu) => WorldCopy::Sampler,
+                _ => WorldCopy::Pool,
+            }
+        };
+        let readers = |copy: WorldCopy| -> Vec<(&str, When)> {
+            self.graph
+                .nodes
+                .iter()
+                .filter(|(id, n)| group(id, n) == copy && !is_host_role(n.role))
+                .filter_map(|(id, n)| {
+                    let src = n.inputs.get("changes")?;
+                    self.graph.nodes.get(src).filter(|s| matches!(s.role, Role::World | Role::Client))?;
+                    Some((id.as_str(), n.when("changes")))
+                })
+                .collect()
+        };
+        let late = |copy: WorldCopy| -> Result<Option<bool>, String> {
+            let r = readers(copy);
+            let (l, now): (Vec<_>, Vec<_>) = r.iter().partition(|(_, w)| *w == When::Prev);
+            if !l.is_empty() && !now.is_empty() {
+                let names = |v: &[&(&str, When)]| v.iter().map(|(id, _)| format!("`{id}`")).collect::<Vec<_>>().join(", ");
+                return Err(format!(
+                    "{} read the world's changes a frame late and {} this frame: one copy of the world {} serves them all (time those `changes` edges alike)",
+                    names(&l),
+                    names(&now),
+                    copy.name()
+                ));
+            }
+            Ok((!r.is_empty()).then_some(!l.is_empty()))
+        };
+        let (pool, geometry, sampler, meshes) = (late(WorldCopy::Pool)?, late(WorldCopy::Geometry)?, late(WorldCopy::Sampler)?, late(WorldCopy::Meshes)?);
+        // The GPU's world (its lights too) goes with its storages, else with whoever reads.
+        let world = pool.or(geometry).or(sampler).unwrap_or(false);
+        Ok(WorldTiming { pool: world, geometry: geometry.filter(|&g| g != world), sampler: sampler.unwrap_or(world), meshes: meshes.unwrap_or(false) })
+    }
+}
+
+/// The GPU executor's copies of the world a group of nodes reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorldCopy {
+    /// The GPU's world: the voxel pool, the storages' data, lights and sky.
+    Pool,
+    /// The geometry's (meshed faces, points, acceleration structures).
+    Geometry,
+    /// CPU storages' (the CPU discoverer's world).
+    Sampler,
+    /// The meshes'.
+    Meshes,
+}
+
+impl WorldCopy {
+    fn name(self) -> &'static str {
+        match self {
+            WorldCopy::Pool => "on the GPU",
+            WorldCopy::Geometry => "for the geometry",
+            WorldCopy::Sampler => "on the CPU",
+            WorldCopy::Meshes => "of the meshes",
+        }
+    }
+}
+
+/// When the GPU executor's copies of the world take the world's changes (`true`: a frame
+/// late, as the nodes reading them through `changes` say: [`Checked::late_world`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldTiming {
+    /// The GPU's world (pool, storages' data, lights, sky; the geometry's too unless it has
+    /// its own).
+    pub pool: bool,
+    /// A copy of the world's chunks of the geometry's own, taking the changes at this timing,
+    /// when it reads them otherwise than the pool.
+    pub geometry: Option<bool>,
+    /// The CPU storages' world (the CPU discoverer's).
+    pub sampler: bool,
+    /// The meshes.
+    pub meshes: bool,
 }
 
 /// Why the GPUs `ck` places its nodes on cannot run, if they can't: a

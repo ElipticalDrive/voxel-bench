@@ -414,6 +414,13 @@ pub(crate) struct Executor<R> {
     holds: Vec<EdgeHold>,
     /// The mesh instances last given: accumulated shading starts over when they move.
     instances: Vec<mr_core::MeshInstance>,
+    /// When its copies of the world take the world's changes, and the changes held for the
+    /// copies taking them a frame late: those arriving before this frame, those for it.
+    timing: graph::WorldTiming,
+    arriving: Vec<WorldUpdate>,
+    waiting: Vec<WorldUpdate>,
+    meshes_arriving: Vec<MeshUpdate>,
+    meshes_waiting: Vec<MeshUpdate>,
 }
 
 /// The renderer running `region`'s `passes` over `core`.
@@ -437,12 +444,83 @@ impl<R: Region> Executor<R> {
         let ids: Vec<String> = passes.iter().map(|(id, _)| id.clone()).collect();
         let gates = crate::cross::gates(&core, &ids, split);
         let holds = crate::cross::holds(&core, &ids, split);
-        Self { core, region, passes, gates, holds, instances: vec![] }
+        let timing = core.timing;
+        Self { core, region, passes, gates, holds, instances: vec![], timing, arriving: vec![], waiting: vec![], meshes_arriving: vec![], meshes_waiting: vec![] }
+    }
+
+    /// World changes `updates` given to the copies of the world taking them at `late`: the CPU
+    /// storages' (the region's own), the GPU's (its storages, and the geometry unless it has
+    /// its own copy), the geometry's own.
+    fn apply(&mut self, updates: Vec<WorldUpdate>, late: bool) -> anyhow::Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let t = self.timing;
+        let (pool, geometry) = (t.pool == late, t.geometry == Some(late));
+        if !(pool || geometry || t.sampler == late) {
+            return Ok(());
+        }
+        self.core.accum.invalidate();
+        if t.sampler == late {
+            self.region.updating(&updates);
+        }
+        let c = &mut self.core;
+        let (to_pool, to_geometry) = match (pool, geometry) {
+            (true, true) => (Some(updates.clone()), Some(updates)),
+            (true, false) => (Some(updates), None),
+            (false, true) => (None, Some(updates)),
+            (false, false) => (None, None),
+        };
+        if let Some(u) = to_pool {
+            let changed = c.world.apply(&c.gpu, u);
+            c.storages.update(&c.gpu, &c.world, &changed)?;
+            if t.geometry.is_none() {
+                if let Some(a) = &mut c.accel {
+                    a.updated(&c.world, &changed);
+                }
+                self.region.updated(&self.core, &changed)?;
+            }
+        }
+        if let Some(u) = to_geometry {
+            let c = &mut self.core;
+            let w = c.geometry.as_mut().expect("the geometry's copy of the world");
+            let changed = w.apply(&c.gpu, u);
+            if let Some(a) = &mut c.accel {
+                a.updated(w, &changed);
+            }
+            self.region.updated(&self.core, &changed)?;
+        }
+        Ok(())
+    }
+
+    /// Before a frame: the changes held a frame for the copies taking them late.
+    fn take_late(&mut self) -> anyhow::Result<()> {
+        let w = std::mem::replace(&mut self.waiting, std::mem::take(&mut self.arriving));
+        self.apply(w, true)?;
+        for m in std::mem::replace(&mut self.meshes_waiting, std::mem::take(&mut self.meshes_arriving)) {
+            self.take_meshes(m);
+        }
+        Ok(())
+    }
+
+    fn take_meshes(&mut self, update: MeshUpdate) {
+        let moved = match &update {
+            MeshUpdate::Meshes(_) => true,
+            MeshUpdate::Instances(i) => *i != self.instances && {
+                self.instances.clone_from(i);
+                true
+            },
+        };
+        if moved {
+            self.core.accum.invalidate();
+        }
+        self.region.update_meshes(update);
     }
 
     /// The frame's commands on this GPU, before their submission: its ticket on the ring
     /// (frames completing to `sink`), its passes and its stats.
     fn encode(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<(wgpu::CommandEncoder, Ticket, FrameStats)> {
+        self.take_late()?;
         let (core, region) = (&mut self.core, &mut self.region);
         region.compile(core, req)?;
         let ticket = core.ring.begin(&core.gpu, sink)?;
@@ -568,32 +646,28 @@ fn switched(switches: &[graph::Switch], mut replace: impl FnMut(&graph::Switch) 
 }
 
 impl<R: Region> Renderer for Executor<R> {
+    /// To the copies of the world taking the changes now; held a frame for the others.
     fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        if !updates.is_empty() {
-            self.core.accum.invalidate();
+        let t = self.timing;
+        match (t.pool || t.geometry == Some(true) || t.sampler, !t.pool || t.geometry == Some(false) || !t.sampler) {
+            (false, _) => self.apply(updates, false),
+            (true, false) => {
+                self.arriving.extend(updates);
+                Ok(())
+            }
+            (true, true) => {
+                self.arriving.extend(updates.iter().cloned());
+                self.apply(updates, false)
+            }
         }
-        self.region.updating(&updates);
-        let c = &mut self.core;
-        let changed = c.world.apply(&c.gpu, updates);
-        c.storages.update(&c.gpu, &c.world, &changed)?;
-        if let Some(a) = &mut c.accel {
-            a.updated(&c.world, &changed);
-        }
-        self.region.updated(&self.core, &changed)
     }
 
     fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
-        let moved = match &update {
-            MeshUpdate::Meshes(_) => true,
-            MeshUpdate::Instances(i) => *i != self.instances && {
-                self.instances.clone_from(i);
-                true
-            },
-        };
-        if moved {
-            self.core.accum.invalidate();
+        if self.timing.meshes {
+            self.meshes_arriving.push(update);
+        } else {
+            self.take_meshes(update);
         }
-        self.region.update_meshes(update);
         Ok(())
     }
 

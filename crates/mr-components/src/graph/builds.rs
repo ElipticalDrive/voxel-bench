@@ -256,7 +256,7 @@ impl Builds {
             // `prev` (`mr-exec-gpu`'s `cross::EdgeHold`).
             .or(self.crossings.contains(&(role, port)).then_some(&[When::Now, When::Prev][..]))
             // The world's changes a frame late: the GPU executor holds them back a frame
-            // (for every node reading them alike: [`Graph::late_world`]).
+            // (per copy of the world, its readers alike: [`Checked::late_world`]).
             .or((port == "changes" && self.executor() == "gpu").then_some(&[When::Now, When::Prev][..]))
     }
 

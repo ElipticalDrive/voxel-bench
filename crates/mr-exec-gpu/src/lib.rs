@@ -168,77 +168,7 @@ impl Renderer for Compiled {
 /// pipeline names one.
 fn create_with(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Option<fn() -> CpuWorld>) -> anyhow::Result<Box<dyn Renderer>> {
     let g = graph::of_init("gpu", &p)?;
-    let (changes, meshes) = g.graph.late_world().map_err(anyhow::Error::msg)?;
-    let inner = create_region(p, devices, waker, cpu_world, &g)?;
-    Ok(if changes || meshes { Box::new(LateWorld { inner, changes, meshes, arriving: vec![], waiting: vec![], meshes_arriving: vec![], meshes_waiting: vec![] }) } else { inner })
-}
-
-/// The world's changes (voxels', meshes') held back a frame for a graph whose nodes read them
-/// `prev` ([`graph::Graph::late_world`]): what arrives for a frame reaches the region before
-/// the next one.
-struct LateWorld {
-    inner: Box<dyn Renderer>,
-    changes: bool,
-    meshes: bool,
-    arriving: Vec<WorldUpdate>,
-    waiting: Vec<WorldUpdate>,
-    meshes_arriving: Vec<MeshUpdate>,
-    meshes_waiting: Vec<MeshUpdate>,
-}
-
-impl Renderer for LateWorld {
-    fn update(&mut self, updates: Vec<WorldUpdate>) -> anyhow::Result<()> {
-        if self.changes {
-            self.arriving.extend(updates);
-            Ok(())
-        } else {
-            self.inner.update(updates)
-        }
-    }
-
-    fn update_meshes(&mut self, update: MeshUpdate) -> anyhow::Result<()> {
-        if self.meshes {
-            self.meshes_arriving.push(update);
-            Ok(())
-        } else {
-            self.inner.update_meshes(update)
-        }
-    }
-
-    fn render(&mut self, req: &FrameRequest, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        let w = std::mem::replace(&mut self.waiting, std::mem::take(&mut self.arriving));
-        if !w.is_empty() {
-            self.inner.update(w)?;
-        }
-        for m in std::mem::replace(&mut self.meshes_waiting, std::mem::take(&mut self.meshes_arriving)) {
-            self.inner.update_meshes(m)?;
-        }
-        self.inner.render(req, sink)
-    }
-
-    fn poll(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.inner.poll(sink)
-    }
-
-    fn set_param(&mut self, name: &str, value: &ParamValue) -> anyhow::Result<()> {
-        self.inner.set_param(name, value)
-    }
-
-    fn edit(&mut self, edits: &str) -> anyhow::Result<()> {
-        self.inner.edit(edits)
-    }
-
-    fn flush(&mut self, sink: &mut dyn FrameSink) -> anyhow::Result<()> {
-        self.inner.flush(sink)
-    }
-
-    fn resize(&mut self, width: u32, height: u32) -> anyhow::Result<()> {
-        self.inner.resize(width, height)
-    }
-
-    fn memory(&self) -> MemoryReport {
-        self.inner.memory()
-    }
+    create_region(p, devices, waker, cpu_world, &g)
 }
 
 /// The region's renderer for `g`.
@@ -316,6 +246,11 @@ pub(crate) struct Core {
     graph: graph::Graph,
     gpu: Arc<Gpu>,
     world: VoxelWorld,
+    /// The geometry's own copy of the world's chunks (no GPU data), when it takes the world's
+    /// changes at another time than `world` ([`graph::WorldTiming::geometry`]).
+    geometry: Option<VoxelWorld>,
+    /// When its copies of the world take the world's changes.
+    timing: graph::WorldTiming,
     /// The storage instances the GPU's rays walk.
     storages: StorageSet,
     /// The acceleration structures the GPU's ray queries trace, and the
@@ -375,6 +310,11 @@ fn storage_entry(binding: u32, read_only: bool, visibility: wgpu::ShaderStages) 
 }
 
 impl Core {
+    /// The world's chunks the geometry is built from (its own copy, if it has one).
+    fn geometry_world(&self) -> &VoxelWorld {
+        self.geometry.as_ref().unwrap_or(&self.world)
+    }
+
     fn new(p: &InitParams, devices: &Devices, waker: Waker, g: &graph::Checked, s: CoreSpec) -> anyhow::Result<Self> {
         Self::on(home_slot(g), p, devices, waker, g, s)
     }
@@ -408,6 +348,18 @@ impl Core {
                 side_bytes: StorageSet::side_bytes(s.walks),
             },
         )?;
+        // The geometry's own copy of the world's chunks, when it reads the changes at
+        // another time than the storages (CPU side only).
+        let timing = g.late_world().map_err(anyhow::Error::msg)?;
+        let geometry = match timing.geometry {
+            Some(_) => Some(VoxelWorld::new(
+                &gpu,
+                &p.blocks,
+                p.environment,
+                VoxelWorldConfig { max_lod: s.max_lod, upload_voxels: false, pool_mb: s.pool_mb, view_radius: p.view_radius_chunks, shadows: s.shadows, visibility: s.stages, side_bytes: vec![] },
+            )?),
+            None => None,
+        };
         let storages = StorageSet::new(&gpu, s.walks, s.stages, gpu_data::Limits { mb: s.pool_mb, view_radius: p.view_radius_chunks, wide_ids: p.blocks.blocks.len() > 256, pool_slots: world.max_slots() });
         if storages.groups_end() > gpu.device.limits().max_bind_groups {
             anyhow::bail!("{} storages need {} bind groups; this device has {}", s.walks.storages.len(), storages.groups_end(), gpu.device.limits().max_bind_groups);
@@ -436,6 +388,8 @@ impl Core {
             accel_gates: s.accel.as_ref().map_or(vec![], |a| a.gate_nodes()),
             accel,
             world,
+            geometry,
+            timing,
             gpu,
         })
     }
@@ -490,7 +444,7 @@ impl Core {
         let Some(a) = &mut self.accel else { return false };
         self.ring.start_clock(&self.gpu, enc, ticket);
         self.ring.stage(enc, ticket, "geometry", &self.accel_nodes);
-        a.build(&self.world, enc, req.camera.split_position().0, req.time)
+        a.build(self.geometry.as_ref().unwrap_or(&self.world), enc, req.camera.split_position().0, req.time)
     }
 
     /// The acceleration structures' counters and CPU stage time.

@@ -554,7 +554,7 @@ impl Meshing {
                 self.dirty.insert(p);
             }
         }
-        let (gpu, world) = (&core.gpu, &core.world);
+        let (gpu, world) = (&core.gpu, core.geometry_world());
         let (mut work, mut out) = (vec![], vec![]);
         for pos in dirty {
             if world.chunk(pos).is_none() {
@@ -835,7 +835,7 @@ impl State for Meshing {
             self.dirty.insert(pos);
             for f in Face::ALL {
                 let nb = pos + f.normal();
-                if self.slots.contains_key(&nb) || core.world.chunk(nb).is_some() {
+                if self.slots.contains_key(&nb) || core.geometry_world().chunk(nb).is_some() {
                     self.dirty.insert(nb);
                 }
             }

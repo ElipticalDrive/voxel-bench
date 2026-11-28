@@ -229,7 +229,7 @@ names (`multirenderer audit --refused` prints the table; the test
 | node outside the declarations | component not built | 11 (19) | the heightfield march in the GPU ray caster, a culling or splatting over GPU discovery, faces beside ray queries or splatting, a heightmap in the meshing region |
 | node outside the declarations | number of nodes of a role | 6 (37) | no kernel or no storage in the GPU regions, a second heightmap for the GPU column march |
 | node outside the declarations | what a port reads | 7 (10) | an unbound shadow site in the GPU regions, faces splatted as points, ray queries into GPU discovery's set |
-| edge without a resource form | edge timing | 12 (41 before the CPU's `prev` edges) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, a drawer's meshes); world changes late for some of a GPU executor's nodes and not others (one copy of the world); hits late behind a forward drawer (no records) |
+| edge without a resource form | edge timing | 6 (41 before the CPU's `prev` edges) | `prev` on the GPU's per-chunk streams uploaded from the host (splat points, ray-query geometry, a drawer's meshes); hits late behind a forward drawer (no records) |
 | edge without a resource form | device boundary | 6 | a second GPU anywhere but at the split's hit records |
 
 **Edges timed `prev` on the GPU** (2026-11-27). An edge one GPU executor holds between two
@@ -241,8 +241,12 @@ Hits into the shading are shaded with the camera and camera block they were cast
 rays write records whatever the placement once their hits are late. Gap: a ray query's
 acceleration structure (and the meshes) stay placed for this frame's camera block, so lit
 shadow rays from last frame's records are off by the block the camera crossed. The world's
-changes timed `prev` are held back a frame for the whole executor (`Graph::late_world`; every
-node reading them alike, the voxels' and the meshes' apart).
+changes timed `prev` are held back a frame per copy of the world the GPU executor keeps
+(`Checked::late_world` -> `WorldTiming`): the GPU's (voxel pool, storages' data, lights), the
+geometry's, the CPU storages' (the CPU discoverer's world) and the meshes'. The readers of
+one copy read alike (else refused, naming them); a geometry timed apart from the GPU's
+storages gets a CPU-side copy of the chunks of its own (`Core::geometry`, the world's memory
+once more), so the storage and the geometry may each take the changes this frame or the last.
 
 **Design: unfused passes with edge resources.** The executor runs the graph's schedule
 (`Checked::schedule`) pass by pass; every non-fused edge is a resource the executor owns
