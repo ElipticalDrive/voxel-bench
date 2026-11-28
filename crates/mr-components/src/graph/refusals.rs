@@ -241,8 +241,9 @@ mod tests {
             // (2026-11-28) is refused by its component as the walk's is (+1); the GPU ray
             // caster over a heightmap's march (the columns region's, 2026-11-28: -1): 11.
             // `composite` and `depth` one another's alias where a region draws the other
-            // (user, 2026-11-28): 11 -> 8.
-            (Why::Component, 8),
+            // (user, 2026-11-28): 11 -> 8. CPU discovery's rays walking `incremental`, a
+            // `faces` culling over GPU discovery's set (passed on whole; 2026-11-28): 8 -> 5.
+            (Why::Component, 5),
             // CPU discovery's exposure tests in another storage than its rays walk (2026-11-27,
             // on the GPU drawer): 23 -> 6. GPU shadings without a shadow site (no shadow rays,
             // as on the CPU; 2026-11-28): 6 -> 1 (the splat without a storage then refused by

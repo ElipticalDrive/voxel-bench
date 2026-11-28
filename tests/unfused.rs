@@ -2,7 +2,7 @@
 //! shapes): a drawer reading the geometry's faces straight (it transforms them itself), a
 //! culling over another's culled set, a face source's lookup storage kept as a pass, cubes
 //! drawn as their faces, a shading without a shadow site, the column march's shadow rays over
-//! a heightmap of their own. Each runs; where it computes the same image as a shipped graph,
+//! a heightmap of their own, CPU discovery's rays walking `incremental`. Each runs; where it computes the same image as a shipped graph,
 //! its frames are that graph's, pixel for pixel.
 
 use std::path::{Path, PathBuf};
@@ -221,6 +221,16 @@ fn raster_cpu_discovery_exposure_in_another_storage() {
     }
 }
 
+/// CPU discovery whose rays walk with `incremental` (a kernel of their own; the shadow rays
+/// keep refloor): both walks find the same first cell, so the frames are refloor's, pixel for
+/// pixel.
+#[test]
+fn raster_cpu_discovery_walks_incremental() {
+    let found = r#"{ add = "disc", role = "visibility", component = "quadtree" }, { node = "disc", input = "exposure", from = "storage" }, { node = "disc", input = "rays", from = "k2" }, { node = "draw", input = "faces", from = "disc" }, { remove = "visibility" }, { remove = "geometry" }"#;
+    let walk = |c: &str| format!(r#"{{ add = "k2", role = "traversal", component = "{c}" }}, {{ node = "k2", input = "storage", from = "storage" }}, {found}"#);
+    check("raster-cpu", &walk("refloor"), &walk("incremental"), BOTH);
+}
+
 /// The ray caster over a heightmap's march (`heightfield` as its primary kernel), run by the
 /// columns region: one ray per pixel through the same heightmap. Against the reference it
 /// scores at least as columns-cpu's march does, within `CAST_DB` and `CAST_BAD` points
@@ -309,6 +319,26 @@ fn gpu_drawn_discovery_exposure_in_another_storage() {
         let two = format!(r#"{{ node = "visibility", input = "exposure", from = {{ role = "storage", component = "{c}" }} }}, {{ node = "storage-2", device = "cpu" }}, {{ node = "storage-2", input = "changes", from = "world" }}"#);
         check("discover-cpu", "", &two, BOTH);
     }
+}
+
+/// GPU-drawn CPU discovery (`discover-cpu`) whose rays walk with `incremental`: the same
+/// first cells as refloor's, the same frames.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_drawn_discovery_walks_incremental() {
+    check("discover-cpu", "", r#"{ node = "kernel", component = "incremental" }"#, BOTH);
+}
+
+/// GPU discovery's face set through a `faces` culling (every face of it discovered in view:
+/// passed on whole), with and without meshes: the frames are the drawer reading the set
+/// itself, pixel for pixel.
+#[test]
+#[ignore = "needs a GPU"]
+fn gpu_culling_over_discovery() {
+    let cull = r#"{ add = "cull", role = "visibility", component = "faces" }, { node = "cull", input = "faces", from = "visibility" }, { node = "draw", input = "faces", from = "cull" }"#;
+    check("discover-gpu", "", cull, BOTH);
+    let meshes = r#"{ add = "meshes", role = "meshes", component = "depth" }, { node = "meshes", input = "changes", from = "world" }, { node = "meshes", input = "shadow", from = "kernel" }, { node = "draw", input = "meshes", from = "meshes" }"#;
+    check("discover-gpu", meshes, &format!("{meshes}, {cull}"), BOTH);
 }
 
 /// GPU: boxes and points drawn by the GPU rasteriser as the exposed block faces each stands

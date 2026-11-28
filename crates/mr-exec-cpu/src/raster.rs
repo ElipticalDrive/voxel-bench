@@ -733,14 +733,15 @@ pub(crate) fn executor<S: Spec, P: Pixel>(p: &InitParams, g: &Checked) -> anyhow
                 let k: GeometryKnobs = g.knobs(id).map_err(anyhow::Error::msg)?;
                 Box::new(Geometry { dirty: HashSet::new(), mesh, knobs: Knobs { cull: k.cull, ..Default::default() }, nodes: vec![id.to_string()] })
             }
-            // Discovery: its rays walk (refloor) its own copy of the world in their storage,
+            // Discovery: its rays walk (refloor or incremental) its own copy of the world in their storage,
             // its exposure tests read the exposure port's (one copy when the same component).
             Role::Visibility if discovers(g, id) => {
                 let rays = g.node(id).inputs.get("rays").ok_or_else(|| anyhow::anyhow!("`{id}`: discovery rays are not bound"))?;
                 let storage = g.node(rays).inputs.get("storage").ok_or_else(|| anyhow::anyhow!("`{rays}`: walks no storage"))?;
                 let exposure = g.node(id).inputs.get("exposure").ok_or_else(|| anyhow::anyhow!("`{id}`: exposure is not bound"))?;
                 Box::new(Discover {
-                    cpu: grid::CpuWorld::paired(&g.node(storage).component, &g.node(exposure).component)?,
+                    cpu: grid::CpuWorld::paired(&g.node(storage).component, &g.node(exposure).component)?
+                        .walking(grid::Walk::of(&g.node(rays).component, &g.node(rays).knobs)?),
                     visibility: g.node(id).component.clone(),
                     knobs: g.knobs(id).map_err(anyhow::Error::msg)?,
                     state: None,

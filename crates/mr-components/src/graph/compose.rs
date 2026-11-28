@@ -32,6 +32,17 @@ impl Graph {
                 }
                 // CPU discovery drawn by the CPU rasteriser.
                 (Role::Visibility, "quadtree" | "cluster") if !gpu(src) => Some(&CPU_RASTER),
+                // A culling over GPU discovery's set (which it passes on whole).
+                (Role::Visibility, "faces")
+                    if gpu(hits)
+                        && src
+                            .inputs
+                            .get("faces")
+                            .and_then(|s| self.nodes.get(s))
+                            .is_some_and(|s| s.role == Role::Visibility && s.component == "quadtree" && gpu(s)) =>
+                {
+                    Some(&GPU_SAMPLER)
+                }
                 (Role::Visibility, "faces") => {
                     Some(if gpu(hits) { &GPU_MESHING } else { &CPU_RASTER })
                 }

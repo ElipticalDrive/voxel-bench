@@ -835,15 +835,15 @@ mod tests {
                         (GpuMeshing | GpuSampler | CpuSampler, Role::Draw) => {
                             draw::gpu_wgsl(c).is_some()
                         }
-                        (GpuSampler, Role::Visibility) => c == "quadtree",
+                        (GpuSampler, Role::Visibility) => ["quadtree", "faces"].contains(&c),
                         (GpuSampler, Role::Holes) => c == "coverage",
-                        // Every CPU storage (checked by `grid::CpuWorld::new`); its discovery rays walk with refloor.
+                        // Every CPU storage (checked by `grid::CpuWorld::new`); its discovery rays walk with refloor or incremental.
                         (CpuSampler, Role::Storage) => gpu && storage::gpu(c).is_some() || !gpu,
                         (CpuSampler, Role::Traversal) if gpu => {
                             traversal::gpu_wgsl(c).is_some() || traversal::rt_wgsl(c).is_some()
                         }
                         (CpuSampler, Role::Visibility) => ["quadtree", "cluster"].contains(&c),
-                        (CpuSampler, Role::Traversal) => c == "refloor",
+                        (CpuSampler, Role::Traversal) => ["refloor", "incremental"].contains(&c),
                         // Boxes and points as their exposed faces (`geometry::drawn`).
                         (CpuRaster, Role::Geometry) => geometry::drawn(c).is_some(),
                         (CpuRaster, Role::Draw) => c == "raster",

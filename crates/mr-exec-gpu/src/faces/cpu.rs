@@ -287,6 +287,7 @@ impl CpuSampler {
         let mut opts: Options = p.options()?;
         let site = g.site(Role::Visibility, "rays").ok_or_else(|| anyhow::anyhow!("discovery rays are not bound"))?;
         let storage = g.node(site.storage).component.clone();
+        let walk = grid::Walk::of(&g.node(site.kernel).component, &g.node(site.kernel).knobs)?;
         let exposure = g.input(Role::Visibility, "exposure").ok_or_else(|| anyhow::anyhow!("exposure is not bound"))?;
         let exposure = g.node(exposure).component.clone();
         let vis_id = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
@@ -334,7 +335,8 @@ impl CpuSampler {
             cpu: match world {
                 Some(world) => world(),
                 None => grid::CpuWorld::paired(&storage, &exposure)?,
-            },
+            }
+            .walking(walk),
             opts,
             visibility,
             vis,

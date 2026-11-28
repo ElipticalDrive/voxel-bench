@@ -1,6 +1,6 @@
 //! The CPU voxel world for discovery rays: the composed CPU **storage** (any
 //! `mr_components` representation) in the components' dense chunk grid, walked with the
-//! `refloor` visibility walk, plus the chunk bookkeeping that keeps it in sync with the
+//! `refloor` or `incremental` walk (the rays' kernel node: [`Walk`]), plus the chunk bookkeeping that keeps it in sync with the
 //! `WorldUpdate` stream. Discovery jobs hold immutable snapshots (`Arc<dyn Snapshot>`) while
 //! the render thread applies new updates. (Was a copy of cpu-simd's grid and DDA.)
 //!
@@ -92,6 +92,91 @@ impl<R: Repr> World for StorageGrid<R> {
     }
 }
 
+/// The walk discovery rays take: their kernel node's component and knobs. Chosen once per
+/// snapshot (each walk its own monomorphised world), never per ray.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Walk {
+    #[default]
+    Refloor,
+    /// `exact`: exit times recomputed from the integer cell; `levels`: the level mask its
+    /// `skip*` knobs allow (levels 0 and 5 always).
+    Incremental { exact: bool, levels: u32 },
+}
+
+impl Walk {
+    /// The walk of kernel `component` with knobs `knobs` (unset = the knob's default, on).
+    pub fn of(component: &str, knobs: &toml::Table) -> anyhow::Result<Self> {
+        let on = |k: &str| knobs.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
+        Ok(match component {
+            "refloor" => Walk::Refloor,
+            "incremental" => Walk::Incremental {
+                exact: on("exact"),
+                levels: ["skip2", "skip4", "skip8", "skip16"]
+                    .iter()
+                    .enumerate()
+                    .fold(0b100001, |m, (i, k)| m | (on(k) as u32) << (i + 1)),
+            },
+            other => anyhow::bail!("discovery rays cannot walk with `{other}` on the CPU (refloor, incremental)"),
+        })
+    }
+}
+
+/// A storage's grid walked with `incremental`.
+struct Incr<R: Repr, const EXACT: bool> {
+    grid: Arc<StorageGrid<R>>,
+    levels: u32,
+}
+
+impl<R: Repr, const EXACT: bool> World for Incr<R, EXACT> {
+    #[inline]
+    fn trace(&self, cam: IVec3, o: Vec3, d: Vec3, bmin: IVec3, bmax: IVec3) -> Option<Hit> {
+        let (h, _) = crate::traversal::incremental::cpu::trace_incremental::<R, EXACT>(
+            &self.grid,
+            self.levels,
+            cam,
+            o,
+            d,
+            1e7,
+            bmin,
+            bmax,
+        );
+        h.map(|h| Hit {
+            t: h.t,
+            cell: h.cell,
+            axis: h.axis,
+        })
+    }
+
+    #[inline]
+    fn block(&self, abs: IVec3) -> u16 {
+        self.grid.block_at(abs)
+    }
+
+    fn bounds_rel(&self, cam: IVec3) -> (IVec3, IVec3) {
+        self.grid.bounds_rel(cam)
+    }
+}
+
+/// The snapshot of `grid` walked with `walk`, its exposure tests reading `exposure` (else
+/// `grid` itself).
+fn snap<R: Repr, B: Blocks + ?Sized + 'static>(
+    grid: Arc<StorageGrid<R>>,
+    walk: Walk,
+    exposure: Option<Arc<B>>,
+) -> Arc<dyn Snapshot> {
+    fn with<A: World + 'static, B: Blocks + ?Sized + 'static>(rays: Arc<A>, exposure: Option<Arc<B>>) -> Arc<dyn Snapshot> {
+        match exposure {
+            None => rays,
+            Some(exposure) => Arc::new(Paired { rays, exposure }),
+        }
+    }
+    match walk {
+        Walk::Refloor => with(grid, exposure),
+        Walk::Incremental { exact: true, levels } => with(Arc::new(Incr::<R, true> { grid, levels }), exposure),
+        Walk::Incremental { exact: false, levels } => with(Arc::new(Incr::<R, false> { grid, levels }), exposure),
+    }
+}
+
 /// The blocks exposure tests read (which faces are exposed, their blocks).
 pub trait Blocks: Send + Sync {
     fn block(&self, abs: IVec3) -> u16;
@@ -132,6 +217,8 @@ trait Store: Send {
     fn apply(&mut self, updates: &[WorldUpdate]);
     fn snapshot(&mut self) -> Arc<dyn Snapshot>;
     fn memory(&self) -> u64;
+    /// The walk the rays take.
+    fn set_walk(&mut self, walk: Walk);
 }
 
 /// The chunk map of one storage representation, which can also pair with another's blocks.
@@ -146,6 +233,7 @@ struct Chunks<R: Repr> {
     chunks: HashMap<IVec3, Entry<R>>,
     grid: Arc<StorageGrid<R>>,
     dirty: bool,
+    walk: Walk,
 }
 
 impl<R: Repr> Store for Chunks<R> {
@@ -209,11 +297,15 @@ impl<R: Repr> Store for Chunks<R> {
     }
 
     fn snapshot(&mut self) -> Arc<dyn Snapshot> {
-        self.grid()
+        snap(self.grid(), self.walk, None::<Arc<dyn Blocks>>)
     }
 
     fn memory(&self) -> u64 {
         self.memory_of()
+    }
+
+    fn set_walk(&mut self, walk: Walk) {
+        self.walk = walk;
     }
 }
 
@@ -223,10 +315,7 @@ impl<R: Repr> Single for Chunks<R> {
     }
 
     fn paired(&mut self, exposure: Arc<dyn Blocks>) -> Arc<dyn Snapshot> {
-        Arc::new(Paired {
-            rays: self.grid(),
-            exposure,
-        })
+        snap(self.grid(), self.walk, Some(exposure))
     }
 }
 
@@ -290,14 +379,16 @@ impl<R: Repr, E: Repr> Store for Pair<R, E> {
     }
 
     fn snapshot(&mut self) -> Arc<dyn Snapshot> {
-        Arc::new(Paired {
-            rays: self.rays.grid(),
-            exposure: self.exposure.grid(),
-        })
+        let exposure = self.exposure.grid();
+        snap(self.rays.grid(), self.rays.walk, Some(exposure))
     }
 
     fn memory(&self) -> u64 {
         self.rays.memory_of() + self.exposure.memory_of()
+    }
+
+    fn set_walk(&mut self, walk: Walk) {
+        self.rays.walk = walk;
     }
 }
 
@@ -322,6 +413,10 @@ impl Store for Dyn {
     fn memory(&self) -> u64 {
         self.rays.memory() + self.exposure.memory()
     }
+
+    fn set_walk(&mut self, walk: Walk) {
+        self.rays.set_walk(walk);
+    }
 }
 
 /// Chunk map mirrored from the update stream, in the chosen CPU storage (or two: the rays'
@@ -335,6 +430,7 @@ fn chunks<R: Repr>() -> Chunks<R> {
         chunks: HashMap::new(),
         grid: Arc::new(StorageGrid::default()),
         dirty: false,
+        walk: Walk::Refloor,
     }
 }
 
@@ -379,6 +475,12 @@ impl CpuWorld {
                 exposure: chunks::<E>(),
             }),
         }
+    }
+
+    /// This world with its rays walking `walk` (the default: refloor).
+    pub fn walking(mut self, walk: Walk) -> Self {
+        self.store.set_walk(walk);
+        self
     }
 
     pub fn apply(&mut self, updates: &[WorldUpdate]) {
