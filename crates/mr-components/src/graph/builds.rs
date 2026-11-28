@@ -810,16 +810,24 @@ pub const GPU_SLICES: Builds = Builds {
 };
 
 /// Voxel Space on the GPU (`columns-gpu`): the heightmap, its own ray march (the shadow and
-/// bounce rays), the column march, the shading.
+/// bounce rays), the column march, the shading. Or, in the column march's place, the ray
+/// caster over the heightmap's march (one ray per pixel through the `heightfield` kernel bound
+/// to its `primary` port).
 pub const GPU_COLUMNS: Builds = Builds {
     nodes: &[
         Build::providing(Role::Storage, Cap::Heights, impls::GPU_COMPUTE),
         Build::picking(Role::Traversal, MARCHES, impls::GPU_COMPUTE),
-        Build::one(Role::Visibility, &["columns"], impls::GPU_COMPUTE),
+        Build::one(Role::Visibility, &["columns", "raycast"], impls::GPU_COMPUTE),
         Build::picking(Role::Shading, Pick::Every, impls::GPU_COMPUTE),
     ],
     same: &[],
-    only: &[],
+    only: &[Only {
+        role: Role::Visibility,
+        of: &["raycast"],
+        port: "primary",
+        components: MARCHES,
+        bound: true,
+    }],
     crossings: &[(Role::Shading, "hits")],
     ..Builds::plain(RegionId::GpuColumns)
 };

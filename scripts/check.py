@@ -120,7 +120,7 @@ for w in what:
         # One end-to-end test at a time: each starts a GUI and worker processes that fill the
         # machine, so in parallel they starve each other's waits (11 at once: load 100, three
         # timed out in 120 s; one at a time: 47 s, all pass).
-        for name, args in (("gpu e2e", ["--bin", "multirenderer", "--", "--ignored", "--skip", "gui_screenshot", "--test-threads=1"]), ("gpu pool", ["-p", "mr-gpu", "--", "--ignored"]), ("gpu scale", ["--test", "scale", "--", "--ignored"]), ("gpu gates", ["--test", "gates", "--", "--ignored"]), ("gpu late", ["--test", "late", "--", "--ignored"])):
+        for name, args in (("gpu e2e", ["--bin", "multirenderer", "--", "--ignored", "--skip", "gui_screenshot", "--test-threads=1"]), ("gpu pool", ["-p", "mr-gpu", "--", "--ignored"]), ("gpu scale", ["--test", "scale", "--", "--ignored"]), ("gpu gates", ["--test", "gates", "--", "--ignored"]), ("gpu late", ["--test", "late", "--", "--ignored"]), ("gpu unfused", ["--test", "unfused", "--", "--ignored"])):
             s, t = cargo(["test", "-q", "--release", *args], logs / f"{name.replace(' ', '-')}.log")
             rc |= tests(name, s, t)
         r = subprocess.run([sys.executable, str(ROOT / "scripts" / "limits.py"), "--no-build"], cwd=ROOT, capture_output=True, text=True)

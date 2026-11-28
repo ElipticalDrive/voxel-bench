@@ -7,9 +7,10 @@ use super::*;
 impl Graph {
     /// The region of an executor this graph's shape and devices name (what builds it:
     /// [`Builds`]): the face drawer's source (meshing, by the drawer's device; discovery, by
-    /// the sampler's), else the visibility node's component and device (ray casting: on the
-    /// CPU, by ray queries when its primary rays are ray queries (the kernel's component or
-    /// API), else the GPU walk; columns; splats). `None` for a shape no region has.
+    /// the sampler's), else the visibility node's component and device (ray casting: the
+    /// columns region when its primary rays are a heightmap's march, else on the CPU, by ray
+    /// queries when its primary rays are ray queries (the kernel's component or API), else the
+    /// GPU walk; columns; splats). `None` for a shape no region has.
     pub fn region(&self) -> Option<&'static Builds> {
         // Gates leave the shape as it is without them.
         if self.nodes.values().any(|n| n.role == Role::Gate) {
@@ -46,16 +47,20 @@ impl Graph {
             ("columns", g) => Some(if g { &GPU_COLUMNS } else { &CPU_COLUMNS }),
             ("splat", true) => Some(&GPU_SPLAT),
             ("slices", true) => Some(&GPU_SLICES),
-            // Over a heightmap's march: the columns region casts the rays.
-            ("raycast", false) => {
+            // Over a heightmap's march: the columns region casts the rays (either device).
+            ("raycast", g) => {
+                let kind = if g { Kind::Gpu } else { Kind::Cpu };
                 let marched = hits
                     .inputs
                     .get("primary")
                     .and_then(|k| self.nodes.get(k))
-                    .is_some_and(|k| MARCHES.takes(Role::Traversal, Kind::Cpu, &k.component));
-                Some(if marched { &CPU_COLUMNS } else { &CPU_RAYCAST })
-            }
-            ("raycast", true) => {
+                    .is_some_and(|k| MARCHES.takes(Role::Traversal, kind, &k.component));
+                if marched {
+                    return Some(if g { &GPU_COLUMNS } else { &CPU_COLUMNS });
+                }
+                if !g {
+                    return Some(&CPU_RAYCAST);
+                }
                 let rq = hits
                     .inputs
                     .get("primary")

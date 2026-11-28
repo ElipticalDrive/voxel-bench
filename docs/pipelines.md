@@ -20,7 +20,7 @@ only: gaps not filled yet, and those refused on a kind by their nature (`REFUSED
 | `client` | changes | what the renderer holds: `pick` (the server's LOD levels) or `derive` (coarse levels built on the client), with `radius` and `max_lod` |
 | `storage` | storage | a representation answering storage queries (`bricks`, `prefix`, `tree64`, ...) |
 | `geometry` | faces | faces made from chunks (`greedy`, `naive`, `cubes`, `boxes`, `points`) |
-| `traversal` | rays | a ray-query service: a kernel walking a storage (`refloor`, `incremental`, `sphere`, `rowrun`, `topdown`, `rayquery`; `heightfield`, the heightmap's own march, casts the columns pipelines' shadow and bounce rays) |
+| `traversal` | rays | a ray-query service: a kernel walking a storage (`refloor`, `incremental`, `sphere`, `rowrun`, `topdown`, `rayquery`; `heightfield`, the heightmap's own march, casts the columns pipelines' shadow and bounce rays, and a ray caster's primary rays over a heightmap, run by the columns region) |
 | `prepass` | starts | where each primary ray may start (`beam`) |
 | `visibility` | hits or faces | what is visible per pixel: `raycast`, `faces` (rasterise everything), discovery `quadtree` / `cluster`, `splat`, `slices` (plane sweeping: every integer plane rasterised, fragments kept on block faces by two storage lookups), `columns` |
 | `holes` | tiles | which screen tiles discovery looks at (`coverage`: only where something may have changed) |

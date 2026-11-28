@@ -176,6 +176,10 @@ fn create_region(p: InitParams, devices: &Devices, waker: Waker, cpu_world: Opti
     if g.find(Role::Draw).is_some() {
         return faces::create(&p, devices, waker, g, cpu_world);
     }
+    // A ray caster over a heightmap's march is the columns region's.
+    if g.region.is_some_and(|r| r.id == RegionId::GpuColumns) {
+        return columns::create(&p, devices, waker, g);
+    }
     let vis = g.find(Role::Visibility).ok_or_else(|| anyhow::anyhow!("no visibility node"))?;
     match g.node(vis).component.as_str() {
         "splat" => splat::create(&p, devices, waker, g),
